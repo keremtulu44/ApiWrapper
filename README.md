@@ -390,6 +390,24 @@ Ek webhook veya üçüncü parti bot paketi gerekmez. `app.telegram.bot`, Telegr
 polling ile mesajı wrapper'ın **non-streaming** `/v1/chat/completions` ucuna gönderir.
 Bot token'ı ve wrapper anahtarı yalnızca environment değişkenlerinden okunur.
 
+### Aynı Web Service içinde (ayrı BG worker'sız)
+
+Web Service environment'ına şu iki alanı ekleyin:
+
+```text
+TELEGRAM_BOT_TOKEN=<BotFather tokenı>
+TELEGRAM_ALLOWED_CHAT_IDS=123456789
+```
+
+Token varsa bot FastAPI lifespan ile birlikte açılır ve aynı process'te long polling
+yapar. `WRAPPER_BASE_URL` kendi `PORT` değerinden, `WRAPPER_API_KEY` mevcut
+`API_KEYS` ilk değerinden otomatik alınır; bunları Web Service'e ayrıca eklemeyin.
+`UPSTREAM_CURL`, CAPTCHA ayarları ve `API_KEYS` aynı serviste kalır. Deploy sonrası
+Web Service loglarında `telegram_bot_started` görünmelidir. Tek instance/tek worker
+kullanın; birden fazla bot process'i Telegram 409 çakışması üretir.
+
+### Yerel veya ayrı process
+
 ```powershell
 $env:TELEGRAM_BOT_TOKEN = "<BotFather tokenı>"
 $env:WRAPPER_BASE_URL = "https://SERVICE.onrender.com"  # sonda /v1 yok
@@ -407,11 +425,11 @@ Telegram sınırına göre parçalanır.
 
 Bot normal (non-streaming) yolu test eder; SSE/stream regresyonu için ayrıca
 `scripts/test_client.py --model max` çalıştırın. 429 yanıtı upstream rate limit olarak
-görünür; restart veya cookie yenileme çözümü değildir. Botu 7/24 çalıştırmak için
-Render **Background Worker** oluşturun. Runtime `Docker`, Dockerfile Path
-`./Dockerfile.telegram` olsun; Build/Start/Docker Command alanlarını boş bırakın. Bu dosyanın `CMD` satırı botu kendisi başlatır. Web Service `./Dockerfile`
-kullanmaya devam etmelidir. Worker'a yalnız Telegram/wrapper env alanlarını ekleyin;
-`WRAPPER_BASE_URL` Web Service'in kök adresidir (`/v1` ve `/docs` olmadan).
+görünür; restart veya cookie yenileme çözümü değildir. Free Web Service uyku moduna
+geçerse gömülü bot da durur; Telegram mesajı uyuyan servisi uyandırmaz. Kesintisiz bot
+için isteğe bağlı ayrı Render **Background Worker** kullanılabilir: Runtime `Docker`,
+Dockerfile Path `./Dockerfile.telegram`, Build/Start/Docker Command boş olmalıdır.
+Ayrı worker'da dört Telegram/wrapper env değeri ve Web Service kök URL'si gerekir.
 Gerçek Telegram ve Render testleri bu ortamda token/secret olmadan çalıştırılmaz.
 
 ---

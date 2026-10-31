@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 from collections.abc import AsyncIterator
 from pathlib import Path
@@ -25,6 +26,7 @@ from app.services.completion_service import CompletionService
 from app.services.model_registry import ModelEntry, ModelRegistry
 from app.services.recaptcha import create_recaptcha_provider
 from app.services.session_manager import SessionManager
+from app.telegram.bot import TelegramSettings, run_from_settings
 from app.upstream.client import UpstreamClient
 from app.upstream.curl_runtime import apply_upstream_curl
 
@@ -56,6 +58,47 @@ def _load_registry(settings: Settings) -> ModelRegistry:
                 )
             ]
         )
+
+
+def _embedded_telegram_settings(settings: Settings) -> TelegramSettings | None:
+    """Token varsa botu Web Service içinde çalıştır; ayrı worker gerektirmez.
+
+    Aynı serviste WRAPPER_BASE_URL ve WRAPPER_API_KEY tekrar istenmez. Bot,
+    açıkça verilmediklerinde kendi uvicorn portunu ve API_KEYS ilk değerini
+    kullanır. Ayrı Dockerfile.telegram worker'ında bu fallback'ler devre dışıdır.
+    """
+    try:
+        telegram = TelegramSettings()
+    except ValueError:
+        logger.error("telegram_configuration_invalid")
+        return None
+    if not telegram.telegram_bot_token.strip():
+        return None
+
+    updates: dict[str, str] = {}
+    if "wrapper_base_url" not in telegram.model_fields_set:
+        updates["wrapper_base_url"] = f"http://127.0.0.1:{settings.port}"
+    if not telegram.wrapper_api_key.strip():
+        api_key = next((key.strip() for key in settings.api_keys if key.strip()), "")
+        if api_key:
+            updates["wrapper_api_key"] = api_key
+    if updates:
+        telegram = telegram.model_copy(update=updates)
+
+    if missing := telegram.missing_secrets():
+        logger.error("telegram_configuration_error", missing=missing)
+        return None
+    return telegram
+
+
+async def _run_embedded_telegram(settings: TelegramSettings) -> None:
+    try:
+        await run_from_settings(settings)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        # httpx hata metni Telegram token'lı URL taşıyabilir; yalnız türü logla.
+        logger.error("telegram_bot_stopped_unexpectedly", error_type=type(exc).__name__)
 
 
 @contextlib.asynccontextmanager
@@ -107,6 +150,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         accounts=accounts,
     )
 
+    telegram_task: asyncio.Task[None] | None = None
+    if telegram_settings := _embedded_telegram_settings(settings):
+        telegram_task = asyncio.create_task(
+            _run_embedded_telegram(telegram_settings), name="telegram-bot"
+        )
+
     logger.info(
         "application_started",
         version=settings.app_version,
@@ -118,6 +167,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if telegram_task is not None:
+            telegram_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await telegram_task
         with contextlib.suppress(Exception):
             await recaptcha.shutdown()
         with contextlib.suppress(Exception):

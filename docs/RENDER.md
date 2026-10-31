@@ -148,8 +148,25 @@ curl -H "Authorization: Bearer $API_KEY" \
 ## 6. Telegram ile ara sıra istek testi
 
 Bot ayrı webhook altyapısı istemez; Telegram `getUpdates` long polling kullanır ve
-mesajı wrapper'ın non-streaming `/v1/chat/completions` ucuna gönderir. Önce yerel olarak
-veya ayrı bir Render Background Worker'da çalıştırın:
+mesajı wrapper'ın non-streaming `/v1/chat/completions` ucuna gönderir.
+
+### Aynı Web Service içinde (ayrı worker yok)
+
+Web Service environment'ına yalnız şu iki alanı ekleyin:
+
+```text
+TELEGRAM_BOT_TOKEN=<BotFather tokenı>
+TELEGRAM_ALLOWED_CHAT_IDS=123456789
+```
+
+Token varsa FastAPI lifespan botu aynı process'te başlatır. `WRAPPER_BASE_URL` kendi
+`PORT` değerinden, `WRAPPER_API_KEY` mevcut `API_KEYS` ilk değerinden türetilir; bu iki
+alanı Web Service'e ayrıca eklemeyin. Deploy sonrası aynı Web Service loglarında
+`telegram_bot_started` arayın. Tek instance/tek worker sınırı korunmalıdır; aksi halde
+aynı tokenla polling yapan process'ler 409 üretir. Free Web Service uyursa bot da durur;
+Telegram mesajı uyuyan servisi uyandırmaz.
+
+### Yerel veya ayrı process
 
 ```powershell
 $env:TELEGRAM_BOT_TOKEN = "<BotFather tokenı>"
@@ -165,7 +182,8 @@ python -m app.telegram.bot
 3. `/ping` wrapper `/healthz` kontrolünü, normal metin gerçek non-streaming tamamlamayı
    test eder. `/help` kullanım bilgisini gösterir.
 
-7/24 bot için Render'da aynı repo/branch ile **Background Worker** oluşturun:
+İsteğe bağlı ayrı/always-on bot için Render'da aynı repo/branch ile **Background Worker**
+oluşturun:
 
 | Alan | Değer |
 |---|---|

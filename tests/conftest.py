@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.core.config import Settings
 from app.main import create_app
+from app.telegram.bot import TelegramSettings
 
 # Testler her makinede aynı sonucu vermeli. `Settings` varsayılan olarak depo
 # kökündeki `.env` dosyasını VE ortam değişkenlerini okur; geliştiricinin `.env`'i
@@ -19,6 +20,13 @@ from app.main import create_app
 Settings.model_config["env_file"] = None
 Settings.model_config["env_ignore_empty"] = True
 for _field in Settings.model_fields:
+    os.environ.pop(_field.upper(), None)
+
+# Gömülü Telegram botu da ayrı Settings sınıfını okur; geliştiricinin gerçek
+# tokenıyla testlerde ağa çıkmasını ve aynı env'lerden etkilenmesini önle.
+TelegramSettings.model_config["env_file"] = None
+TelegramSettings.model_config["env_ignore_empty"] = True
+for _field in TelegramSettings.model_fields:
     os.environ.pop(_field.upper(), None)
 
 TEST_API_KEY = "sk-test-key"
