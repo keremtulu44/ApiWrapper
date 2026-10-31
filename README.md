@@ -36,9 +36,10 @@ Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**
 ```bash
 git clone <repo> && cd ApiWrapper
 python -m venv .venv && source .venv/bin/activate
-pip install -e ".[dev,tokens]"
+pip install -e ".[dev,tokens,browser]"
+playwright install chromium
 
-cp .env.example .env      # TARGET_DOMAIN, API_KEYS, RECAPTCHA_STATIC_TOKEN doldurun
+cp .env.example .env      # TARGET_DOMAIN, API_KEYS ve UPSTREAM_COOKIE doldurun
 $EDITOR config/models.yaml # Max kaydı hazır; başka modeller için gerçek modelAId girin
 
 make run                  # http://localhost:8000/docs
@@ -50,7 +51,7 @@ make run                  # http://localhost:8000/docs
 |---|---|
 | `TARGET_DOMAIN` | Hedef servis domaini, **şemasız** (örn. `example-llm.com`) |
 | `API_KEYS` | Yerel istemcilerin kullanacağı anahtarlar (virgülle ayrılmış) |
-| `RECAPTCHA_STATIC_TOKEN` | `static` sağlayıcı için tarayıcıdan alınan v3 token'ı |
+| `RECAPTCHA_PROVIDER=browser` + `RECAPTCHA_SITE_KEY` | Enterprise token'ını dinamik üretir; public site key örnekte hazır |
 | `config/models.yaml` | `id` ↔ `upstream_id` (`modelAId`) eşlemesi |
 
 > Hedef domain ve model kimlikleri çalıştırma koduna gömülü değildir; `.env` ve
@@ -230,8 +231,23 @@ for chunk in stream:
 
 `python scripts/compare_curl.py request.txt` artık **URL yolunu** da karşılaştırır; buradaki `FARKLI` satırı 404'ün doğrudan nedenidir.
 
+## Tek hesaplı cURL içe aktarma
+
+Windows `setup-from-curl.ps1` tek hesaplıdır: her içe aktarma eski hesap yuvalarını
+temizler ve güncel cURL'ü yalnız 1. hesaba yazar. Aynı davranış CLI'de
+`--single-account` ile alınır:
+
+```bash
+python scripts/curl_to_env.py request.txt --write --single-account
+```
+
+Fresh `.env.example` browser Enterprise CAPTCHA kullanır. Importer `browser`,
+`external` veya `noop` seçimini static'e çevirmez ve kısa ömürlü CAPTCHA token'ını
+bu kiplerde saklamaz. Eski `.env`'i tamamen yenilemek için önce yeni örneği kopyalayın.
+
 ## Birden çok hesabı cURL ile kaydetme
 
+Çoklu hesap gerekiyorsa Python CLI'nin varsayılan yuva davranışı kullanılabilir;
 `curl_to_env.py` her çalıştırmada **bir hesap yuvasına** yazar. cURL'leri sırayla atın:
 1. cURL soneksiz anahtarlara (`UPSTREAM_COOKIE`, `RECAPTCHA_STATIC_TOKEN`, …),
 2. cURL `_2` soneksli anahtarlara (`UPSTREAM_COOKIE_2`, `RECAPTCHA_STATIC_TOKEN_2`, …).

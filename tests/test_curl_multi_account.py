@@ -384,6 +384,61 @@ def test_strip_account_keys_clears_all_slots(tmp_path):
         assert leftover not in text, leftover
 
 
+def test_single_account_cli_replaces_all_legacy_slots(tmp_path, monkeypatch, capsys):
+    from scripts import curl_to_env
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "API_KEYS=local-test\nAUTH_DISABLED=false\nAUTH_DISABLED=true\n"
+        "RECAPTCHA_PROVIDER=browser\nRECAPTCHA_SITE_KEY=public-site-key\n"
+        "RECAPTCHA_VERSION=enterprise\nRECAPTCHA_ACTION=chat_submit\n"
+        "UPSTREAM_COOKIE=OLD-1\nUPSTREAM_COOKIE_2=OLD-2\n"
+        "UPSTREAM_COOKIE_3=OLD-3\nUPSTREAM_COOKIE_4=OLD-4\n"
+        "UPSTREAM_COOKIE_5=OLD-5\nUPSTREAM_ACCOUNT_5_NAME=eski-5\n",
+        encoding="utf-8",
+    )
+    curl_file = tmp_path / "request.txt"
+    curl_file.write_text(
+        make_curl(cookie="auth-token=NEW-1", authorization=None),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "curl_to_env.py",
+            "--single-account",
+            "--write",
+            str(curl_file),
+            "--env-file",
+            str(env_file),
+            "--models-file",
+            str(tmp_path / "models.yaml"),
+        ],
+    )
+
+    assert curl_to_env.main() == 0
+    capsys.readouterr()
+    values = read_env_keys(env_file)
+    assert count_accounts(values) == 1
+    assert values["UPSTREAM_COOKIE"] == "auth-token=NEW-1"
+    assert values["RECAPTCHA_PROVIDER"] == "browser"
+    assert values["RECAPTCHA_STATIC_TOKEN"] == ""
+    assert values["RECAPTCHA_VERSION"] == "enterprise"
+    assert values["RECAPTCHA_ACTION"] == "chat_submit"
+    assert values["UPSTREAM_AUTH_FROM_COOKIE"] == "false"
+    assert values["API_KEYS"] == "local-test"
+    text = env_file.read_text(encoding="utf-8")
+    assert text.count("AUTH_DISABLED=") == 1
+    assert "AUTH_DISABLED=false" in text
+    for stale in ("OLD-2", "OLD-3", "OLD-4", "OLD-5", "UPSTREAM_ACCOUNT_5_NAME"):
+        assert stale not in text
+
+    accounts = load_accounts(Settings(_env_file=env_file))
+    assert len(accounts) == 1
+    assert accounts[0].cookie == "auth-token=NEW-1"
+
+
 def test_is_account_key_recognizes_suffixed_names():
     from scripts.curl_to_env import _is_account_key
 

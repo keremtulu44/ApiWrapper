@@ -6,8 +6,9 @@
     Elle kopyala-yapıştır sırasında çerez değerinin ortadan kesilmesi, alt satıra
     taşması veya tırnakların yarım kalması gibi hataları tamamen ortadan kaldırır.
     cURL komutunu olduğu gibi yapıştırırsınız; betik alan adını, çerezi,
-    accept-language ve user-agent başlıklarını, captcha alan adı ile token'ını ve
-    modelAId değerini ayıklayıp .env ile config\models.yaml dosyalarına yazar.
+    accept-language ve user-agent başlıklarını, captcha alan adını ve modelAId
+    değerini ayıklayıp .env ile config\models.yaml dosyalarına yazar. Kurulum
+    tek hesaplıdır; browser/external CAPTCHA seçimi varsa statik token kaydetmez.
 
 .PARAMETER FromClipboard
     cURL'ü panodan okur (yapıştırmaya gerek kalmaz).
@@ -96,6 +97,12 @@ if ($curlText -notmatch 'curl') {
     Write-Host "UYARI: Girdide 'curl' gecmiyor. Yanlis metin yapistirilmis olabilir." -ForegroundColor Yellow
 }
 
+# İlk kurulumda güncel Enterprise/browser ayarlarıyla başla. Var olan .env
+# otomatik olarak ezilmez; eski dosyayı sıfırlamak kullanıcının açık kararıdır.
+if (-not (Test-Path '.env')) {
+    Copy-Item '.env.example' '.env'
+}
+
 # Gecici dosyaya UTF-8 (BOM'suz) yaz: Python tarafi bozulmadan okusun.
 $tempFile = Join-Path ([System.IO.Path]::GetTempPath()) "curl_$([guid]::NewGuid().ToString('N')).txt"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
@@ -103,7 +110,9 @@ $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
 
 try {
     $python = Find-Python
-    $arguments = @('scripts/curl_to_env.py', $tempFile)
+    # Windows kurulumu tek hesaplıdır: her içe aktarma eski 2/3/4/5 yuva
+    # kalıntılarını temizler ve güncel kimliği yalnız 1. hesaba yazar.
+    $arguments = @('scripts/curl_to_env.py', $tempFile, '--single-account')
     if (-not $DryRun)   { $arguments += '--write' }
     if ($ShowSecrets)   { $arguments += '--show-secrets' }
 
@@ -124,7 +133,7 @@ if ($code -eq 3) {
     Write-Host ''
     Write-Host 'YANLIS ISTEK: kopyalanan cURL bir telemetri/analitik cagrisina ait.' -ForegroundColor Red
     Write-Host 'Network sekmesinde arama kutusuna su metni yazip filtreleyin:' -ForegroundColor Yellow
-    Write-Host '    post-to-evaluation' -ForegroundColor White
+    Write-Host '    create-evaluation' -ForegroundColor White
     Write-Host 'Cikan istege sag tik > Copy > Copy as cURL (bash) yapip tekrar deneyin.' -ForegroundColor Yellow
     exit $code
 }
@@ -147,5 +156,5 @@ Write-Host '  1) Servisi baslatin :  .\scripts\windows\run.ps1'
 Write-Host '  2) Dogrulayin       :  .\scripts\windows\chat.ps1 -Diagnose'
 Write-Host '  3) Mesaj atin       :  .\scripts\windows\chat.ps1 "Merhaba"'
 Write-Host ''
-Write-Host 'Not: reCAPTCHA token lari kisa omurludur (~2 dakika).' -ForegroundColor DarkGray
-Write-Host '     recaptcha_rejected hatasinda bu betigi tekrar calistirin.' -ForegroundColor DarkGray
+Write-Host 'Not: Kurulum tek hesaplıdır; browser CAPTCHA tokenı her istekte üretir.' -ForegroundColor DarkGray
+Write-Host '     Cookie süresi dolarsa aynı komut yalnız 1. hesabı tazeler.' -ForegroundColor DarkGray

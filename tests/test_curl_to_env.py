@@ -89,6 +89,16 @@ def test_extracts_every_setting_from_curl(sample):
     assert not any("anonim" in w for w in warnings)
 
 
+def test_import_preserves_dynamic_captcha_and_discards_static_token(sample):
+    env, _, _ = build_settings(
+        parse_curl(_curl(sample["cookie"], sample["body"])),
+        {"RECAPTCHA_PROVIDER": "browser"},
+    )
+    assert env["UPSTREAM_RECAPTCHA_FIELD"] == "recaptchaV2Token"
+    assert env["RECAPTCHA_PROVIDER"] == "browser"
+    assert env["RECAPTCHA_STATIC_TOKEN"] == ""
+
+
 def test_extracts_only_safe_static_extra_headers(sample):
     curl = (
         "curl 'https://example-llm.ai/nextjs-api/stream/create-evaluation' "
@@ -168,6 +178,15 @@ def test_merge_env_removes_duplicate_keys(tmp_path):
     assert result.count("UPSTREAM_COOKIE=") == 1
     assert "UPSTREAM_COOKIE=new" in result
     assert "old1" not in result and "old2" not in result
+
+
+def test_merge_env_deduplicates_legacy_unrelated_keys(tmp_path):
+    path = tmp_path / ".env"
+    path.write_text("AUTH_DISABLED=false\nPORT=8000\nAUTH_DISABLED=true\n", encoding="utf-8")
+    result = merge_env(path, {"TARGET_DOMAIN": "example.com"})
+    assert result.count("AUTH_DISABLED=") == 1
+    assert "AUTH_DISABLED=false" in result
+    assert "AUTH_DISABLED=true" not in result
 
 
 def test_merge_env_creates_file_when_absent(tmp_path):

@@ -53,11 +53,12 @@ if (-not (Test-Path $VenvPython)) {
 if (-not $SkipInstall) {
     Write-Host "Bagimliliklar yukleniyor..." -ForegroundColor Cyan
     & $VenvPython -m pip install --upgrade pip --quiet
-    # dev ekstrasi pytest/respx/ruff/mypy icerir; testleri .venv disinda
-    # calistirmaya calisinca "No module named pydantic_settings" gibi hatalar
-    # cikar. Tek dogru yer .venv oldugu icin hepsi birlikte kurulur.
-    & $VenvPython -m pip install -e ".[dev,tokens]" --quiet
+    # dev ekstrasi pytest/respx/ruff/mypy, browser ekstrasi Enterprise CAPTCHA
+    # icin Playwright icerir. Tek dogru yer .venv oldugu icin birlikte kurulur.
+    & $VenvPython -m pip install -e ".[dev,tokens,browser]" --quiet
     if ($LASTEXITCODE -ne 0) { Write-Host "Kurulum basarisiz." -ForegroundColor Red; exit 1 }
+    & $VenvPython -m playwright install chromium
+    if ($LASTEXITCODE -ne 0) { Write-Host "Chromium kurulumu basarisiz." -ForegroundColor Red; exit 1 }
 }
 
 # --- .env kontrolu -----------------------------------------------------------
@@ -67,9 +68,9 @@ if (-not (Test-Path ".env")) {
     Write-Host ".env olusturuldu. Devam etmeden once doldurun:" -ForegroundColor Yellow
     Write-Host "  TARGET_DOMAIN            = hedef domain (semasiz)" -ForegroundColor Yellow
     Write-Host "  UPSTREAM_COOKIE          = tarayicidan aldiginiz ham Cookie" -ForegroundColor Yellow
-    Write-Host "  UPSTREAM_RECAPTCHA_FIELD = recaptchaV2Token" -ForegroundColor Yellow
-    Write-Host "  RECAPTCHA_STATIC_TOKEN   = tarayicidan aldiginiz token" -ForegroundColor Yellow
-    Write-Host "  config\models.yaml       = upstream_id degerleri" -ForegroundColor Yellow
+    Write-Host "  UPSTREAM_RECAPTCHA_FIELD = recaptchaV3Token" -ForegroundColor Yellow
+    Write-Host "  RECAPTCHA_PROVIDER       = browser (site key/example hazir)" -ForegroundColor Yellow
+    Write-Host "  config\models.yaml       = Max upstream_id hazir" -ForegroundColor Yellow
     Write-Host ""
     notepad .env
     Read-Host "Duzenlemeyi bitirince Enter'a basin"

@@ -459,8 +459,16 @@ def build_settings(
     field, token = extract_captcha(body)
     if field and token:
         env["UPSTREAM_RECAPTCHA_FIELD"] = field
-        env["RECAPTCHA_PROVIDER"] = "static"
-        env["RECAPTCHA_STATIC_TOKEN"] = token
+        configured_provider = (existing or {}).get("RECAPTCHA_PROVIDER", "").strip().lower()
+        if configured_provider in {"browser", "external", "noop"}:
+            # Dinamik sağlayıcı seçilmişse kısa ömürlü token'ı kaydedip kipi
+            # static'e geri döndürme. Boş değer, eski statik token kalıntısını da
+            # temizler; gerçek token her istekte sağlayıcıdan alınır.
+            env["RECAPTCHA_PROVIDER"] = configured_provider
+            env["RECAPTCHA_STATIC_TOKEN"] = ""
+        else:
+            env["RECAPTCHA_PROVIDER"] = "static"
+            env["RECAPTCHA_STATIC_TOKEN"] = token
     else:
         warnings.append(
             "Gövdede captcha alanı bulunamadı. Hedef captcha istemiyorsa "
@@ -549,6 +557,7 @@ def merge_env(path: Path, updates: dict[str, str]) -> str:
             continue  # mükerrer satırı at
         else:
             result.append(line)
+            seen.add(key)  # güncellenmeyen anahtarların da yalnız ilk satırı kalsın
 
     if remaining:
         if result and result[-1].strip():
@@ -606,11 +615,20 @@ def main() -> int:
         action="store_true",
         help="Kritik uyarılara rağmen yazmayı sürdür",
     )
-    parser.add_argument(
+    account_mode = parser.add_mutually_exclusive_group()
+    account_mode.add_argument(
         "--account",
         help=(
             "Hesap yuvası: '1'/'2' gibi bir yuva numarası ya da 'hesap-1' gibi "
             "özel bir ad. Verilmezse ilk boş yuva seçilir."
+        ),
+    )
+    account_mode.add_argument(
+        "--single-account",
+        action="store_true",
+        help=(
+            "Tek hesaplı kurulum: eski 1/2/3/... yuva kalıntılarını temizle ve "
+            "yeni cURL'ü yalnızca 1. hesaba yaz."
         ),
     )
     parser.add_argument(
@@ -720,7 +738,10 @@ def main() -> int:
         return 2
 
     try:
-        slot, label = _resolve_slot(args.account, env_path)
+        if args.single_account:
+            slot, label = 1, "hesap-1"
+        else:
+            slot, label = _resolve_slot(args.account, env_path)
     except ValueError as exc:
         print(f"HATA: {exc}", file=sys.stderr)
         return 2
@@ -753,7 +774,10 @@ def main() -> int:
             print(f"  ! {item}")
 
     if not args.write:
-        print(f"\nYazmak için --write ekleyin (boş olan yuva: {slot}. hesap).")
+        if args.single_account:
+            print("\nYazmak için --write ekleyin; eski yuvalar yalnız yazma sırasında temizlenir.")
+        else:
+            print(f"\nYazmak için --write ekleyin (seçilen yuva: {slot}. hesap).")
         return 0
 
     critical = [w for w in warnings if w.startswith("KRİTİK")]
@@ -766,10 +790,17 @@ def main() -> int:
         return 3
 
     shared, account = split_account_env(env, slot, label)
+    if args.single_account:
+        # Önce bütün eski yuva anahtarlarını sök. `_5` gibi uygulamanın hiç
+        # okumadığı eski kalıntılar da sayısal sonek kuralıyla temizlenir.
+        strip_account_keys(env_path)
     env_path.write_text(merge_env(env_path, {**shared, **account}), encoding="utf-8")
 
     total = count_accounts(read_env_keys(env_path))
-    print(f"\n{env_path} güncellendi — {label} {slot}. yuvaya yazıldı.")
+    if args.single_account:
+        print(f"\n{env_path} güncellendi — tek hesaplı kurulum, eski yuvalar temizlendi.")
+    else:
+        print(f"\n{env_path} güncellendi — {label} {slot}. yuvaya yazıldı.")
     print(f"Kayıtlı hesap sayısı: {total}")
     if total > 1:
         print(
