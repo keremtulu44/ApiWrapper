@@ -356,8 +356,10 @@ RECAPTCHA_PROVIDER=external   # Tek istekte doğrudan token döndüren özel HTT
 Yerel Python kurulumunda `browser` için: `pip install ".[browser]" && playwright install chromium`.
 Gözlenen hedef **reCAPTCHA Enterprise** kullandığından örnek yapılandırmada
 `RECAPTCHA_VERSION=enterprise` ve `RECAPTCHA_ACTION=chat_submit` bulunur. Browser
-sağlayıcı hedef origin'de `enterprise.js` üzerinden `grecaptcha.enterprise.execute()`
-çağırır; `/recaptcha/enterprise/reload` protobuf isteğini veya Google cookie'lerini
+sağlayıcı hedef origin'de izole bir bootstrap belgesine `enterprise.js` yükleyip
+`grecaptcha.enterprise.execute()` çağırır. Belge Playwright route ile aynı origin'de
+üretilir; canlı hedef sayfasının Cloudflare/CSP veya diğer script'leri bootstrap'a
+karışmaz. `/recaptcha/enterprise/reload` protobuf isteğini veya Google cookie'lerini
 yeniden oynatmaz. Site key public'tir, üretilen CAPTCHA token'ı ise gizli ve kısa ömürlüdür.
 Docker imajı Playwright ve Chromium'u önceden içerir. `external` sağlayıcı tek HTTP
 cevabında doğrudan token döndüren bir uç bekler; standart `createTask`/`getTaskResult`

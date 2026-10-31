@@ -207,8 +207,10 @@ bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamı
   hesap bazlı cookie altyapısı hazırdır; tahmini refresh endpoint'i kullanılmamalıdır.
 - `static` CAPTCHA token'ı kısa ömürlüdür; unattended kullanım için `browser` veya
   uygun `external` sağlayıcı gerekir.
-- Browser sağlayıcı için hedef origin'e ve Google reCAPTCHA betiğine outbound erişim
-  gerekir. Chromium RAM/CPU kullanır; kaynak sınırını Render loglarından izleyin.
+- Browser sağlayıcı CAPTCHA bootstrap belgesini Playwright route ile hedef origin'de
+  üretir; canlı hedef HTML'ine bağımlı değildir. Google reCAPTCHA betiğine outbound
+  erişim gerekir; upstream completion isteği için hedef servise erişim ayrıca gerekir.
+  Chromium RAM/CPU kullanır; kaynak sınırını Render loglarından izleyin.
 - Tek instance/tek worker sınırını kaldırmak, bellek içi hesap ve sohbet durumunu
   instance'lar arasında senkronize etmez.
 - Her deploy/restart cookie jar'ı environment'taki başlangıç değerlerinden kurar ve

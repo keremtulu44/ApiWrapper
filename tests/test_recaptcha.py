@@ -11,24 +11,46 @@ from app.services.recaptcha.browser import BrowserRecaptchaProvider
 from tests.conftest import make_settings
 
 
-class FakePage:
-    def __init__(self, url: str, *, has_grecaptcha: bool = False, fail_goto: bool = False):
-        self.url = url
-        self.has_grecaptcha = has_grecaptcha
-        self.fail_goto = fail_goto
-        self.content: str | None = None
+class FakeRoute:
+    def __init__(self) -> None:
+        self.status: int | None = None
+        self.content_type: str | None = None
+        self.body: str | None = None
 
-    async def goto(self, *_args, **_kwargs) -> None:
+    async def fulfill(self, *, status: int, content_type: str, body: str) -> None:
+        self.status = status
+        self.content_type = content_type
+        self.body = body
+
+
+class FakePage:
+    def __init__(self, *, script_failed: bool = False, fail_goto: bool = False) -> None:
+        self.url = "about:blank"
+        self.script_failed = script_failed
+        self.fail_goto = fail_goto
+        self.routes: dict[str, Any] = {}
+        self.fulfillments: list[FakeRoute] = []
+        self.goto_url: str | None = None
+
+    async def route(self, url: str, handler: Any) -> None:
+        self.routes[url] = handler
+
+    async def goto(self, url: str, **_kwargs: Any) -> None:
+        self.goto_url = url
         if self.fail_goto:
             raise RuntimeError("navigation failed")
+        # Route kaydı yoksa gerçek hedefe gidilmesine izin verme: test, canlı
+        # sayfa yerine izole bootstrap'ın kullanıldığını böylece de doğrular.
+        handler = self.routes[url]
+        route = FakeRoute()
+        await handler(route)
+        self.fulfillments.append(route)
+        self.url = url
 
-    async def evaluate(self, script: str, *_args) -> Any:
-        if "typeof grecaptcha" in script:
-            return self.has_grecaptcha
+    async def evaluate(self, script: str, *_args: Any) -> Any:
+        if "__wrapperRecaptchaScriptFailed" in script:
+            return self.script_failed
         return None
-
-    async def set_content(self, content: str, **_kwargs) -> None:
-        self.content = content
 
 
 def browser_provider(**overrides: Any) -> BrowserRecaptchaProvider:
@@ -42,36 +64,44 @@ def browser_provider(**overrides: Any) -> BrowserRecaptchaProvider:
 
 
 @pytest.mark.asyncio
-async def test_browser_uses_existing_target_page_script():
-    page = FakePage("https://upstream.test/", has_grecaptcha=True)
+async def test_browser_bootstrap_uses_isolated_target_origin():
+    page = FakePage()
     await browser_provider()._load_page(page)
-    assert page.content is None
 
-
-@pytest.mark.asyncio
-async def test_browser_bootstrap_keeps_the_target_origin():
-    page = FakePage("https://upstream.test/", fail_goto=True)
-    await browser_provider()._load_page(page)
-    assert page.content is not None
-    assert "render=site-key" in page.content
+    assert page.goto_url == "https://upstream.test/"
+    assert page.url == "https://upstream.test/"
+    assert len(page.fulfillments) == 1
+    route = page.fulfillments[0]
+    assert route.status == 200
+    assert route.content_type == "text/html"
+    assert route.body is not None
+    assert "/recaptcha/api.js?render=site-key" in route.body
 
 
 @pytest.mark.asyncio
 async def test_browser_bootstrap_uses_enterprise_script_when_configured():
-    page = FakePage("https://upstream.test/", fail_goto=True)
+    page = FakePage()
     provider = browser_provider(recaptcha_version="enterprise")
     await provider._load_page(page)
-    assert page.content is not None
-    assert "/recaptcha/enterprise.js?render=site-key" in page.content
-    assert "/recaptcha/api.js" not in page.content
+
+    body = page.fulfillments[0].body
+    assert body is not None
+    assert "/recaptcha/enterprise.js?render=site-key" in body
+    assert "/recaptcha/api.js" not in body
 
 
 @pytest.mark.asyncio
-async def test_browser_does_not_generate_a_token_on_about_blank():
-    page = FakePage("about:blank", fail_goto=True)
-    with pytest.raises(RecaptchaError, match="original origin"):
+async def test_browser_script_load_failure_is_not_generic_execute_timeout():
+    page = FakePage(script_failed=True)
+    with pytest.raises(RecaptchaError, match="script failed to load"):
         await browser_provider()._load_page(page)
-    assert page.content is None
+
+
+@pytest.mark.asyncio
+async def test_browser_bootstrap_initialization_failure_is_actionable():
+    page = FakePage(fail_goto=True)
+    with pytest.raises(RecaptchaError, match="isolated reCAPTCHA page"):
+        await browser_provider()._load_page(page)
 
 
 @pytest.mark.asyncio
