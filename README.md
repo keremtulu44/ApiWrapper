@@ -49,7 +49,8 @@ make run                  # http://localhost:8000/docs
 
 | Değişken | Açıklama |
 |---|---|
-| `TARGET_DOMAIN` | Hedef servis domaini, **şemasız** (örn. `example-llm.com`) |
+| `UPSTREAM_CURL` (Render önerisi) | Tam `create-evaluation` cURL'ü; domain, yol, mode, cookie/token ve model ID'yi başlangıçta çıkarır |
+| `TARGET_DOMAIN` | `UPSTREAM_CURL` yoksa hedef servis domaini, **şemasız** (örn. `example-llm.com`) |
 | `API_KEYS` | Yerel istemcilerin kullanacağı anahtarlar (virgülle ayrılmış) |
 | `RECAPTCHA_PROVIDER=browser` + `RECAPTCHA_SITE_KEY` | Enterprise token'ını dinamik üretir; public site key örnekte hazır |
 | `config/models.yaml` | `id` ↔ `upstream_id` (`modelAId`) eşlemesi |
@@ -245,6 +246,30 @@ Fresh `.env.example` browser Enterprise CAPTCHA kullanır. Importer `browser`,
 `external` veya `noop` seçimini static'e çevirmez ve kısa ömürlü CAPTCHA token'ını
 bu kiplerde saklamaz. Eski `.env`'i tamamen yenilemek için önce yeni örneği kopyalayın.
 
+## Render'da tek secret: `UPSTREAM_CURL`
+
+Render'da ayrı ayrı `TARGET_DOMAIN`, `UPSTREAM_COOKIE`, `UPSTREAM_ACCESS_TOKEN`, yol ve
+header alanlarını doldurmak yerine aşağıdakini yapın:
+
+1. Max'te bir mesaj gönderin ve yanıtın tamamlanmasını bekleyin.
+2. DevTools → Network'te `create-evaluation` (veya kullanılan gerçek sohbet akışı)
+   POST isteğini bulup **Copy as cURL** deyin.
+3. Render → Environment'ta `UPSTREAM_CURL` secret'ına komutun tamamını yapıştırın.
+   Cookie, token veya cURL'ü sohbete, dosyaya ya da `render.yaml` içine kopyalamayın.
+4. `API_KEYS` ve CAPTCHA ayarlarını bırakın; yeni deploy/restart ile process açılırken
+   cURL ayrıştırılır.
+
+`UPSTREAM_CURL` doluysa ayrı upstream alanlarından önceliklidir. `modelAId` varsayılan
+`max` modelinin upstream kimliği olarak kullanılır; `RECAPTCHA_PROVIDER=browser` seçimi
+korunur ve cURL'deki kısa ömürlü CAPTCHA token'ı kaydedilmez. Telemetri isteği, eksik URL
+veya cookie/authorization içermeyen cURL başlangıçta güvenli bir hatayla reddedilir.
+Ham cURL loglanmaz; yalnızca uygulanan alan adları ve model bulunup bulunmadığı loglanır.
+Eski `_2`/`_3`/`_4` hesap secret'ları varsa bu tek-cURL kipinde kullanılmaması için silin;
+process ayarları sıcak yenilemediğinden env değişikliğinden sonra restart gerekir.
+
+Yerel `.env` için çok satırlı cURL'ü elle yazmak yerine yukarıdaki
+`scripts/curl_to_env.py --write --single-account` importer'ını kullanın.
+
 ## Birden çok hesabı cURL ile kaydetme
 
 Çoklu hesap gerekiyorsa Python CLI'nin varsayılan yuva davranışı kullanılabilir;
@@ -349,14 +374,43 @@ Upstream token'ı reddederse (403) dinamik sağlayıcıda cache otomatik geçers
 - Bellek içi hesap/sohbet durumu nedeniyle **tek instance ve tek worker** ile başlayın.
 - Sürekli proses gerekiyorsa sleep etmeyen bir plan seçin; bu upstream oturumunun
   yenilenmesini tek başına çözmez.
-- Güçlü bir `API_KEYS` değeri, gerçek `TARGET_DOMAIN`, model ID ve kullanılan CAPTCHA
-  kipinin gizli ayarlarını Render environment/secret alanlarına girin.
+- Güçlü bir `API_KEYS` değeri ve tam sohbet cURL'ünü `UPSTREAM_CURL` secret'ına girin;
+  domain, model ID ve upstream kimliği buradan çıkar. Kullanılan CAPTCHA kipinin ayarları
+  ayrı environment alanlarında kalır.
 - `RECAPTCHA_PROVIDER=browser` için `RECAPTCHA_SITE_KEY` gerekir. Blueprint gözlenen
   public site key'i, Enterprise modunu ve `chat_submit` action'unu hazır getirir.
   Chromium ve sistem bağımlılıkları imajda hazırdır.
 
 Dağıtım sırası, istek yaşam döngüsü, readiness hata kodları ve belirti→çözüm tablosu:
 [`docs/RENDER.md`](docs/RENDER.md).
+
+## Telegram ile ara sıra test
+
+Ek webhook veya üçüncü parti bot paketi gerekmez. `app.telegram.bot`, Telegram long
+polling ile mesajı wrapper'ın **non-streaming** `/v1/chat/completions` ucuna gönderir.
+Bot token'ı ve wrapper anahtarı yalnızca environment değişkenlerinden okunur.
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN = "<BotFather tokenı>"
+$env:WRAPPER_BASE_URL = "https://SERVICE.onrender.com"  # sonda /v1 yok
+$env:WRAPPER_API_KEY = "<API_KEYS içindeki tek anahtar>"
+$env:TELEGRAM_ALLOWED_CHAT_IDS = ""                 # ilk kurulum: wrapper kapalı
+python -m app.telegram.bot
+```
+
+Telegram'da `/start` yazın; bot chat ID'nizi gösterir. Bu ID'yi
+`TELEGRAM_ALLOWED_CHAT_IDS=123456789` olarak ayarlayıp botu yeniden başlatın. Allowlist
+boşken hiçbir mesaj wrapper'a iletilmez; allowlist dışındaki sohbetler de yok sayılır.
+Sonra normal bir metin gönderin veya `/ping` ile wrapper health kontrolünü deneyin.
+`/help` komutları listeler. Konuşma geçmişi tutulmaz; her mesaj bağımsızdır ve yanıtlar
+Telegram sınırına göre parçalanır.
+
+Bot normal (non-streaming) yolu test eder; SSE/stream regresyonu için ayrıca
+`scripts/test_client.py --model max` çalıştırın. 429 yanıtı upstream rate limit olarak
+görünür; restart veya cookie yenileme çözümü değildir. Botu 7/24 çalıştırmak isterseniz
+aynı Docker imajıyla Render Background Worker kullanıp start command olarak
+`python -m app.telegram.bot` verin; worker'a yalnız Telegram/wrapper env alanlarını ekleyin.
+Gerçek Telegram ve Render testleri bu ortamda token/secret olmadan çalıştırılmaz.
 
 ---
 
@@ -373,7 +427,7 @@ make docker   # docker compose up --build
 - `GET /healthz` → basit liveness; `GET /readyz` → statik dağıtım readiness
 - Streaming başarı/hatası `stream_completed`/`stream_failed` JSON loglarında ayrılır;
   HTTP 200 ile başlayan SSE içindeki upstream hatası `test_client.py` çıktısında kod ve
-  mesajıyla gösterilir. Ayrıntı: [`docs/RENDER.md`](docs/RENDER.md#7-json-logları-ve-sse-hata-ayıklama)
+  mesajıyla gösterilir. Ayrıntı: [`docs/RENDER.md`](docs/RENDER.md#8-json-logları-ve-sse-hata-ayıklama)
 - `GET /metrics` → Prometheus (`apiwrapper_time_to_first_token_seconds` dahil)
 - `POST /v1/admin/breaker/reset`, `/v1/admin/recaptcha/invalidate`, `/v1/admin/sessions/clear`
 - `GET /v1/admin/config` → hassas olmayan etkin yapılandırma

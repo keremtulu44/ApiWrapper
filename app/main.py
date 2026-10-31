@@ -26,6 +26,7 @@ from app.services.model_registry import ModelEntry, ModelRegistry
 from app.services.recaptcha import create_recaptcha_provider
 from app.services.session_manager import SessionManager
 from app.upstream.client import UpstreamClient
+from app.upstream.curl_runtime import apply_upstream_curl
 
 logger = get_logger(__name__)
 
@@ -86,6 +87,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     sessions = SessionManager(settings, warmup=upstream.warmup)
     registry = _load_registry(settings)
+    if model_id := app.state.upstream_curl_model_id:
+        entry = registry.resolve(None)
+        entry.upstream_id = model_id
+        logger.info("upstream_curl_model_loaded", model=entry.id)
     accounts = build_account_pool(settings)
 
     app.state.upstream = upstream
@@ -124,6 +129,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Uygulamayı oluşturur (testler kendi Settings'ini geçebilir)."""
     settings = settings or get_settings()
+    settings, upstream_curl_model_id = apply_upstream_curl(settings)
     configure_logging(settings.log_level, settings.log_json)
 
     app = FastAPI(
@@ -137,6 +143,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         openapi_url="/openapi.json",
     )
     app.state.settings = settings
+    app.state.upstream_curl_model_id = upstream_curl_model_id
 
     # Middleware sırası: son eklenen en dışta çalışır.
     app.add_middleware(RateLimitMiddleware, settings=settings)

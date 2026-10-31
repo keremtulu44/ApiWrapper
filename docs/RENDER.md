@@ -11,7 +11,8 @@ edebilmektir.
 3. Render bir `PORT` verir. Container komutu bu portu kullanır; elle `PORT` yazmayın.
 4. Uvicorn **tek worker** ile açılır.
 5. FastAPI lifespan sırasıyla upstream client'ını, CAPTCHA sağlayıcısını, oturum
-   yöneticisini, model kaydını ve hesap havuzunu kurar.
+   yöneticisini, model kaydını ve hesap havuzunu kurar. `UPSTREAM_CURL` doluysa önce
+   cURL ayrıştırılır; cURL'deki `modelAId` varsayılan modelin upstream kimliğini ezer.
 6. `/healthz` process'in cevap verdiğini, `/readyz` temel dağıtım ayarlarının tamam
    olduğunu bildirir.
 7. Render blueprint'i healthcheck olarak `/readyz` kullanır. Eksik ayarlar varsa
@@ -53,7 +54,9 @@ kotaları, cookie jar'lar, öğrenilen limitler ve sohbetler bellek içindedir.
   `REPLACE_WITH_...` bırakılırsa `/readyz` servisi hazır kabul etmez.
 - Render'da sleep etmeyen plan kullanılmalı. Blueprint bunu `starter` olarak tanımlar.
 - Güçlü, varsayılandan farklı bir `API_KEYS` değeri seçilmeli.
-- `TARGET_DOMAIN` şemasız yazılmalı: `upstream.example.com`, `https://` olmadan.
+- `UPSTREAM_CURL` için Max'teki tamamlanmış `create-evaluation` POST isteğinin tamamı
+  kullanılmalı; telemetri, RUM, analytics veya yarım kopyalanmış istek kullanılmamalı.
+  cURL'deki URL'nin şeması olabilir; wrapper hedef domain'i kendisi çıkarır.
 - Gözlenen CAPTCHA için `RECAPTCHA_VERSION=enterprise` ve
   `RECAPTCHA_ACTION=chat_submit` kullanılır. Public site key blueprint'tedir;
   CAPTCHA token'ı, Google cookie'si veya protobuf `/reload` gövdesi girilmez.
@@ -61,16 +64,25 @@ kotaları, cookie jar'lar, öğrenilen limitler ve sohbetler bellek içindedir.
 ### Blueprint ile
 
 1. Render'da **New → Blueprint** seçin ve bu depoyu bağlayın.
-2. `render.yaml` algılandığında istenen environment değerlerini girin.
-3. Blueprint sonrası ikinci+ hesapları veya hedefe özel diğer ayarları Render
-   Environment ekranından ekleyin.
-4. Deploy loglarında Chromium kurulumu ve application startup aşamalarını izleyin.
-5. Aşağıdaki kontrolleri yapın.
+2. `API_KEYS` için güçlü, varsayılandan farklı bir değer girin.
+3. `UPSTREAM_CURL` secret'ına Max'teki tamamlanmış `create-evaluation` isteğinin normal
+   cURL'ünü yapıştırın. Bunu sohbete, README'ye, `render.yaml` dosyasına veya loglara
+   kopyalamayın. Eski ayrı `TARGET_DOMAIN`/`UPSTREAM_COOKIE`/token alanları bırakılırsa
+   bile dolu `UPSTREAM_CURL` önceliklidir; tek hesap için eski `_2`/`_3`/`_4` değerlerini
+   silmek en temiz seçenektir.
+4. `RECAPTCHA_PROVIDER=browser`, public site key, Enterprise sürümü ve action blueprint'te
+   hazırdır. cURL'deki kısa ömürlü CAPTCHA token'ı bu seçimi static'e çevirmez.
+5. Deploy loglarında Chromium kurulumu ve application startup aşamalarını izleyin.
+   `upstream_curl_loaded` yalnız uygulanan alan adlarını ve model bulunup bulunmadığını
+   gösterir; ham cURL veya secret taşımaz.
+6. Aşağıdaki kontrolleri yapın.
 
 Blueprint secret değerleri depoda tutmaz; `sync: false` alanları Render tarafından
-istenir. `UPSTREAM_ACCESS_TOKEN` doğrudan token kullanılmayacaksa boş bırakılabilir.
-`UPSTREAM_AUTH_FROM_COOKIE` varsayılan olarak `false` kalır; hedefin gerçekten
-Authorization başlığı istediği biliniyorsa ayrıca `true` yapılır.
+istenir. cURL'den domain, akış yolu, mode, referer, kullanıcı ajanı, ek header'lar,
+cookie/authorization ve `modelAId` çıkarılır. `UPSTREAM_CURL` değiştirilirse mevcut
+process dosyayı/env'i sıcak okumaz; Render'da yeni deploy veya restart gerekir. Yanlış
+telemetri cURL'ü, URL'si çıkarılamayan cURL ve cookie/authorization içermeyen cURL
+başlangıçta reddedilir; hata metni ham secret'ı içermez.
 
 ### İlk kontroller
 
@@ -115,7 +127,7 @@ Bu ayrım, geçici upstream arızalarının Render restart döngüsü oluşturma
 | Belirti | Olası aşama | İlk kontrol |
 |---|---|---|
 | Render hiç active olmuyor | Build veya `/readyz` | Deploy logu ve readiness `issues` |
-| `/healthz` 200, completion 404 | Model veya stream path | Model adı ve `UPSTREAM_STREAM_PATH` |
+| `/healthz` 200, completion 404 | Model veya stream path | Model adı; `UPSTREAM_CURL` içindeki gerçek akış yolu |
 | Completion 401/502 `upstream_unauthorized` | Upstream kimliği | `/v1/admin/auth?slot=N`, cookie/token |
 | Completion 403/503 CAPTCHA | CAPTCHA kipi/site key/origin | Provider, site key, browser logları |
 | Upstream 404 | Hedef yol değişmiş | Gerçek istek yolu; yönlendirme logu |
@@ -133,7 +145,35 @@ curl -H "Authorization: Bearer $API_KEY" \
      https://SERVICE.onrender.com/v1/admin/auth?slot=2
 ```
 
-## 6. 7/24 çalışma sınırları
+## 6. Telegram ile ara sıra istek testi
+
+Bot ayrı webhook altyapısı istemez; Telegram `getUpdates` long polling kullanır ve
+mesajı wrapper'ın non-streaming `/v1/chat/completions` ucuna gönderir. Önce yerel olarak
+veya ayrı bir Render Background Worker'da çalıştırın:
+
+```powershell
+$env:TELEGRAM_BOT_TOKEN = "<BotFather tokenı>"
+$env:WRAPPER_BASE_URL = "https://SERVICE.onrender.com"  # kök URL, /v1 ekleme
+$env:WRAPPER_API_KEY = "<API_KEYS içindeki tek anahtar>"
+$env:TELEGRAM_ALLOWED_CHAT_IDS = ""
+python -m app.telegram.bot
+```
+
+1. Telegram'da bota `/start` gönderin. Allowlist boşken bot yalnızca chat ID'yi gösterir;
+   wrapper'a istek atmaz.
+2. Gelen ID'yi `TELEGRAM_ALLOWED_CHAT_IDS` değerine yazıp botu yeniden başlatın.
+3. `/ping` wrapper `/healthz` kontrolünü, normal metin gerçek non-streaming tamamlamayı
+   test eder. `/help` kullanım bilgisini gösterir.
+
+7/24 bot için Render'da aynı depo/imajla **Background Worker** oluşturun ve start command
+olarak `python -m app.telegram.bot` verin. Worker'a yalnız yukarıdaki dört env alanını
+ekleyin; `UPSTREAM_CURL` web servisinde kalır. Wrapper URL'si public servisin kök URL'si
+olabilir. Bot token'ı ve wrapper API key'i hiçbir zaman Telegram mesajına veya depoya
+yazılmaz. Bot tek turluktur, konuşma geçmişi tutmaz; stream testi için `test_client.py`
+kullanılır. Gerçek Telegram/Render bağlantısı secret'lar olmadan bu geliştirme ortamında
+canlı doğrulanmamıştır.
+
+## 7. 7/24 çalışma sınırları
 
 - Render'ın aktif kalması, upstream oturumunun sonsuza kadar geçerli olması demek değildir.
 - Gerçek refresh HTTP sözleşmesi henüz uygulanmamıştır. `refresh_token` ayrıştırma ve
@@ -150,7 +190,7 @@ curl -H "Authorization: Bearer $API_KEY" \
   yazılmaz; ilk canlı test bu alan olmadan yapılır. Upstream zorunlu tutarsa istemci
   JS'sindeki gerçek üretim yöntemi ayrıca eklenmelidir.
 
-## 7. JSON logları ve SSE hata ayıklama
+## 8. JSON logları ve SSE hata ayıklama
 
 Render loglarında her isteğin `request_id` değeri ortaktır. Tamamlama yaşam döngüsü
 artık yalnızca HTTP erişim loguna bağlı değildir:

@@ -10,17 +10,21 @@ gönderdiğimiz isteğin tarayıcınınkiyle örtüşüp örtüşmediğini gör�
 
 from __future__ import annotations
 
-import json
-import re
 import sys
 from pathlib import Path
-from typing import Any
 from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.config import Settings  # noqa: E402
+from app.upstream.curl_import import (  # noqa: E402
+    load_body,
+    normalize_curl,
+    parse_curl,
+)
 from app.upstream.headers import build_stream_headers  # noqa: E402
+
+__all__ = ["load_body", "normalize_curl", "parse_curl"]
 
 GREEN, RED, YELLOW, DIM, RESET = (
     "\033[32m",
@@ -32,105 +36,6 @@ GREEN, RED, YELLOW, DIM, RESET = (
 
 #: Karşılaştırmada yok sayılacak başlıklar (bağlantıya/istemciye özgü).
 IGNORED_HEADERS = {"content-length", "host", "connection", "accept-encoding"}
-
-
-def normalize_curl(raw: str) -> str:
-    """Windows (`^`) ve bash (`\\`) satır devamı kaçışlarını temizler."""
-    text = raw.strip()
-    # Windows cmd: ^" -> "  ve satır sonundaki ^
-    text = re.sub(r"\^\s*\n", " ", text)
-    text = text.replace('^"', '"').replace("^%", "%").replace("^^", "^")
-    # bash: satır sonu \
-    text = re.sub(r"\\\s*\n", " ", text)
-    # PowerShell: satır sonu `
-    text = re.sub(r"`\s*\n", " ", text)
-    return " ".join(text.split())
-
-
-def _split_top_level(text: str) -> list[tuple[str, str]]:
-    """`-H "..."`, `-b "..."`, `--data-raw "..."` çiftlerini sırayla çıkarır.
-
-    `shlex` bitişik tırnaklı parçaları birleştirip JSON gövdesini bozduğu için
-    tırnak eşleştirmesi elle yapılır.
-    """
-    pairs: list[tuple[str, str]] = []
-    pattern = re.compile(
-        r"(--data-raw|--data-binary|--data|--header|--url|--cookie|-H|-d|-b)\s+"
-    )
-    pos = 0
-    while True:
-        match = pattern.search(text, pos)
-        if not match:
-            break
-        flag = match.group(1)
-        start = match.end()
-        if start < len(text) and text[start] in "\"'":
-            quote = text[start]
-            end = start + 1
-            buf: list[str] = []
-            while end < len(text):
-                if text[end] == "\\" and end + 1 < len(text):
-                    buf.append(text[end + 1])
-                    end += 2
-                    continue
-                if text[end] == quote:
-                    # Bitişik aynı tırnak: JSON içi tırnak olabilir, ileriye bak.
-                    nxt = end + 1
-                    while nxt < len(text) and text[nxt] == " ":
-                        nxt += 1
-                    if nxt >= len(text) or text[nxt] in "-\n" or text[nxt:nxt + 2] == "--":
-                        break
-                    buf.append(text[end])
-                    end += 1
-                    continue
-                buf.append(text[end])
-                end += 1
-            value = "".join(buf)
-            pos = end + 1
-        else:
-            end = text.find(" ", start)
-            end = len(text) if end == -1 else end
-            value = text[start:end]
-            pos = end
-        pairs.append((flag, value))
-    return pairs
-
-
-def parse_curl(raw: str) -> dict[str, Any]:
-    """cURL komutundan url, başlıklar, çerezler ve gövdeyi çıkarır."""
-    text = normalize_curl(raw)
-
-    url = ""
-    headers: dict[str, str] = {}
-    cookie = ""
-    body = ""
-
-    for flag, value in _split_top_level(text):
-        if flag in ("-H", "--header"):
-            name, _, header_value = value.partition(":")
-            headers[name.strip().lower()] = header_value.strip()
-        elif flag in ("-b", "--cookie"):
-            cookie = value
-        elif flag in ("--data-raw", "--data", "-d", "--data-binary"):
-            body = value
-        elif flag == "--url":
-            url = value
-
-    if not url:
-        found = re.search(r"https?://[^\s\"']+", text)
-        if found:
-            url = found.group(0)
-    if cookie:
-        headers["cookie"] = cookie
-    return {"url": url, "headers": headers, "body": body}
-
-
-def load_body(raw: str) -> dict[str, Any]:
-    try:
-        parsed = json.loads(raw)
-        return parsed if isinstance(parsed, dict) else {}
-    except json.JSONDecodeError:
-        return {}
 
 
 def main() -> int:

@@ -102,15 +102,19 @@ def test_render_blueprint_is_single_instance_always_on_and_secret_free():
     assert service["dockerfilePath"] == "./Dockerfile"
 
     env = {item["key"]: item for item in service["envVars"]}
-    for key in ("API_KEYS", "TARGET_DOMAIN", "UPSTREAM_COOKIE", "UPSTREAM_ACCESS_TOKEN"):
+    for key in ("API_KEYS", "UPSTREAM_CURL"):
         assert env[key]["sync"] is False
         assert "value" not in env[key]
     assert env["AUTH_DISABLED"]["value"] == "false"
-    assert env["UPSTREAM_STREAM_PATH"]["value"] == "/nextjs-api/stream/create-evaluation"
-    assert env["UPSTREAM_REFERER_PATH"]["value"] == "/text/direct"
-    assert env["UPSTREAM_MODE"]["value"] == "direct-battle"
-    assert env["UPSTREAM_AUTH_FROM_COOKIE"]["value"] == "false"
-    assert env["UPSTREAM_EXTRA_HEADERS"]["sync"] is False
+    # Upstream parmak izi tek secret cURL'den çıkar; Blueprint ayrı ve birbiriyle
+    # eskiyebilecek domain/cookie/yol alanları istemez.
+    assert not {
+        "TARGET_DOMAIN",
+        "UPSTREAM_COOKIE",
+        "UPSTREAM_ACCESS_TOKEN",
+        "UPSTREAM_STREAM_PATH",
+        "UPSTREAM_EXTRA_HEADERS",
+    } & env.keys()
     assert env["RECAPTCHA_PROVIDER"]["value"] == "browser"
     # Site key public'tir; gerçek cookie/token değerleri sync:false kalır.
     assert env["RECAPTCHA_SITE_KEY"]["value"] == "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0"

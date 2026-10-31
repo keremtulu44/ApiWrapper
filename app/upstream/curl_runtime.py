@@ -1,0 +1,114 @@
+"""Secret ``UPSTREAM_CURL`` değerini uygulama ayarlarına güvenle uygular."""
+
+from __future__ import annotations
+
+from app.core.config import MAX_ACCOUNT_SLOTS, Settings
+from app.core.logging import get_logger
+from app.upstream.curl_import import build_settings, parse_curl
+
+logger = get_logger(__name__)
+
+# cURL importer'ın ürettiği alanların Settings karşılıkları. Bu liste bilinçli
+# olarak allowlist'tir: cURL'den API_KEYS, RECAPTCHA_BROWSER_URL veya başka bir
+# yerel çalışma ayarı ezilemez.
+_CURL_FIELDS: dict[str, str] = {
+    "TARGET_DOMAIN": "target_domain",
+    "UPSTREAM_STREAM_PATH": "upstream_stream_path",
+    "UPSTREAM_MODE": "upstream_mode",
+    "UPSTREAM_RECAPTCHA_FIELD": "upstream_recaptcha_field",
+    "UPSTREAM_ACCEPT_LANGUAGE": "upstream_accept_language",
+    "UPSTREAM_USER_AGENT": "upstream_user_agent",
+    "UPSTREAM_EXTRA_HEADERS": "upstream_extra_headers",
+    "UPSTREAM_REFERER_PATH": "upstream_referer_path",
+    "UPSTREAM_COOKIE": "upstream_cookie",
+    "UPSTREAM_AUTH_FROM_COOKIE": "upstream_auth_from_cookie",
+    "UPSTREAM_ACCESS_TOKEN": "upstream_access_token",
+    "UPSTREAM_AUTH_SCHEME": "upstream_auth_scheme",
+    "RECAPTCHA_PROVIDER": "recaptcha_provider",
+    "RECAPTCHA_STATIC_TOKEN": "recaptcha_static_token",
+}
+
+
+def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
+    """Ham cURL varsa onu mevcut upstream alanlarının üzerine uygular.
+
+    Dönüşteki ikinci değer cURL gövdesindeki ``modelAId``'dir; uygulama yaşam
+    döngüsü bunu varsayılan modelin upstream kimliği olarak kullanır. cURL yoksa
+    nesne olduğu gibi döner. Secret değerler hata metinlerine ve loglara eklenmez.
+    """
+    raw = settings.upstream_curl.strip()
+    if not raw:
+        return settings, None
+
+    parsed = parse_curl(raw)
+    # browser/external/noop seçimi Render'da ayrı bir ayardır. cURL'deki kısa
+    # ömürlü token bu seçimi static'e geri döndürmemeli.
+    env, warnings, model_id = build_settings(
+        parsed,
+        existing={"RECAPTCHA_PROVIDER": settings.recaptcha_provider},
+    )
+
+    critical = [item for item in warnings if item.startswith("KRİTİK")]
+    if critical:
+        raise ValueError(
+            "UPSTREAM_CURL bir telemetri/analitik isteği görünüyor. "
+            "Network'te create-evaluation veya post-to-evaluation isteğini kopyalayın."
+        )
+    if not env.get("TARGET_DOMAIN") or not env.get("UPSTREAM_STREAM_PATH"):
+        raise ValueError(
+            "UPSTREAM_CURL içinden hedef URL ve akış yolu çıkarılamadı; "
+            "tam create-evaluation cURL'ünü yapıştırın."
+        )
+    if not env.get("UPSTREAM_COOKIE") and not env.get("UPSTREAM_ACCESS_TOKEN"):
+        raise ValueError(
+            "UPSTREAM_CURL içinde cookie veya authorization başlığı yok; "
+            "siteye giriş yapmışken tamamlanmış sohbet isteğini kopyalayın."
+        )
+
+    updates = {
+        field: env[key]
+        for key, field in _CURL_FIELDS.items()
+        if key in env
+    }
+    # İsteğe bağlı alanlar cURL'de yoksa önceki secret/env'den özel değer
+    # taşıma; sınıfın güvenli varsayılanına dön. Özellikle eski statik CAPTCHA
+    # token'ının yeni oturumda kullanılmasını önler.
+    for key in (
+        "UPSTREAM_MODE",
+        "UPSTREAM_RECAPTCHA_FIELD",
+        "UPSTREAM_ACCEPT_LANGUAGE",
+        "UPSTREAM_USER_AGENT",
+        "UPSTREAM_REFERER_PATH",
+        "RECAPTCHA_STATIC_TOKEN",
+    ):
+        if key not in env:
+            field = _CURL_FIELDS[key]
+            default = Settings.model_fields[field].default
+            updates[field] = default if isinstance(default, str) else ""
+    # Bu secret tek-hesap Max kurulumunun tam anlık görüntüsüdür. Render'da
+    # unutulmuş eski yuvalar yeni cURL hesabıyla karışıp kota/sohbet davranışını
+    # değiştirmesin; ikinci+ hesap kimliklerini etkisizleştir.
+    for slot in range(2, MAX_ACCOUNT_SLOTS + 1):
+        for prefix in (
+            "upstream_cookie",
+            "upstream_access_token",
+            "target_domain",
+            "recaptcha_static_token",
+        ):
+            updates[f"{prefix}_{slot}"] = ""
+        updates[f"upstream_account_{slot}_name"] = ""
+    # model_copy(update=...) doğrulama yapmaz; "false" metnini bool alana
+    # string olarak bırakıp truthy davranmasını önlemek için Settings'i yeniden
+    # doğruluyoruz. Mevcut tüm yerel ayarlar korunur, yalnız allowlist ezilir.
+    merged = settings.model_dump()
+    merged.update(updates)
+    updated = Settings(**merged)
+
+    for item in warnings:
+        logger.warning("upstream_curl_warning", detail=item)
+    logger.info(
+        "upstream_curl_loaded",
+        fields=sorted(updates),
+        model_id_detected=bool(model_id),
+    )
+    return updated, model_id.strip() if isinstance(model_id, str) else None

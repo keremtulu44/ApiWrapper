@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     cors_allow_credentials: bool = False
 
     # -------------------------------------------------------------- upstream
+    #: Tarayıcıdan kopyalanan tam cURL. Render gibi ortamlarda secret olarak
+    #: verilir; doluysa aşağıdaki ayrı upstream alanlarının yerine başlangıçta
+    #: ayrıştırılır. Ham değer loglanmaz veya diske yazılmaz.
+    upstream_curl: str = ""
     #: Örn. "example-llm.com" (şemasız!). Zorunlu alan.
     target_domain: str = "localhost"
     upstream_scheme: Literal["https", "http"] = "https"

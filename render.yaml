@@ -14,27 +14,10 @@ services:
     envVars:
       - key: API_KEYS
         sync: false
-      - key: TARGET_DOMAIN
-        sync: false
-      - key: UPSTREAM_STREAM_PATH
-        value: /nextjs-api/stream/create-evaluation
-      - key: UPSTREAM_REFERER_PATH
-        value: /text/direct
-      - key: UPSTREAM_MODE
-        value: direct-battle
-      - key: UPSTREAM_ACCEPT_LANGUAGE
-        value: tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7
-      - key: UPSTREAM_USER_AGENT
-        value: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0
-      - key: UPSTREAM_COOKIE
-        sync: false
-      - key: UPSTREAM_ACCESS_TOKEN
-        sync: false
-      - key: UPSTREAM_AUTH_FROM_COOKIE
-        value: "false"
-      # Örn. dnt=1;x-arena-web-deployment=...;x-deployment-id=...
-      # Deployment değerleri sabit kabul edilmez; güncel cURL'den alınır.
-      - key: UPSTREAM_EXTRA_HEADERS
+      # Network'teki tamamlanmış create-evaluation isteğini normal cURL olarak
+      # yapıştırın. Domain, yol, mode, cookie/token ve tarayıcı header'ları
+      # başlangıçta bundan çıkarılır; ham değer loglanmaz.
+      - key: UPSTREAM_CURL
         sync: false
       - key: LOG_LEVEL
         value: INFO
