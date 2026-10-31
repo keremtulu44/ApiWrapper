@@ -13,6 +13,7 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.metrics import metrics
 from app.services.account import Account
+from app.upstream.auth import parse_cookie_header
 from app.upstream.breaker import CircuitBreaker
 from app.upstream.exceptions import (
     CircuitOpen,
@@ -65,45 +66,66 @@ class UpstreamClient:
         )
         self._semaphore = asyncio.Semaphore(max(1, settings.max_concurrent_upstream))
         self._client: httpx.AsyncClient | None = None
+        # Cookie jar ve bağlantı havuzu hesaplar arasında paylaşılmaz. Ortak jar,
+        # bir hesabın Set-Cookie cevabını başka hesabın isteğine sızdırıyordu.
+        self._account_clients: dict[int, httpx.AsyncClient] = {}
 
     # ----------------------------------------------------------- lifecycle
     async def startup(self) -> None:
         if self._client is not None:
             return
-        timeout = httpx.Timeout(
-            connect=self.settings.connect_timeout,
-            read=self.settings.read_timeout,
-            write=self.settings.write_timeout,
-            pool=self.settings.pool_timeout,
-        )
-        limits = httpx.Limits(
-            max_connections=self.settings.max_connections,
-            max_keepalive_connections=self.settings.max_keepalive_connections,
-            keepalive_expiry=30.0,
-        )
-        kwargs: dict[str, object] = {
-            "timeout": timeout,
-            "limits": limits,
-            # Stream POST'unda yönlendirme takip edilmez (aşağıda send() override).
-            # 301/302 POST→GET'e dönüşüp gövdeyi düşürür ve sahte 404 üretir.
-            "follow_redirects": True,
-            "verify": self.settings.upstream_verify_tls,
-            "trust_env": False,
-        }
-        if self.settings.upstream_proxy:
-            kwargs["proxy"] = self.settings.upstream_proxy
-        try:
-            self._client = httpx.AsyncClient(http2=self.settings.upstream_http2, **kwargs)
-        except ImportError:  # h2 kurulu değilse HTTP/1.1'e düş
-            logger.warning("http2_unavailable_fallback_http11")
-            self._client = httpx.AsyncClient(http2=False, **kwargs)
+        self._client = self._build_client(self.settings)
         logger.info("upstream_client_started", base_url=self.settings.base_url)
 
+    def _build_client(self, settings: Settings) -> httpx.AsyncClient:
+        timeout = httpx.Timeout(
+            connect=settings.connect_timeout,
+            read=settings.read_timeout,
+            write=settings.write_timeout,
+            pool=settings.pool_timeout,
+        )
+        limits = httpx.Limits(
+            max_connections=settings.max_connections,
+            max_keepalive_connections=settings.max_keepalive_connections,
+            keepalive_expiry=30.0,
+        )
+
+        def create(http2: bool) -> httpx.AsyncClient:
+            return httpx.AsyncClient(
+                http2=http2,
+                timeout=timeout,
+                limits=limits,
+                # Stream POST'unda yönlendirme takip edilmez (send() override).
+                # 301/302 POST→GET'e dönüşüp gövdeyi düşürür ve sahte 404 üretir.
+                follow_redirects=True,
+                verify=settings.upstream_verify_tls,
+                trust_env=False,
+                proxy=settings.upstream_proxy,
+            )
+
+        try:
+            client = create(settings.upstream_http2)
+        except ImportError:  # h2 kurulu değilse HTTP/1.1'e düş
+            logger.warning("http2_unavailable_fallback_http11")
+            client = create(False)
+
+        # Başlangıç cookie'si hesabın kendi jar'ına yazılır. İsteklere ayrıca ham
+        # Cookie başlığı eklemek httpx jar birleştirmesini bastırır ve warm-up /
+        # refresh sonrası gelen Set-Cookie değerlerinin kullanılmasını engeller.
+        for name, value in parse_cookie_header(settings.upstream_cookie).items():
+            client.cookies.set(name, value, domain=settings.target_domain, path="/")
+        return client
+
     async def shutdown(self) -> None:
+        clients = list(self._account_clients.values())
         if self._client is not None:
-            await self._client.aclose()
-            self._client = None
-            logger.info("upstream_client_closed")
+            clients.append(self._client)
+        self._account_clients.clear()
+        self._client = None
+        for client in clients:
+            await client.aclose()
+        if clients:
+            logger.info("upstream_client_closed", count=len(clients))
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -111,17 +133,55 @@ class UpstreamClient:
             raise RuntimeError("UpstreamClient is not started. Call startup() first.")
         return self._client
 
+    def _client_for(self, account: Account | None) -> httpx.AsyncClient:
+        """Hesaba özel client/cookie jar döndürür; ilk çağrıda tembel kurulur."""
+        if account is None:
+            return self.client
+        # startup() kontrolü hem global client'ın hazır olmasını sağlar hem de
+        # kapanmış client'a yeni hesap client'ı eklenmesini engeller.
+        if self._client is None:
+            raise RuntimeError("UpstreamClient is not started. Call startup() first.")
+        client = self._account_clients.get(account.slot)
+        if client is None:
+            client = self._build_client(account.effective_settings(self.settings))
+            self._account_clients[account.slot] = client
+            logger.debug("upstream_account_client_started", account=account.label)
+        return client
+
     # ------------------------------------------------------------- helpers
-    async def warmup(self, chat_id: str) -> None:
-        """Sohbet sayfasını GET ederek çerezleri toplar. Hatalar yutulur."""
-        url = self.settings.referer_url(chat_id)
+    @staticmethod
+    def _raw_cookie_header_required(settings: Settings) -> bool:
+        """Standart dışı/opak eski COOKIE değerlerini geriye uyumlu taşı.
+
+        `ad=değer` çerezleri jar'a yüklenir ve dinamik Set-Cookie ile birleşir.
+        Eşittir işareti olmayan ham değerler jar'da temsil edilemez; bunlar eski
+        davranıştaki gibi doğrudan Cookie başlığı olarak gönderilir.
+        """
+        return bool(settings.upstream_cookie.strip()) and not parse_cookie_header(
+            settings.upstream_cookie
+        )
+
+    async def warmup(self, chat_id: str, account: Account | None = None) -> None:
+        """Sohbet sayfasını seçilen hesabın kimliği ve cookie jar'ı ile ısıtır."""
+        request_settings = (
+            account.effective_settings(self.settings) if account else self.settings
+        )
+        url = request_settings.referer_url(chat_id)
         try:
-            response = await self.client.get(
+            response = await self._client_for(account).get(
                 url,
-                headers=build_page_headers(self.settings),
-                timeout=httpx.Timeout(self.settings.connect_timeout + 10.0),
+                headers=build_page_headers(
+                    request_settings,
+                    include_cookie=self._raw_cookie_header_required(request_settings),
+                ),
+                timeout=httpx.Timeout(request_settings.connect_timeout + 10.0),
             )
-            logger.debug("upstream_warmup", status=response.status_code, chat_id=chat_id)
+            logger.debug(
+                "upstream_warmup",
+                status=response.status_code,
+                chat_id=chat_id,
+                account=account.label if account else None,
+            )
         except Exception as exc:  # pragma: no cover - ısıtma kritik değil
             logger.debug("upstream_warmup_failed", error=str(exc))
 
@@ -165,6 +225,36 @@ class UpstreamClient:
 
     # ------------------------------------------------------------- request
     @asynccontextmanager
+    async def _total_deadline(self, settings: Settings, url: str) -> AsyncIterator[None]:
+        """Retry/backoff dahil upstream çağrısına tek bir toplam süre sınırı koy."""
+        task = asyncio.current_task()
+        if task is None:  # pragma: no cover - async bağlamda her zaman bir task vardır
+            yield
+            return
+        expired = False
+
+        def expire() -> None:
+            nonlocal expired
+            expired = True
+            task.cancel()
+
+        # asyncio.timeout yalnız Python 3.11+; proje 3.10'u da destekler.
+        handle = asyncio.get_running_loop().call_later(
+            max(0.001, settings.total_request_timeout), expire
+        )
+        try:
+            yield
+        except asyncio.CancelledError as exc:
+            if not expired:
+                raise
+            raise UpstreamTimeout(
+                f"Upstream exceeded total request timeout ({settings.total_request_timeout}s).",
+                url=url,
+            ) from exc
+        finally:
+            handle.cancel()
+
+    @asynccontextmanager
     async def stream_completion(
         self, chat_id: str, payload: dict[str, object], account: Account | None = None
     ) -> AsyncIterator[AsyncIterator[bytes]]:
@@ -184,22 +274,27 @@ class UpstreamClient:
             account.effective_settings(self.settings) if account else self.settings
         )
         url = request_settings.stream_url(chat_id)
-        headers = build_stream_headers(request_settings, chat_id)
+        headers = build_stream_headers(
+            request_settings,
+            chat_id,
+            include_cookie=self._raw_cookie_header_required(request_settings),
+        )
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        client = self._client_for(account)
 
         last_error: Exception | None = None
         attempts = max(1, self.settings.retry_max_attempts)
 
-        async with self._semaphore:
+        async with self._total_deadline(request_settings, url), self._semaphore:
             for attempt in range(attempts):
                 metrics.inc("apiwrapper_upstream_requests_total")
-                request = self.client.build_request(
+                request = client.build_request(
                     "POST", url, headers=headers, content=body
                 )
                 response: httpx.Response | None = None
                 try:
                     # POST gövdesini 301/302 ile GET'e çevirmemek için yönlendirme kapalı.
-                    response = await self.client.send(
+                    response = await client.send(
                         request, stream=True, follow_redirects=False
                     )
                 except httpx.TimeoutException as exc:

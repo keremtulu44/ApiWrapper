@@ -18,6 +18,7 @@ from app.upstream.auth import (
     DEFAULT_COOKIE_HINTS,
     NEVER_TOKEN_COOKIES,
     extract_access_token,
+    extract_refresh_token,
     looks_like_jwt,
     parse_cookie_header,
     token_seconds_remaining,
@@ -145,30 +146,50 @@ async def effective_config(request: Request) -> dict[str, Any]:
 
 
 @router.get("/auth", summary="Diagnose upstream credential extraction")
-async def auth_diagnostics(request: Request) -> dict[str, Any]:
-    """Cookie'den `access_token` ayıklamasının sonucunu **token'ı ifşa etmeden** gösterir.
+async def auth_diagnostics(
+    request: Request,
+    slot: int | None = None,
+    accounts: AccountPool = Depends(get_accounts),
+) -> dict[str, Any]:
+    """Seçilen hesabın token ayıklamasını **gizli değerleri açmadan** gösterir.
 
     401 sorunlarını teşhis etmek için: token bulundu mu, hangi çerezler mevcut,
-    JWT mi, ne zaman doluyor?
+    JWT mi, ne zaman doluyor? İkinci+ hesap için ``?slot=2`` kullanılabilir.
     """
     settings = request.app.state.settings
+    account = accounts.get(slot) if slot is not None else None
+    if slot is not None and account is None:
+        raise InvalidRequestError(f"No account in slot {slot}.", param="slot")
+    if account is not None:
+        settings = account.effective_settings(settings)
     cookies = parse_cookie_header(settings.upstream_cookie)
     token = extract_access_token(
         settings.upstream_cookie, cookie_names=settings.upstream_token_cookie_names
     ) if settings.upstream_auth_from_cookie else None
     effective = settings.upstream_access_token.strip() or token
+    refresh_token = extract_refresh_token(
+        settings.upstream_cookie, cookie_names=settings.upstream_token_cookie_names
+    )
     header_value = build_authorization(settings)
 
     remaining = token_seconds_remaining(effective) if effective else None
+    suffix = f"_{slot}" if slot is not None and slot > 1 else ""
     return {
+        "slot": slot,
+        "account": account.label if account is not None else None,
         "authorization_header_will_be_sent": bool(header_value),
         "auth_scheme": settings.upstream_auth_scheme,
         "source": (
-            "UPSTREAM_ACCESS_TOKEN"
+            f"UPSTREAM_ACCESS_TOKEN{suffix}"
             if settings.upstream_access_token.strip()
             else ("cookie" if token else None)
         ),
         "extract_from_cookie_enabled": settings.upstream_auth_from_cookie,
+        "refresh_token": {
+            "found": bool(refresh_token),
+            "masked": mask_value(refresh_token) if refresh_token else None,
+            "length": len(refresh_token) if refresh_token else 0,
+        },
         "configured_cookie_names": settings.upstream_token_cookie_names,
         "cookie_names_present": sorted(cookies),
         "cookie_count": len(cookies),

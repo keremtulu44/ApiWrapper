@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.main import create_app
 from app.services.account import Account, AccountPool, load_accounts
 from app.services.session_manager import SessionManager
+from app.upstream.auth import parse_cookie_header
 from tests.conftest import TEST_API_KEY, UPSTREAM_DOMAIN, ai_stream, make_settings
 
 STREAM_URL = f"https://{UPSTREAM_DOMAIN}/nextjs-api/stream/post-to-evaluation/"
@@ -24,6 +25,7 @@ def two_account_settings(**overrides):
     base = {
         "target_domain": UPSTREAM_DOMAIN,
         "upstream_cookie": "COOKIE-1",
+        "recaptcha_provider": "static",
         "recaptcha_static_token": "RT-1",
         "upstream_account_name": "bir",
         "upstream_cookie_2": "COOKIE-2",
@@ -72,6 +74,21 @@ def test_loads_both_accounts_from_env():
     assert [(a.slot, a.label) for a in accounts] == [(1, "bir"), (2, "iki")]
     assert accounts[1].cookie == "COOKIE-2"
     assert accounts[1].recaptcha_token == "RT-2"
+
+
+def test_loads_per_account_domains_instead_of_discarding_them():
+    settings = two_account_settings(
+        target_domain="one.example",
+        target_domain_2="https://two.example/",
+        upstream_cookie_3="COOKIE-3",
+        target_domain_3="three.example",
+    )
+    accounts = load_accounts(settings)
+    assert [(a.slot, a.target_domain) for a in accounts] == [
+        (1, "one.example"),
+        (2, "two.example"),
+        (3, "three.example"),
+    ]
 
 
 def test_unconfigured_slots_are_skipped():
@@ -309,7 +326,8 @@ def test_text_quota_in_stream_switches_account_and_learns_limit():
         assert first["quota_hits"] == 1
         assert first["messages_in_window"] == 1
         assert first["learned_limit"] == 1
-        assert first["cooldown_remaining_seconds"] == COOLDOWN
+        # Yanıt/admin isteği sırasında birkaç milisaniye geçmesi normaldir.
+        assert first["cooldown_remaining_seconds"] == pytest.approx(COOLDOWN, abs=1.0)
         # Kota metni istemciye sızmamalı.
         assert QUOTA_TEXT not in response.json()["choices"][0]["message"]["content"]
 
@@ -489,6 +507,149 @@ def test_each_account_gets_a_separate_upstream_chat():
     # İki hesap farklı upstream sohbetlerine yazmış olmalı.
     all_paths = {p for paths in per_cookie.values() for p in paths}
     assert len(all_paths) == 2
+
+
+@respx.mock
+def test_warmup_uses_the_selected_account_domain_and_cookie():
+    settings = two_account_settings(
+        target_domain="one.test",
+        upstream_cookie="auth=ONE",
+        target_domain_2="two.test",
+        upstream_cookie_2="auth=TWO",
+    )
+    warmups: list[httpx.Request] = []
+    posts: list[httpx.Request] = []
+    respx.get(url__startswith="https://").mock(
+        side_effect=lambda request: (warmups.append(request), httpx.Response(200))[1]
+    )
+    respx.post(url__startswith="https://").mock(
+        side_effect=lambda request: (
+            posts.append(request),
+            httpx.Response(200, content=ai_stream("ok")),
+        )[1]
+    )
+    with TestClient(create_app(settings)) as client:
+        client.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        for _ in range(2):
+            response = client.post("/v1/chat/completions", json=chat_body())
+            assert response.status_code == 200
+
+    assert [(r.url.host, r.headers.get("cookie")) for r in warmups] == [
+        ("one.test", "auth=ONE"),
+        ("two.test", "auth=TWO"),
+    ]
+    assert [(r.url.host, r.headers.get("cookie")) for r in posts] == [
+        ("one.test", "auth=ONE"),
+        ("two.test", "auth=TWO"),
+    ]
+
+
+@respx.mock
+def test_cookie_jar_does_not_leak_from_one_account_into_another():
+    settings = two_account_settings(
+        target_domain="same.test",
+        upstream_cookie="auth=ONE",
+        upstream_cookie_2="",
+        upstream_access_token_2="ACCESS-2",
+    )
+    warmups: list[httpx.Request] = []
+    posts: list[httpx.Request] = []
+    def warmup_handler(request: httpx.Request) -> httpx.Response:
+        warmups.append(request)
+        # Yalnızca birinci hesap Set-Cookie alır; ikinci hesabın kendi cevabı
+        # aynı çerezi kurarsa izolasyonu yanlışlıkla testin kendisi bozar.
+        headers = {"set-cookie": "jar=ONE; Path=/"} if len(warmups) == 1 else {}
+        return httpx.Response(200, headers=headers)
+
+    respx.get(url__startswith="https://").mock(side_effect=warmup_handler)
+    respx.post(url__startswith="https://").mock(
+        side_effect=lambda request: (
+            posts.append(request),
+            httpx.Response(200, content=ai_stream("ok")),
+        )[1]
+    )
+    with TestClient(create_app(settings)) as client:
+        client.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        for _ in range(2):
+            response = client.post("/v1/chat/completions", json=chat_body())
+            assert response.status_code == 200
+
+    first_cookies = parse_cookie_header(posts[0].headers.get("cookie", ""))
+    # Başlangıç cookie'si korunur ve warm-up Set-Cookie'si aynı hesabın POST'una eklenir.
+    assert first_cookies["auth"] == "ONE"
+    assert first_cookies["jar"] == "ONE"
+    # İkinci hesap authorization-only: birinci hesabın jar=ONE çerezi taşınmamalı.
+    assert posts[1].headers.get("cookie") is None
+    assert warmups[1].headers.get("cookie") is None
+
+
+# --------------------------------------------------------- CAPTCHA yaşam döngüsü
+@respx.mock
+def test_static_captcha_rejection_is_not_retried_with_the_same_token(pool_client):
+    route = route_by_cookie(
+        respx,
+        {
+            "COOKIE-1": httpx.Response(403, content=b'{"error":"invalid recaptcha"}'),
+            "COOKIE-2": httpx.Response(200, content=ai_stream("ikinci hesap")),
+        },
+    )
+    response = pool_client.post("/v1/chat/completions", json=chat_body())
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "recaptcha_rejected"
+    assert route.call_count == 1
+
+
+class SequenceRecaptchaProvider:
+    """Tarayıcı/harici servis olmadan dinamik token yenilemeyi sınar."""
+
+    name = "external"
+
+    def __init__(self):
+        self.tokens = ["LIVE-1", "LIVE-2"]
+        self.calls = 0
+        self.invalidations = 0
+
+    async def startup(self):
+        return None
+
+    async def shutdown(self):
+        return None
+
+    async def get_token(self):
+        token = self.tokens[min(self.calls, len(self.tokens) - 1)]
+        self.calls += 1
+        return token
+
+    def invalidate(self):
+        self.invalidations += 1
+
+
+@respx.mock
+def test_dynamic_captcha_provider_overrides_stale_account_tokens_and_refreshes(
+    monkeypatch,
+):
+    provider = SequenceRecaptchaProvider()
+    monkeypatch.setattr("app.main.create_recaptcha_provider", lambda _settings: provider)
+    app = create_app(two_account_settings(recaptcha_provider="external"))
+    seen_tokens = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        token = json.loads(request.content.decode())["recaptchaV3Token"]
+        seen_tokens.append(token)
+        if token == "LIVE-1":
+            return httpx.Response(403, content=b'{"error":"invalid recaptcha"}')
+        return httpx.Response(200, content=ai_stream("taze token"))
+
+    route = respx.post(url__startswith=STREAM_URL).mock(side_effect=handler)
+    with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        response = client.post("/v1/chat/completions", json=chat_body())
+
+    assert response.status_code == 200
+    assert seen_tokens == ["LIVE-1", "LIVE-2"]
+    assert "RT-1" not in seen_tokens  # Hesaptaki eski statik değer sağlayıcıyı ezemez.
+    assert provider.invalidations == 1
+    assert route.call_count == 2
 
 
 # ------------------------------------------------------------------ admin

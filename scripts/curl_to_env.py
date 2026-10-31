@@ -17,6 +17,7 @@ kalkar: cURL ne veriyorsa birebir o yazılır.
   * ``UPSTREAM_COOKIE``      — ``cookie`` başlığının tamamı
   * ``UPSTREAM_ACCEPT_LANGUAGE``
   * ``UPSTREAM_USER_AGENT``
+  * ``UPSTREAM_EXTRA_HEADERS`` — dnt/deployment başlıkları
   * ``UPSTREAM_RECAPTCHA_FIELD`` — gövdedeki captcha alanının gerçek adı
   * ``RECAPTCHA_STATIC_TOKEN``   — gövdedeki captcha değeri
   * ``models.yaml`` için ``upstream_id`` (gövdedeki ``modelAId``)
@@ -33,6 +34,7 @@ from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.core.config import MAX_ACCOUNT_SLOTS  # noqa: E402
 from scripts.compare_curl import load_body, parse_curl  # noqa: E402
 
 #: Gövdede captcha token'ını taşıyabilecek alan adları.
@@ -44,6 +46,15 @@ CAPTCHA_FIELDS: tuple[str, ...] = (
     "turnstileToken",
 )
 
+#: Tarayıcı parmak izi için korunan, dinamik olmayan ek başlıklar.
+#: Authorization/cookie gibi kimlikler ve her istekte değişen traceparent buraya
+#: alınmaz. Rastgele bütün x-* başlıklarını almak gizli anahtar da sızdırabilirdi.
+PASSTHROUGH_HEADERS: tuple[str, ...] = (
+    "dnt",
+    "x-arena-web-deployment",
+    "x-deployment-id",
+)
+
 #: `.env` içine yazılacak anahtarların sırası.
 ENV_ORDER: tuple[str, ...] = (
     "TARGET_DOMAIN",
@@ -52,6 +63,7 @@ ENV_ORDER: tuple[str, ...] = (
     "UPSTREAM_RECAPTCHA_FIELD",
     "UPSTREAM_ACCEPT_LANGUAGE",
     "UPSTREAM_USER_AGENT",
+    "UPSTREAM_EXTRA_HEADERS",
     "UPSTREAM_REFERER_PATH",
     "UPSTREAM_COOKIE",
     "UPSTREAM_AUTH_FROM_COOKIE",
@@ -86,11 +98,8 @@ ACCOUNT_SCAN_KEYS: tuple[str, ...] = ACCOUNT_ENV_KEYS + ("UPSTREAM_RECAPTCHA_FIE
 #: `merge_env` yeni anahtarları bu yorum satırının altına ekler.
 ENV_MARKER_COMMENT = "# scripts/curl_to_env.py tarafından eklendi"
 
-#: Otomatik adlandırma.
-DEFAULT_ACCOUNT_LABELS: tuple[str, ...] = ("hesap-1", "hesap-2", "hesap-3", "hesap-4")
-
-#: `app/services/account.py::MAX_ACCOUNT_SLOTS` ile aynı tarama sınırı.
-MAX_SCAN_SLOTS = 16
+#: Uygulamanın gerçekten okuyabildiği yuva sayısıyla aynı sınır.
+MAX_SCAN_SLOTS = MAX_ACCOUNT_SLOTS
 
 #: Oturum çerezi olma ihtimali olan adlar (uyarı üretmek için).
 _SESSION_HINT = "auth"
@@ -112,6 +121,15 @@ TELEMETRY_HOSTS: tuple[str, ...] = (
     "newrelic",
     "intercom",
     "hotjar",
+)
+
+#: Aynı domain veya proxy üzerinden gönderilen kanıtlanmış telemetri yolları.
+#: Host kontrolü tek başına yeterli değil: PostHog capture, uygulamanın kendi
+#: domainindeki `/rpc/i/v0/e/` altından da gönderilebiliyor.
+TELEMETRY_PATH_PREFIXES: tuple[str, ...] = (
+    "/rpc/i/v0/e",
+    "/api/v2/rum",
+    "/g/collect",
 )
 
 #: Varsayılan akış yolu (app/core/config.py ile aynı).
@@ -197,6 +215,10 @@ def split_account_env(
     shared: dict[str, str] = {}
     account: dict[str, str] = {account_name_key(slot): label}
     for key, value in env.items():
+        # CAPTCHA sağlayıcısı globaldir. İkinci/üçüncü hesabı eklemek, önceden
+        # seçilmiş browser/external/noop kipini sessizce static'e çevirmemeli.
+        if key == "RECAPTCHA_PROVIDER" and slot > 1:
+            continue
         if key in ACCOUNT_ENV_KEYS:
             account[account_key(key, slot)] = value
         else:
@@ -323,11 +345,18 @@ def build_settings(
     # Yanlış isteğin cURL'ü kopyalandığında sessizce telemetri sunucusuna
     # yönlenmemek için erken uyar.
     lowered_host = host.lower()
-    if any(marker in lowered_host for marker in TELEMETRY_HOSTS):
+    lowered_path = split.path.lower() if split else ""
+    telemetry_host = any(marker in lowered_host for marker in TELEMETRY_HOSTS)
+    telemetry_path = any(
+        lowered_path.startswith(prefix) for prefix in TELEMETRY_PATH_PREFIXES
+    )
+    if telemetry_host or telemetry_path:
+        telemetry_target = host if telemetry_host else split.path
         warnings.append(
-            f"KRİTİK: '{host}' bir telemetri/analitik adresi; sohbet ucu değil. "
-            "Network sekmesinde sohbet akış isteğine ('create-evaluation' veya "
-            "'post-to-evaluation') sağ tıklayıp cURL'ü yeniden kopyalayın."
+            f"KRİTİK: '{telemetry_target}' bir telemetri/analitik/olay toplama "
+            "isteği; sohbet ucu değil. Network sekmesinde sohbet akış isteğine "
+            "('create-evaluation' veya 'post-to-evaluation') sağ tıklayıp cURL'ü "
+            "yeniden kopyalayın."
         )
     elif split and not _looks_like_stream_path(split.path):
         warnings.append(
@@ -350,8 +379,10 @@ def build_settings(
 
     # --- başlıklar
     cookie = headers.get("cookie", "").strip()
+    # Yuva tazeleme tam bir kimlik anlık görüntüsüdür: authorization-only yeni
+    # cURL'de eski cookie'nin hayatta kalıp başka oturumla karışmasını önle.
+    env["UPSTREAM_COOKIE"] = cookie
     if cookie:
-        env["UPSTREAM_COOKIE"] = cookie
         names = [p.split("=", 1)[0].strip() for p in cookie.split(";") if "=" in p]
         if not names:
             warnings.append(
@@ -370,6 +401,17 @@ def build_settings(
         env["UPSTREAM_ACCEPT_LANGUAGE"] = lang
     if agent := headers.get("user-agent", "").strip():
         env["UPSTREAM_USER_AGENT"] = agent
+
+    # Yalnız bilinen, dinamik olmayan parmak izi başlıklarını koru. Değerler
+    # tek satırlık `K1=V1;K2=V2` biçimine getirilir; eski hedefe ait değerlerin
+    # kalmasını önlemek için cURL'de hiçbiri yoksa alan boş yazılır.
+    extra_headers: list[str] = []
+    for name in PASSTHROUGH_HEADERS:
+        value = headers.get(name, "").strip()
+        if value:
+            value = value.replace("\r", " ").replace("\n", " ")
+            extra_headers.append(f"{name}={value}")
+    env["UPSTREAM_EXTRA_HEADERS"] = ";".join(extra_headers)
 
     # --- referer yolu (sohbet sayfası şablonu; parmak izi için gönderilir)
     if referer_path := extract_referer_path(headers):
@@ -391,6 +433,9 @@ def build_settings(
             )
     else:
         env["UPSTREAM_AUTH_FROM_COOKIE"] = "false"
+        # Cookie-only cURL ile tazelenen yuvada önceki access token kalırsa
+        # açık token her zaman öncelikli olduğu için eski kimlik gönderilmeye devam eder.
+        env["UPSTREAM_ACCESS_TOKEN"] = ""
         # Cookie-only kimlik doğrulama meşru bir kurulum; oturum çerezi zaten
         # varsa gürültü yapma. İkisi de yoksa istek anonim gider.
         cookie_names = [
@@ -674,7 +719,11 @@ def main() -> int:
         )
         return 2
 
-    slot, label = _resolve_slot(args.account, env_path)
+    try:
+        slot, label = _resolve_slot(args.account, env_path)
+    except ValueError as exc:
+        print(f"HATA: {exc}", file=sys.stderr)
+        return 2
 
     print(f"=== Çıkarılan ayarlar ({slot}. hesap yuvası: {label}) ===")
     secret_keys = {
@@ -724,8 +773,8 @@ def main() -> int:
     print(f"Kayıtlı hesap sayısı: {total}")
     if total > 1:
         print(
-            "Not: çoklu hesapların kullanılması için hesap havuzu gerekir; "
-            "uygulama şu an yalnızca soneksiz (1. hesap) anahtarları okuyor."
+            "Hesap havuzu kullanılabilir yuvaların tümünü okur; "
+            "değişikliklerin yüklenmesi için çalışan servisi yeniden başlatın."
         )
 
     if model_id and slot == 1:
@@ -742,27 +791,42 @@ def main() -> int:
 
 def _resolve_slot(requested: str | None, env_path: Path) -> tuple[int, str]:
     """`--account` değerini (yuva numarası, hesap adı) çiftine çevirir."""
+    existing = read_env_keys(env_path)
+
+    def label_for(slot: int) -> str:
+        # Numarayla tazeleme veya yarım yuvayı onarma özel adı silmemeli.
+        return existing.get(account_name_key(slot), "").strip() or f"hesap-{slot}"
+
     if not requested:
         slot = next_free_slot(env_path)
-        return slot, DEFAULT_ACCOUNT_LABELS[slot - 1] if slot <= len(
-            DEFAULT_ACCOUNT_LABELS
-        ) else f"hesap-{slot}"
+        if slot > MAX_ACCOUNT_SLOTS:
+            raise ValueError(
+                f"Hesap yuvaları dolu; en fazla {MAX_ACCOUNT_SLOTS} hesap destekleniyor. "
+                "Tazelemek için --account 1 (veya 2/3/4) kullanın."
+            )
+        return slot, label_for(slot)
 
     text = requested.strip()
     if text.isdigit():
-        slot = max(1, int(text))
-        return slot, DEFAULT_ACCOUNT_LABELS[slot - 1] if slot <= len(
-            DEFAULT_ACCOUNT_LABELS
-        ) else f"hesap-{slot}"
+        slot = int(text)
+        if not 1 <= slot <= MAX_ACCOUNT_SLOTS:
+            raise ValueError(
+                f"Geçersiz hesap yuvası {slot}; 1-{MAX_ACCOUNT_SLOTS} arasında olmalı."
+            )
+        return slot, label_for(slot)
 
-    existing = read_env_keys(env_path)
     free: int | None = None
     for slot in range(1, MAX_SCAN_SLOTS + 1):
         if existing.get(account_name_key(slot), "") == text:
             return slot, text  # aynı ad -> aynı yuvayı tazele
         if free is None and not slot_has_credentials(existing, slot):
             free = slot
-    return (free or MAX_SCAN_SLOTS + 1), text
+    if free is None:
+        raise ValueError(
+            f"Hesap yuvaları dolu; '{text}' için en fazla {MAX_ACCOUNT_SLOTS} hesap "
+            "destekleniyor. Var olan hesabı tazelemek için --account NUMARA kullanın."
+        )
+    return free, text
 
 
 if __name__ == "__main__":

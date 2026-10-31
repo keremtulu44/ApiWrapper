@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 
 from app.core.config import Settings
@@ -12,6 +13,8 @@ from app.utils.cache import LRUTTLCache
 from app.utils.ids import new_chat_id
 
 logger = get_logger(__name__)
+
+Warmup = Callable[[str], Awaitable[None]]
 
 
 @dataclass(slots=True)
@@ -43,7 +46,7 @@ class SessionManager:
       `session_rotate_after_seconds`) yeni sohbete geçilir.
     """
 
-    def __init__(self, settings: Settings, warmup=None) -> None:
+    def __init__(self, settings: Settings, warmup: Warmup | None = None) -> None:
         self.settings = settings
         self._warmup = warmup
         self._rotations = 0
@@ -72,13 +75,14 @@ class SessionManager:
         conversation_id: str | None = None,
         client_identity: str | None = None,
         account_label: str | None = None,
+        warmup: Warmup | None = None,
     ) -> Session:
         """İstek için bir oturum döndürür (gerekirse oluşturur/yeniler)."""
         key = self._session_key(conversation_id, client_identity, account_label)
         if key is None:
             # Durumsuz yol: eskisi gibi her istekte yeni sohbet.
             session = Session(chat_id=new_chat_id())
-            await self._maybe_warm(session)
+            await self._maybe_warm(session, warmup)
             session.touch()
             return session
 
@@ -101,7 +105,7 @@ class SessionManager:
             await self._cache.delete(key)
 
         session = Session(chat_id=new_chat_id())
-        await self._maybe_warm(session)
+        await self._maybe_warm(session, warmup)
         session.touch()
         await self._cache.set(key, session)
         logger.debug(
@@ -153,10 +157,13 @@ class SessionManager:
         if client_identity:
             await self._cache.delete(f"client:{client_identity}")
 
-    async def _maybe_warm(self, session: Session) -> None:
-        if session.warmed or self._warmup is None:
+    async def _maybe_warm(
+        self, session: Session, warmup: Warmup | None = None
+    ) -> None:
+        callback = warmup or self._warmup
+        if session.warmed or callback is None:
             return
-        await self._warmup(session.chat_id)
+        await callback(session.chat_id)
         session.warmed = True
 
     async def size(self) -> int:

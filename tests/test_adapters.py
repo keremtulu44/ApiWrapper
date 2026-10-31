@@ -150,3 +150,5 @@ def test_built_payload_includes_mode_when_configured():
         recaptcha_token="",
     ).payload.to_wire()
     assert wire["mode"] == "direct"
+    # cx her gerçek istekte değişiyor; tahmini/sabit bir değer üretilmemeli.
+    assert "cx" not in wire

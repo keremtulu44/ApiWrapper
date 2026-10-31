@@ -24,6 +24,7 @@ logger = get_logger(__name__)
 _WARNED_NO_TOKEN = False
 
 _CHROME_VERSION_RE = re.compile(r"Chrome/(\d+)")
+_EDGE_VERSION_RE = re.compile(r"(?:Edg|Edge|EdgA|EdgiOS)/(\d+)")
 
 
 def chrome_major_version(user_agent: str) -> str:
@@ -46,6 +47,14 @@ def platform_from_ua(user_agent: str) -> str:
 
 def sec_ch_ua(user_agent: str) -> str:
     version = chrome_major_version(user_agent)
+    edge = _EDGE_VERSION_RE.search(user_agent)
+    if edge:
+        # Edge UA'si yalnızca Google Chrome markasıyla taklit edilemez; gerçek
+        # tarayıcıda Chromium, Microsoft Edge ve Not A(Brand sırası gönderilir.
+        return (
+            f'"Chromium";v="{version}", "Microsoft Edge";v="{edge.group(1)}", '
+            '"Not A(Brand";v="99"'
+        )
     # Sıra Chrome'un gönderdiğiyle birebir aynı olmalı (parmak izi).
     return (
         f'"Chromium";v="{version}", "Not?A_Brand";v="24", '
@@ -105,7 +114,9 @@ def _apply_auth(headers: dict[str, str], settings: Settings) -> None:
         headers["authorization"] = authorization
 
 
-def build_stream_headers(settings: Settings, chat_id: str) -> dict[str, str]:
+def build_stream_headers(
+    settings: Settings, chat_id: str, *, include_cookie: bool = True
+) -> dict[str, str]:
     """Stream uç noktası için tam başlık kümesi."""
     ua = settings.upstream_user_agent
     trace_id = secrets.token_hex(16)
@@ -127,7 +138,7 @@ def build_stream_headers(settings: Settings, chat_id: str) -> dict[str, str]:
         "traceparent": f"00-{trace_id}-{span_id}-01",
         "tracestate": "dd=s:1;o:rum",
     }
-    if settings.upstream_cookie:
+    if include_cookie and settings.upstream_cookie:
         headers["cookie"] = settings.upstream_cookie
     _apply_auth(headers, settings)
     # Kullanıcı tanımlı başlıklar en son uygulanır; bilinçli override'a izin verilir.
@@ -135,7 +146,7 @@ def build_stream_headers(settings: Settings, chat_id: str) -> dict[str, str]:
     return headers
 
 
-def build_page_headers(settings: Settings) -> dict[str, str]:
+def build_page_headers(settings: Settings, *, include_cookie: bool = True) -> dict[str, str]:
     """Oturum ısıtma (HTML sayfa) istekleri için başlıklar."""
     ua = settings.upstream_user_agent
     headers = {
@@ -150,7 +161,7 @@ def build_page_headers(settings: Settings) -> dict[str, str]:
         "sec-fetch-site": "none",
         "upgrade-insecure-requests": "1",
     }
-    if settings.upstream_cookie:
+    if include_cookie and settings.upstream_cookie:
         headers["cookie"] = settings.upstream_cookie
     headers.update(settings.parsed_extra_headers())
     return headers

@@ -7,9 +7,15 @@ soneksli anahtarlara yazılır. Hiçbir hesap diğerini ezmemeli.
 from __future__ import annotations
 
 import json
+import sys
 
+import pytest
+
+from app.core.config import MAX_ACCOUNT_SLOTS, Settings
+from app.services.account import load_accounts
 from scripts.compare_curl import parse_curl
 from scripts.curl_to_env import (
+    _resolve_slot,
     build_settings,
     count_accounts,
     extract_authorization,
@@ -26,7 +32,7 @@ DOMAIN = "llm.example.com"
 
 def make_curl(
     *,
-    cookie: str = "sb-auth-token=abc; other=1",
+    cookie: str | None = "sb-auth-token=abc; other=1",
     token: str = "TOKEN-1",
     model: str = "MODEL_A_1",
     authorization: str | None = "Bearer tok-123",
@@ -46,9 +52,10 @@ def make_curl(
         "-H 'accept: */*'",
         "-H 'accept-language: tr-TR,tr;q=0.9'",
         "-H 'user-agent: Mozilla/5.0 Chrome/152.0.0.0'",
-        f"-H 'cookie: {cookie}'",
         f"-H 'referer: https://{domain}/c/11111111-2222-3333-4444-555555555555'",
     ]
+    if cookie is not None:
+        headers.append(f"-H 'cookie: {cookie}'")
     if authorization is not None:
         headers.insert(0, f"-H 'authorization: {authorization}'")
     return (
@@ -84,7 +91,8 @@ def test_build_settings_writes_access_token_from_curl():
 
 def test_build_settings_warns_when_authorization_absent():
     env, warnings, _ = build_settings(parse_curl(make_curl(authorization=None)))
-    assert "UPSTREAM_ACCESS_TOKEN" not in env
+    # Boş değer bilinçli yazılır: aynı yuva tazelenirken eski token temizlenir.
+    assert env["UPSTREAM_ACCESS_TOKEN"] == ""
     assert env["UPSTREAM_AUTH_FROM_COOKIE"] == "false"
     assert any("authorization" in w for w in warnings)
 
@@ -161,7 +169,8 @@ def test_split_account_env_first_slot_has_no_suffix():
 
 def test_split_account_env_second_slot_is_suffixed():
     env, _, _ = build_settings(parse_curl(make_curl(cookie="x=2", token="TOKEN-2")))
-    _, account = split_account_env(env, 2, "hesap-2")
+    shared, account = split_account_env(env, 2, "hesap-2")
+    assert "RECAPTCHA_PROVIDER" not in shared  # Global kip 2. hesapla ezilmez.
     assert account["UPSTREAM_COOKIE_2"] == "x=2"
     assert account["RECAPTCHA_STATIC_TOKEN_2"] == "TOKEN-2"
     assert account["UPSTREAM_ACCOUNT_2_NAME"] == "hesap-2"
@@ -192,6 +201,79 @@ def test_two_curls_in_sequence_land_in_separate_slots(tmp_path):
     assert count_accounts(values) == 2
 
 
+def test_three_accounts_added_through_cli_are_all_loaded_by_the_application(
+    tmp_path, monkeypatch, capsys
+):
+    from scripts import curl_to_env
+
+    env_file = tmp_path / ".env"
+    curl_file = tmp_path / "request.txt"
+    for slot in range(1, 4):
+        curl_file.write_text(
+            make_curl(
+                cookie=f"auth-token=COOKIE-{slot}",
+                token=f"TOKEN-{slot}",
+                authorization=f"Bearer ACCESS-{slot}",
+            ),
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(
+            sys,
+            "argv",
+            [
+                "curl_to_env.py",
+                "--write",
+                str(curl_file),
+                "--env-file",
+                str(env_file),
+                "--models-file",
+                str(tmp_path / "models.yaml"),
+            ],
+        )
+        assert curl_to_env.main() == 0
+        capsys.readouterr()
+
+    accounts = load_accounts(Settings(_env_file=env_file))
+    assert [(a.slot, a.cookie, a.access_token, a.target_domain) for a in accounts] == [
+        (1, "auth-token=COOKIE-1", "ACCESS-1", DOMAIN),
+        (2, "auth-token=COOKIE-2", "ACCESS-2", DOMAIN),
+        (3, "auth-token=COOKIE-3", "ACCESS-3", DOMAIN),
+    ]
+
+
+def test_second_account_message_does_not_claim_only_first_account_is_read(
+    tmp_path, monkeypatch, capsys
+):
+    from scripts import curl_to_env
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        f"UPSTREAM_COOKIE=auth=C1\nRECAPTCHA_PROVIDER=browser\nTARGET_DOMAIN={DOMAIN}\n",
+        encoding="utf-8",
+    )
+    curl_file = tmp_path / "request.txt"
+    curl_file.write_text(make_curl(cookie="auth=C2"), encoding="utf-8")
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "curl_to_env.py",
+            "--write",
+            str(curl_file),
+            "--env-file",
+            str(env_file),
+            "--models-file",
+            str(tmp_path / "models.yaml"),
+        ],
+    )
+    assert curl_to_env.main() == 0
+    output = capsys.readouterr().out
+    assert "yalnızca soneksiz" not in output
+    assert "Hesap havuzu" in output
+    # Ek hesap, önceden seçilmiş dinamik sağlayıcıyı static'e çevirmemeli.
+    assert read_env_keys(env_file)["RECAPTCHA_PROVIDER"] == "browser"
+
+
 def test_first_account_is_not_overwritten_by_second(tmp_path):
     env_file = tmp_path / ".env"
     _write(env_file, make_curl(cookie="COOKIE-1", token="TOKEN-1"), 1, "hesap-1")
@@ -212,6 +294,74 @@ def test_refreshing_same_slot_overwrites_only_that_slot(tmp_path):
     values = read_env_keys(env_file)
     assert values["RECAPTCHA_STATIC_TOKEN"] == "TOKEN-1-YENI"
     assert values["RECAPTCHA_STATIC_TOKEN_2"] == "TOKEN-2"
+
+
+def test_cookie_only_refresh_clears_the_previous_access_token(tmp_path):
+    env_file = tmp_path / ".env"
+    _write(env_file, make_curl(authorization="Bearer ESKI"), 1, "hesap-1")
+    _write(
+        env_file,
+        make_curl(cookie="YENI-COOKIE", authorization=None),
+        1,
+        "hesap-1",
+    )
+    values = read_env_keys(env_file)
+    assert values["UPSTREAM_COOKIE"] == "YENI-COOKIE"
+    assert values["UPSTREAM_ACCESS_TOKEN"] == ""
+
+
+def test_authorization_only_refresh_clears_the_previous_cookie(tmp_path):
+    env_file = tmp_path / ".env"
+    _write(env_file, make_curl(cookie="ESKI-COOKIE"), 1, "hesap-1")
+    _write(
+        env_file,
+        make_curl(cookie=None, authorization="Bearer YENI"),
+        1,
+        "hesap-1",
+    )
+    values = read_env_keys(env_file)
+    assert values["UPSTREAM_COOKIE"] == ""
+    assert values["UPSTREAM_ACCESS_TOKEN"] == "YENI"
+
+
+def test_numeric_refresh_preserves_a_custom_account_name(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "UPSTREAM_ACCOUNT_2_NAME=benim-hesabim\nUPSTREAM_COOKIE_2=C2\n",
+        encoding="utf-8",
+    )
+    assert _resolve_slot("2", env_file) == (2, "benim-hesabim")
+
+
+def test_repairing_a_name_only_slot_preserves_its_name(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "UPSTREAM_COOKIE=C1\nUPSTREAM_ACCOUNT_2_NAME=onarilacak\n",
+        encoding="utf-8",
+    )
+    assert _resolve_slot(None, env_file) == (2, "onarilacak")
+
+
+def test_unsupported_account_slots_are_rejected(tmp_path):
+    env_file = tmp_path / ".env"
+    with pytest.raises(ValueError, match="1-4"):
+        _resolve_slot(str(MAX_ACCOUNT_SLOTS + 1), env_file)
+    with pytest.raises(ValueError, match="1-4"):
+        _resolve_slot("0", env_file)
+
+
+def test_adding_a_fifth_account_is_rejected_instead_of_pretending_to_save(tmp_path):
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "\n".join(
+            f"UPSTREAM_COOKIE{'' if slot == 1 else f'_{slot}'}=C{slot}"
+            for slot in range(1, MAX_ACCOUNT_SLOTS + 1)
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="yuvaları dolu"):
+        _resolve_slot(None, env_file)
 
 
 def test_strip_account_keys_clears_all_slots(tmp_path):

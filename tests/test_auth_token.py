@@ -12,6 +12,7 @@ import pytest
 from app.upstream.auth import (
     decode_jwt_claims,
     extract_access_token,
+    extract_refresh_token,
     is_token_expired,
     looks_like_jwt,
     merge_chunked_cookies,
@@ -19,7 +20,7 @@ from app.upstream.auth import (
     resolve_bearer_token,
     token_seconds_remaining,
 )
-from app.upstream.headers import build_authorization, build_stream_headers
+from app.upstream.headers import build_authorization, build_stream_headers, sec_ch_ua
 from tests.conftest import make_settings
 
 
@@ -129,6 +130,46 @@ def test_returns_none_without_token():
     assert extract_access_token("") is None
 
 
+def test_extract_refresh_token_from_json_cookie():
+    value = json.dumps({"access_token": TOKEN, "refresh_token": "r-123"})
+    assert extract_refresh_token(f"sb-auth-token={quote(value)}") == "r-123"
+
+
+def test_extract_refresh_token_from_json_array_cookie():
+    value = json.dumps([TOKEN, "refresh-token", None, None])
+    assert extract_refresh_token(f"sb-auth-token={quote(value)}") == "refresh-token"
+
+
+def test_extract_refresh_token_from_base64_and_nested_session():
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"currentSession": {"refreshToken": "nested-refresh"}}).encode()
+    ).decode().rstrip("=")
+    assert extract_refresh_token(f"sb-auth-token=base64-{payload}") == "nested-refresh"
+
+
+def test_extract_refresh_token_from_chunked_cookie():
+    value = base64.urlsafe_b64encode(
+        json.dumps({"access_token": TOKEN, "refresh_token": "chunked-refresh"}).encode()
+    ).decode().rstrip("=")
+    middle = len(value) // 2
+    header = f"sb-auth-token.0=base64-{value[:middle]}; sb-auth-token.1={value[middle:]}"
+    assert extract_refresh_token(header) == "chunked-refresh"
+
+
+def test_extract_raw_refresh_token_decodes_url_encoding():
+    assert extract_refresh_token("refresh_token=refresh%3D%3D") == "refresh=="
+
+
+def test_raw_chunked_refresh_token_is_joined_before_extraction():
+    header = "refresh_token.0=first; refresh_token.1=second"
+    assert extract_refresh_token(header) == "firstsecond"
+
+
+def test_refresh_extraction_never_returns_access_token_by_mistake():
+    assert extract_refresh_token(f"access_token={TOKEN}") is None
+    assert extract_refresh_token("theme=dark") is None
+
+
 def test_short_values_are_not_tokens():
     assert extract_access_token("access_token=abc") is None
 
@@ -222,6 +263,18 @@ def test_custom_auth_scheme():
 def test_empty_scheme_sends_raw_token():
     settings = make_settings(upstream_access_token=TOKEN, upstream_auth_scheme="")
     assert build_authorization(settings) == TOKEN
+
+
+def test_edge_user_agent_produces_edge_client_hints():
+    user_agent = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0"
+    )
+    hints = sec_ch_ua(user_agent)
+    assert '"Chromium";v="154"' in hints
+    assert '"Microsoft Edge";v="154"' in hints
+    assert '"Not A(Brand";v="99"' in hints
+    assert "Google Chrome" not in hints
 
 
 def test_extra_headers_can_override_authorization():

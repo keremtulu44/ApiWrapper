@@ -122,7 +122,7 @@ def parse_line(line: str) -> StreamEvent | None:
         if not line or line == "[DONE]":
             return StreamEvent(type=EventType.FINISH, raw_code="sse", finish_reason="stop")
         try:
-            payload = json.loads(line)
+            sse_payload = json.loads(line)
         except json.JSONDecodeError:
             # Bazı proxy/SSE katmanları Vercel data-stream satırını tekrar
             # `data:` içine sarar: `data: 0:"metin"`.
@@ -131,7 +131,7 @@ def parse_line(line: str) -> StreamEvent | None:
                 if nested is not None:
                     return nested
             return StreamEvent(type=EventType.TEXT, text=line, raw_code="sse")
-        return _from_sse_payload(payload)
+        return _from_sse_payload(sse_payload)
 
     if line.startswith((":", "event:", "id:", "retry:")):
         return None

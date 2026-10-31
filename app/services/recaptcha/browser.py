@@ -13,18 +13,25 @@ from app.services.recaptcha.base import RecaptchaProvider
 
 logger = get_logger(__name__)
 
-#: Sayfa içinde çalıştırılacak betik: grecaptcha hazır olunca token üretir.
+#: Sayfa içinde çalıştırılacak betik: seçilen v3/Enterprise API hazır olunca
+#: token üretir. Enterprise'da global `grecaptcha.execute` değil,
+#: `grecaptcha.enterprise.execute` kullanılır.
 _EXECUTE_SCRIPT = """
-([siteKey, action]) => new Promise((resolve, reject) => {
+([siteKey, action, version]) => new Promise((resolve, reject) => {
   const timer = setTimeout(() => reject(new Error('grecaptcha timeout')), 30000);
+  const api = () => {
+    if (typeof grecaptcha === 'undefined') { return null; }
+    return version === 'enterprise' ? grecaptcha.enterprise : grecaptcha;
+  };
   const run = () => {
-    if (typeof grecaptcha === 'undefined' || !grecaptcha.execute) {
+    const current = api();
+    if (!current || !current.execute) {
       return setTimeout(run, 250);
     }
-    const exec = () => grecaptcha.execute(siteKey, { action })
+    const exec = () => current.execute(siteKey, { action })
       .then((token) => { clearTimeout(timer); resolve(token); })
       .catch((err) => { clearTimeout(timer); reject(err); });
-    if (grecaptcha.ready) { grecaptcha.ready(exec); } else { exec(); }
+    if (current.ready) { current.ready(exec); } else { exec(); }
   };
   run();
 })
@@ -32,7 +39,7 @@ _EXECUTE_SCRIPT = """
 
 _BOOTSTRAP_HTML = """<!doctype html>
 <html><head><meta charset="utf-8"><title>recaptcha</title>
-<script src="https://www.google.com/recaptcha/api.js?render={site_key}"></script>
+<script src="https://www.google.com/recaptcha/{script_name}?render={site_key}"></script>
 </head><body><div id="root">loading</div></body></html>
 """
 
@@ -56,6 +63,8 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
         self._lock = asyncio.Lock()
 
     async def startup(self) -> None:
+        if self._context is not None:
+            return
         if not self.settings.recaptcha_site_key:
             raise RecaptchaError(
                 "RECAPTCHA_SITE_KEY must be set when using the 'browser' provider.",
@@ -69,20 +78,26 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                 'pip install "apiwrapper[browser]" && playwright install chromium'
             ) from exc
 
-        self._playwright = await async_playwright().start()
-        self._browser = await self._playwright.chromium.launch(
-            headless=True,
-            args=[
-                "--no-sandbox",
-                "--disable-dev-shm-usage",
-                "--disable-blink-features=AutomationControlled",
-            ],
-        )
-        self._context = await self._browser.new_context(
-            user_agent=self.settings.upstream_user_agent,
-            locale="en-US",
-            viewport={"width": 1440, "height": 900},
-        )
+        try:
+            self._playwright = await async_playwright().start()
+            self._browser = await self._playwright.chromium.launch(
+                headless=True,
+                args=[
+                    "--no-sandbox",
+                    "--disable-dev-shm-usage",
+                    "--disable-blink-features=AutomationControlled",
+                ],
+            )
+            self._context = await self._browser.new_context(
+                user_agent=self.settings.upstream_user_agent,
+                locale=self.settings.upstream_accept_language.split(",", 1)[0] or "en-US",
+                viewport={"width": 1440, "height": 900},
+            )
+        except Exception as exc:
+            # Playwright başladıktan sonra Chromium/context açılamazsa yarım
+            # kalan kaynaklar birikmesin; sonraki istek temiz startup denesin.
+            await self.shutdown()
+            raise RecaptchaError(f"Browser startup failed: {exc}") from exc
         logger.info("recaptcha_browser_started")
 
     async def shutdown(self) -> None:
@@ -108,7 +123,11 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                 token = await asyncio.wait_for(
                     page.evaluate(
                         _EXECUTE_SCRIPT,
-                        [self.settings.recaptcha_site_key, self.settings.recaptcha_action],
+                        [
+                            self.settings.recaptcha_site_key,
+                            self.settings.recaptcha_action,
+                            self.settings.recaptcha_version,
+                        ],
                     ),
                     timeout=self.settings.recaptcha_browser_timeout,
                 )
@@ -125,20 +144,41 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
             return token
 
     async def _load_page(self, page: Any) -> None:
-        """Önce gerçek hedef sayfayı dener, olmazsa bootstrap HTML'e düşer."""
+        """reCAPTCHA'yı hedef origin'de yükle; about:blank token üretme."""
         try:
             await page.goto(
                 self.settings.base_url,
                 wait_until="domcontentloaded",
                 timeout=self.settings.recaptcha_browser_timeout * 1000,
             )
-            has_grecaptcha = await page.evaluate("() => typeof grecaptcha !== 'undefined'")
-            if has_grecaptcha:
-                return
         except Exception as exc:
             logger.debug("recaptcha_target_page_failed", error=str(exc))
+            # page.goto bazı hatalardan sonra hedef URL'de kalabilir; bu durumda
+            # set_content origin'i korur. about:blank'ta ise site-key domain
+            # doğrulaması geçemeyeceği için bootstrap denemek yalnızca hatayı gizler.
+            if not page.url.startswith(self.settings.base_url):
+                raise RecaptchaError(
+                    "Could not load the target page on its original origin for reCAPTCHA."
+                ) from exc
 
+        if self.settings.recaptcha_version == "enterprise":
+            has_grecaptcha = await page.evaluate(
+                "() => typeof grecaptcha !== 'undefined' && "
+                "!!grecaptcha.enterprise && typeof grecaptcha.enterprise.execute === 'function'"
+            )
+            script_name = "enterprise.js"
+        else:
+            has_grecaptcha = await page.evaluate(
+                "() => typeof grecaptcha !== 'undefined' && "
+                "typeof grecaptcha.execute === 'function'"
+            )
+            script_name = "api.js"
+        if has_grecaptcha:
+            return
         await page.set_content(
-            _BOOTSTRAP_HTML.format(site_key=self.settings.recaptcha_site_key),
+            _BOOTSTRAP_HTML.format(
+                script_name=script_name,
+                site_key=self.settings.recaptcha_site_key,
+            ),
             wait_until="domcontentloaded",
         )

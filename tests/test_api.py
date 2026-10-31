@@ -373,6 +373,72 @@ def test_admin_config_endpoint(client):
     assert "cookie" not in json.dumps(body).lower() or body["cookie_configured"] is False
 
 
+def test_admin_auth_reports_refresh_token_without_exposing_it():
+    from urllib.parse import quote
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import make_settings
+
+    session = json.dumps({"access_token": "A" * 30, "refresh_token": "secret-refresh"})
+    second = json.dumps({"access_token": "B" * 30, "refresh_token": "second-refresh"})
+    app = create_app(
+        make_settings(
+            upstream_cookie=f"sb-auth-token={quote(session)}",
+            upstream_cookie_2=f"sb-auth-token={quote(second)}",
+            upstream_auth_from_cookie=True,
+            upstream_auth_from_cookie_2=True,
+            upstream_account_2_name="ikinci",
+        )
+    )
+    with TestClient(app) as local:
+        local.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        response = local.get("/v1/admin/auth")
+        second_response = local.get("/v1/admin/auth?slot=2")
+        missing_response = local.get("/v1/admin/auth?slot=4")
+    assert response.status_code == 200
+    refresh = response.json()["refresh_token"]
+    assert refresh["found"] is True
+    assert refresh["length"] == len("secret-refresh")
+    assert "secret-refresh" not in response.text
+    assert second_response.status_code == 200
+    assert second_response.json()["slot"] == 2
+    assert second_response.json()["account"] == "ikinci"
+    assert second_response.json()["source"] == "cookie"
+    assert second_response.json()["refresh_token"]["length"] == len("second-refresh")
+    assert "second-refresh" not in second_response.text
+    assert missing_response.status_code == 400
+
+
+@respx.mock
+def test_total_request_timeout_limits_the_whole_upstream_stream():
+    import asyncio
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import make_settings
+
+    class SlowStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield ai_stream("first")
+            await asyncio.sleep(0.1)
+            yield ai_stream("second")
+
+    stream_route(respx).mock(return_value=httpx.Response(200, stream=SlowStream()))
+    app = create_app(
+        make_settings(total_request_timeout=0.01, retry_max_attempts=1, read_timeout=5.0)
+    )
+    with TestClient(app) as local:
+        local.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        response = local.post(
+            "/v1/chat/completions",
+            json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+        )
+    assert response.status_code == 504
+
+
 def test_admin_breaker_reset(client):
     assert client.post("/v1/admin/breaker/reset").json()["status"] == "closed"
 

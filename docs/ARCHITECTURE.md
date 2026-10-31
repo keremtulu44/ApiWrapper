@@ -33,7 +33,7 @@
 │    │     • multimodal içerik parçaları → attachments/metadata    │
 │    ├─ Oturum Yöneticisi  services/session_manager.py             │
 │    │     • chat_id / userMessageId / modelAMessageId üretimi     │
-│    │     • cookie jar, çerez yenileme, oturum ısıtma (warm-up)   │
+│    │     • chat_id rotasyonu, hesap bazlı warm-up oturumu       │
 │    ├─ Kimlik Çözücü  upstream/auth.py                            │
 │    │     • cookie → access_token ayıklama (JSON/base64/parçalı)  │
 │    │     • Authorization: Bearer üretimi, JWT exp uyarısı        │
@@ -77,7 +77,7 @@
      `unsupported_params` politikası ile ya yok sayılır ya da prompt'a ipucu olarak eklenir
      (config: `ignore` | `hint` | `error`).
 6. `SessionManager` bir `chat_id` (UUIDv4) ve mesaj id'leri üretir; gerekiyorsa
-   upstream'de sohbet oluşturma/ısıtma çağrısını yapar; cookie jar'ı hazırlar.
+   seçilen hesabın domain/cookie'si ve hesaba özel HTTP cookie jar'ı ile warm-up yapar.
 7. `RecaptchaProvider` token üretir (aşağıda 4. bölüm).
 8. `UpstreamClient` `--data-raw` ile birebir aynı JSON gövdeyi
    `content-type: text/plain;charset=UTF-8` başlığıyla **stream** olarak POST eder.
@@ -148,7 +148,7 @@ ApiWrapper/
 
 ---
 
-## 4. reCAPTCHA v3 Stratejisi (kritik nokta)
+## 4. reCAPTCHA v3 / Enterprise Stratejisi (kritik nokta)
 
 `recaptchaV3Token` upstream'in zorunlu alanı. Tek bir arayüz (`RecaptchaProvider.get_token()`)
 arkasında **takılıp çıkarılabilir** dört sağlayıcı:
@@ -157,8 +157,8 @@ arkasında **takılıp çıkarılabilir** dört sağlayıcı:
 |---|---|---|
 | `noop` | Boş string gönderir | Upstream doğrulamıyorsa / test |
 | `static` | `.env`'den elle alınan token | Hızlı başlangıç, kısa ömürlü (~2 dk) |
-| `external` | Harici çözücü servisi HTTP API'si (2captcha/anti-captcha uyumlu) | Üretim |
-| `browser` | Playwright ile headless sayfa açıp `grecaptcha.execute()` çağırır, token'ı cache'ler (TTL 100 sn) | Bağımsız üretim |
+| `external` | Tek HTTP cevabında doğrudan token döndüren yapılandırılabilir çözücü API'si | Üretim |
+| `browser` | Playwright ile hedef origin'de v3 `grecaptcha.execute()` veya Enterprise `grecaptcha.enterprise.execute()` çağırır, token'ı cache'ler (TTL 100 sn) | Bağımsız üretim |
 
 Sağlayıcılar `TokenCache` (TTL + tek-uçuş `asyncio.Lock`) ile sarılır; eşzamanlı 100 istek
 tek token üretimini paylaşır. Token reddi (upstream 403) → otomatik invalidate + 1 kez retry.

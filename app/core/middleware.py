@@ -60,7 +60,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             labels={"path": path, "status": str(response.status_code)},
         )
         metrics.observe("apiwrapper_request_duration_seconds", duration, {"path": path})
-        if path not in ("/health", "/healthz", "/metrics"):
+        if path not in ("/health", "/healthz", "/readyz", "/metrics"):
             logger.info(
                 "request",
                 method=request.method,
@@ -103,8 +103,18 @@ class BodyLimitMiddleware(BaseHTTPMiddleware):
 class RateLimitMiddleware(BaseHTTPMiddleware):
     """API anahtarı (yoksa IP) başına token-bucket sınırlama."""
 
-    EXEMPT_PATHS = frozenset({"/health", "/healthz", "/metrics", "/", "/docs", "/openapi.json",
-                              "/redoc"})
+    EXEMPT_PATHS = frozenset(
+        {
+            "/health",
+            "/healthz",
+            "/readyz",
+            "/metrics",
+            "/",
+            "/docs",
+            "/openapi.json",
+            "/redoc",
+        }
+    )
 
     def __init__(self, app, settings: Settings) -> None:
         super().__init__(app)

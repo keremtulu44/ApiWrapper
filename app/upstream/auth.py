@@ -53,6 +53,12 @@ DEFAULT_COOKIE_HINTS: tuple[str, ...] = (
 )
 
 #: JSON gövdelerinde token'ı taşıyan anahtar adları (öncelik sırasıyla).
+REFRESH_TOKEN_JSON_KEYS: tuple[str, ...] = (
+    "refresh_token",
+    "refreshToken",
+    "refresh-token",
+)
+
 TOKEN_JSON_KEYS: tuple[str, ...] = (
     "access_token",
     "accessToken",
@@ -234,9 +240,9 @@ def _candidate_strings(value: str) -> list[str]:
             if candidate.startswith(prefix):
                 body = candidate[len(prefix) :]
                 break
-        decoded = _try_b64_decode(body)
-        if decoded is not None:
-            push(decoded)
+        decoded_text = _try_b64_decode(body)
+        if decoded_text is not None:
+            push(decoded_text)
         # Çözülen metin geçerli JSON olmayabilir (çerez kırpılmışsa gövde yarıda
         # kesilir), bu yüzden kurtarma her hâlükârda denenir.
         salvaged = _salvage_truncated_b64(body)
@@ -340,6 +346,119 @@ def _acceptable(value: str) -> bool:
     if len(value) < _MIN_TOKEN_LENGTH:
         return False
     return looks_like_jwt(value) or not any(ch.isspace() for ch in value)
+
+
+def _valid_refresh_token(value: str) -> bool:
+    candidate = value.strip()
+    return bool(candidate) and not any(ch.isspace() for ch in candidate)
+
+
+def _scan_refresh_json(node: Any, depth: int = 0) -> str | None:
+    """Oturum JSON'unda yalnızca refresh token alanlarını arar."""
+    if depth > _MAX_SCAN_DEPTH:
+        return None
+    if isinstance(node, dict):
+        for key in REFRESH_TOKEN_JSON_KEYS:
+            value = node.get(key)
+            if isinstance(value, str) and _valid_refresh_token(value):
+                return value.strip()
+        for key in ("currentSession", "session", "data", "user", "tokens", "auth"):
+            nested = node.get(key)
+            if nested is not None:
+                found = _scan_refresh_json(nested, depth + 1)
+                if found:
+                    return found
+        for value in node.values():
+            if isinstance(value, (dict, list)):
+                found = _scan_refresh_json(value, depth + 1)
+                if found:
+                    return found
+        return None
+    if isinstance(node, list):
+        # Supabase dizi biçimi: [access_token, refresh_token, ...]. Erişim
+        # token'ı JWT değilse rastgele bir dizinin ikinci elemanını alma.
+        if (
+            len(node) > 1
+            and isinstance(node[0], str)
+            and looks_like_jwt(node[0])
+            and isinstance(node[1], str)
+            and _valid_refresh_token(node[1])
+        ):
+            return node[1].strip()
+        for item in node:
+            if isinstance(item, (dict, list)):
+                found = _scan_refresh_json(item, depth + 1)
+                if found:
+                    return found
+    return None
+
+
+def _refresh_from_value(value: str, *, allow_raw: bool) -> str | None:
+    candidates = _candidate_strings(value)
+    for candidate in candidates:
+        stripped = candidate.strip()
+        if not stripped.startswith(("{", "[")):
+            continue
+        try:
+            parsed = json.loads(stripped)
+        except json.JSONDecodeError:
+            continue
+        found = _scan_refresh_json(parsed)
+        if found:
+            return found
+    if allow_raw:
+        # URL-encoded ham refresh token'da çözülmüş varyantı tercih et.
+        for candidate in reversed(candidates):
+            stripped = candidate.strip()
+            if not stripped.startswith(("{", "[")) and _valid_refresh_token(stripped):
+                return stripped
+    return None
+
+
+def extract_refresh_token(
+    cookie_header: str,
+    *,
+    cookie_names: tuple[str, ...] | list[str] | None = None,
+) -> str | None:
+    """Cookie içindeki refresh token'ı ayıklar; hiçbir ağ isteği yapmaz.
+
+    Erişim token'ıyla aynı URL-encoded/JSON/base64/parçalı çerez biçimleri
+    desteklenir. `cookie_names` öncelikli oturum çerezlerini belirtir. Ham bir
+    değer yalnızca adında `refresh` ve `token` geçen çerezden kabul edilir;
+    böylece access token yanlışlıkla refresh token olarak döndürülmez.
+    """
+    if not cookie_header:
+        return None
+    cookies = merge_chunked_cookies(parse_cookie_header(cookie_header))
+    # Birleştirilmiş taban çerez varken .0/.1 parçalarını ayrı token adayları
+    # olarak tarama; kısa ham refresh token'da ilk parça yanlışlıkla dönebilir.
+    entries = [
+        (name, value) for name, value in cookies.items() if not _CHUNK_SUFFIX_RE.match(name)
+    ]
+    prioritized: list[tuple[str, str]] = []
+    for wanted in cookie_names or ():
+        needle = wanted.strip().lower()
+        if not needle:
+            continue
+        prioritized.extend(
+            (name, value)
+            for name, value in entries
+            if needle == name.lower() or needle in name.lower()
+        )
+    prioritized.extend(entries)
+    seen: set[tuple[str, str]] = set()
+    for name, value in prioritized:
+        if (name, value) in seen or name.lower() in NEVER_TOKEN_COOKIES:
+            continue
+        seen.add((name, value))
+        lowered = name.lower()
+        token = _refresh_from_value(
+            value,
+            allow_raw="refresh" in lowered and "token" in lowered,
+        )
+        if token:
+            return token
+    return None
 
 
 def _token_from_value(value: str) -> str | None:

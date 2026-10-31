@@ -23,7 +23,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 
-from app.core.config import Settings
+from app.core.config import MAX_ACCOUNT_SLOTS, Settings
 from app.core.logging import get_logger
 from app.core.metrics import metrics
 
@@ -326,10 +326,6 @@ class AccountPool:
         return out
 
 
-#: Taranan en yüksek hesap yuvası (sınırsız döngü olmaması için).
-MAX_ACCOUNT_SLOTS = 16
-
-
 def load_accounts(settings: Settings) -> list[Account]:
     """`.env`'deki dolu hesap yuvalarını okur.
 
@@ -360,7 +356,7 @@ def build_account_pool(settings: Settings) -> AccountPool:
             ),
         )
     shared_captcha = [a.label for a in configured if not a.has_own_captcha_token]
-    if len(configured) > 1 and shared_captcha:
+    if len(configured) > 1 and shared_captcha and settings.recaptcha_provider == "static":
         logger.warning(
             "account_pool_shared_captcha_token",
             accounts=shared_captcha,

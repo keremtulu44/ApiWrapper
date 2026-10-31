@@ -253,12 +253,22 @@ class CompletionService:
         # Sohbet hesaba bağlıdır: hesap değişince upstream tarafında başka bir
         # sohbete geçilir (başka hesabın sohbetine yazmak olmaz).
         account_label = account.label if account else None
-        session = await self.sessions.acquire(
-            request.conversation_id, client_identity, account_label
+        warmup = (
+            (lambda chat_id: self.upstream.warmup(chat_id, account=account))
+            if account is not None
+            else None
         )
-        # Hesabın kendi captcha token'ı varsa o kullanılır; token tarayıcı
-        # oturumuna bağlı olduğu için hesaplar arası paylaşılmamalıdır.
-        if account is not None and account.has_own_captcha_token:
+        session = await self.sessions.acquire(
+            request.conversation_id, client_identity, account_label, warmup=warmup
+        )
+        # Yalnız static kipte hesabın kendi token'ı kullanılır; token tarayıcı
+        # oturumuna bağlı olduğu için hesaplar arası paylaşılmamalıdır. Dinamik
+        # sağlayıcılar ve noop, hesapta kalmış eski statik değerlerle ezilemez.
+        if (
+            self.settings.recaptcha_provider == "static"
+            and account is not None
+            and account.has_own_captcha_token
+        ):
             token = account.recaptcha_token
         else:
             token = await self.recaptcha.get_token()
@@ -395,7 +405,8 @@ class CompletionService:
                 continue
             except RecaptchaRejected:
                 self.recaptcha.invalidate()
-                if captcha_retried or emitted > 0:
+                can_refresh = self.settings.recaptcha_provider in {"browser", "external"}
+                if not can_refresh or captcha_retried or emitted > 0:
                     raise
                 captcha_retried = True
                 logger.warning("recaptcha_rejected_retrying")

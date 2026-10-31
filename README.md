@@ -39,7 +39,7 @@ python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev,tokens]"
 
 cp .env.example .env      # TARGET_DOMAIN, API_KEYS, RECAPTCHA_STATIC_TOKEN doldurun
-$EDITOR config/models.yaml # upstream_id değerlerini gerçek modelAId'lerle değiştirin
+$EDITOR config/models.yaml # Max kaydı hazır; başka modeller için gerçek modelAId girin
 
 make run                  # http://localhost:8000/docs
 ```
@@ -53,17 +53,20 @@ make run                  # http://localhost:8000/docs
 | `RECAPTCHA_STATIC_TOKEN` | `static` sağlayıcı için tarayıcıdan alınan v3 token'ı |
 | `config/models.yaml` | `id` ↔ `upstream_id` (`modelAId`) eşlemesi |
 
-> Hedef domain ve model kimlikleri **kodda gömülü değildir**; yalnızca `.env` ve
-> `config/models.yaml` üzerinden okunur. `UPSTREAM_STREAM_PATH` varsayılanı eski bir
-> uçtur — tarayıcı cURL'ünden alınmazsa upstream **HTTP 404** döner.
+> Hedef domain ve model kimlikleri çalıştırma koduna gömülü değildir; `.env` ve
+> `config/models.yaml` üzerinden okunur. Örnek ayar son cURL'deki
+> `/nextjs-api/stream/create-evaluation` yolunu kullanır. Hedef değişirse yolu yeni
+> cURL'den içe aktarın; yanlış yol upstream **HTTP 404** üretir.
 
 ---
 
 ## Upstream Kimlik Doğrulama (`Authorization: Bearer`)
 
-Hedef servis yalnızca `Cookie` göndermeyi yeterli bulmaz; `Authorization: Bearer <access_token>`
-başlığını da zorunlu kılar (aksi halde **401**). ApiWrapper token'ı `UPSTREAM_COOKIE`
-içinden **otomatik ayıklar** ve her upstream isteğine ekler.
+Kimlik doğrulama hedefe göre yalnızca `Cookie` ile veya ayrıca
+`Authorization: Bearer <access_token>` başlığıyla yapılabilir. Son alınan normal sohbet
+cURL'ünde Authorization başlığı **yoktu**; bu kurulumda `UPSTREAM_AUTH_FROM_COOKIE=false`
+kalır. Hedef gerçekten Bearer başlığı isterse ApiWrapper token'ı cookie'den otomatik
+ayıklayıp ekleyebilir.
 
 ```bash
 # Tarayıcıdan kopyalanan ham Cookie başlığı yeterlidir:
@@ -85,7 +88,7 @@ Desteklenen çerez biçimleri (`app/upstream/auth.py`):
 
 | Değişken | Varsayılan | Açıklama |
 |---|---|---|
-| `UPSTREAM_AUTH_FROM_COOKIE` | `true` | Cookie'den otomatik ayıklamayı aç/kapa |
+| `UPSTREAM_AUTH_FROM_COOKIE` | `false` | Cookie'den ayıklanan tokenla ayrıca Authorization üret; yalnız hedef bunu istiyorsa aç |
 | `UPSTREAM_ACCESS_TOKEN` | — | Token'ı doğrudan ver (en yüksek öncelik) |
 | `UPSTREAM_TOKEN_COOKIE_NAMES` | — | Token'ı taşıyan çerez adları (virgülle); boşsa sezgisel arama |
 | `UPSTREAM_AUTH_SCHEME` | `Bearer` | Boş bırakılırsa token ham gönderilir |
@@ -93,6 +96,10 @@ Desteklenen çerez biçimleri (`app/upstream/auth.py`):
 
 > `UPSTREAM_EXTRA_HEADERS` en son uygulanır; `authorization=...` yazarak
 > otomatik üretilen başlığı bilinçli olarak ezebilirsiniz.
+>
+> Cookie içindeki `refresh_token` ayrıştırılıp `/v1/admin/auth` altında maskeli olarak
+> teşhis edilebilir. Ancak hedefe özel refresh HTTP çağrısı henüz uygulanmamıştır;
+> access token yenilemesi için upstream'in gerçek refresh isteği/cevabı tanımlanmalıdır.
 
 ### Teşhis
 
@@ -148,6 +155,7 @@ python scripts/compare_curl.py request.txt
 | Gövdede `recaptchaV2Token` var, biz `recaptchaV3Token` yolluyoruz | `UPSTREAM_RECAPTCHA_FIELD=recaptchaV2Token` |
 | `accept-language` farklı (örn. `tr-TR,...`) | `UPSTREAM_ACCEPT_LANGUAGE=tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7` |
 | cURL'de `authorization` başlığı **yok** | `UPSTREAM_AUTH_FROM_COOKIE=false` (varsayılan) |
+| `cx` her istekte değişiyor | Sabit değer yazılmaz. İlk canlı test alan olmadan yapılır; zorunluysa istemci JS'sindeki üretim yöntemi gerekir |
 
 > **Cloudflare:** İsteğinizde `cf_clearance` çerezi varsa onu da `UPSTREAM_COOKIE`
 > içine **olduğu gibi** ekleyin. `cf_clearance` yalnızca onu üreten IP + User-Agent
@@ -180,7 +188,7 @@ curl -N http://localhost:8000/v1/chat/completions \
   -H "Authorization: Bearer sk-local-dev-key" \
   -H "Content-Type: application/json" \
   -d '{
-    "model": "qwen3.6-max-preview",
+    "model": "max",
     "stream": true,
     "stream_options": {"include_usage": true},
     "messages": [{"role": "user", "content": "Merhaba, kendini tanıt."}]
@@ -197,7 +205,7 @@ from openai import OpenAI
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="sk-local-dev-key")
 
 stream = client.chat.completions.create(
-    model="qwen3.6-max-preview",
+    model="max",
     messages=[{"role": "user", "content": "FastAPI'yi üç cümlede anlat."}],
     stream=True,
 )
@@ -238,6 +246,14 @@ python scripts/curl_to_env.py hesap1.txt --write --account 1   # 1. yuvayı taze
 python scripts/curl_to_env.py - --reset-accounts     # tüm yuvaları temizle
 ```
 
+En fazla **4 hesap** desteklenir; dolu havuza 5. hesap eklenmeye çalışılırsa araç dosyaya
+yazmadan hata verir. Numarayla tazeleme var olan özel hesap adını korur. Cookie-only bir
+cURL ile tazeleme eski `UPSTREAM_ACCESS_TOKEN` değerini, authorization-only cURL ile
+tazeleme ise eski cookie'yi temizler; böylece iki oturumun kimlikleri karışmaz.
+2. veya sonraki hesapları eklemek global `RECAPTCHA_PROVIDER` seçimini değiştirmez.
+Ayar dosyası çalışma sırasında yeniden okunmadığından, değişiklikten sonra servisi
+yeniden başlatın.
+
 Araç artık cURL'deki `authorization` başlığını da yazıyor (`UPSTREAM_ACCESS_TOKEN` +
 `UPSTREAM_AUTH_SCHEME`, `UPSTREAM_AUTH_FROM_COOKIE=false`). Başlık yoksa istek yalnızca
 Cookie ile gider ve bunu belirten bir uyarı üretilir; ne başlık ne oturum çerezi varsa
@@ -270,9 +286,12 @@ ACCOUNT_BUDGET_GROWTH_STREAK=3      # bütçenin +1 artması için gereken temiz
   N-1'dir → öğrenilen tavan `N-1` olur (çarpan azaltma). Bütçe kadar mesaj kilit
   olmadan geçilince tavan +1 artar (toplama artırma), ama her mesajda değil —
   `ACCOUNT_BUDGET_GROWTH_STREAK` kadar temiz pencere gerekir.
-- **Captcha:** her hesap **kendi** `RECAPTCHA_STATIC_TOKEN` değerini kullanır; token
-  tarayıcı oturumuna bağlı olduğu için hesaplar arası paylaşılmaz. Token ~2 dk
-  ömürlüdür, yani her hesabın cURL'ünü düzenli tazelemeniz gerekir.
+- **Captcha:** `RECAPTCHA_PROVIDER=static` iken her hesap **kendi**
+  `RECAPTCHA_STATIC_TOKEN` değerini kullanır; token tarayıcı oturumuna bağlı olduğu için
+  hesaplar arası paylaşılmaz. Token ~2 dk ömürlüdür, yani bu kipte her hesabın cURL'ünü
+  düzenli tazelemeniz gerekir. `browser`/`external` seçildiğinde hesaplardaki eski statik
+  değerler sağlayıcıyı ezmez; sağlayıcıdan alınan taze token kullanılır. `noop` ve `static`
+  kipinde reddedilen token aynı değerle tekrar denenmez.
 - **Sohbet:** upstream sohbeti hesaba bağlıdır; hesap değişince başka hesabın
   sohbetine yazılmaz.
 
@@ -290,27 +309,56 @@ curl -X POST -H "Authorization: Bearer $API_KEY" \
 RECAPTCHA_PROVIDER=static     # RECAPTCHA_STATIC_TOKEN (~2 dk ömürlü, hızlı başlangıç)
 RECAPTCHA_PROVIDER=noop       # upstream doğrulamıyorsa / testler
 RECAPTCHA_PROVIDER=browser    # Playwright: RECAPTCHA_SITE_KEY gerekir
-RECAPTCHA_PROVIDER=external   # RECAPTCHA_EXTERNAL_URL + API key (2captcha uyumlu)
+RECAPTCHA_PROVIDER=external   # Tek istekte doğrudan token döndüren özel HTTP çözücü
 ```
 
-`browser` için: `pip install ".[browser]" && playwright install chromium`.
-Upstream token'ı reddederse (403) cache otomatik geçersizleşir ve istek **bir kez** yeniden denenir.
+Yerel Python kurulumunda `browser` için: `pip install ".[browser]" && playwright install chromium`.
+Gözlenen hedef **reCAPTCHA Enterprise** kullandığından örnek yapılandırmada
+`RECAPTCHA_VERSION=enterprise` ve `RECAPTCHA_ACTION=chat_submit` bulunur. Browser
+sağlayıcı hedef origin'de `enterprise.js` üzerinden `grecaptcha.enterprise.execute()`
+çağırır; `/recaptcha/enterprise/reload` protobuf isteğini veya Google cookie'lerini
+yeniden oynatmaz. Site key public'tir, üretilen CAPTCHA token'ı ise gizli ve kısa ömürlüdür.
+Docker imajı Playwright ve Chromium'u önceden içerir. `external` sağlayıcı tek HTTP
+cevabında doğrudan token döndüren bir uç bekler; standart `createTask`/`getTaskResult`
+akışları ayrıca adaptör gerektirir.
+Upstream token'ı reddederse (403) dinamik sağlayıcıda cache otomatik geçersizleşir ve istek
+**bir kez** yeniden denenir.
+
+### Render / Docker
+
+- Depodaki `render.yaml` tek instance, sleep etmeyen `starter` Docker servisi tanımlar.
+- `/healthz` yalnızca process liveness, `/readyz` statik dağıtım readiness kontrolüdür.
+  Render blueprint'i `/readyz` kullanır; canlı upstream healthcheck içinde denenmez.
+- Başlatma komutu Render'ın `PORT` değişkenini, yoksa `8000` portunu kullanır.
+- Bellek içi hesap/sohbet durumu nedeniyle **tek instance ve tek worker** ile başlayın.
+- Sürekli proses gerekiyorsa sleep etmeyen bir plan seçin; bu upstream oturumunun
+  yenilenmesini tek başına çözmez.
+- Güçlü bir `API_KEYS` değeri, gerçek `TARGET_DOMAIN`, model ID ve kullanılan CAPTCHA
+  kipinin gizli ayarlarını Render environment/secret alanlarına girin.
+- `RECAPTCHA_PROVIDER=browser` için `RECAPTCHA_SITE_KEY` gerekir. Blueprint gözlenen
+  public site key'i, Enterprise modunu ve `chat_submit` action'unu hazır getirir.
+  Chromium ve sistem bağımlılıkları imajda hazırdır.
+
+Dağıtım sırası, istek yaşam döngüsü, readiness hata kodları ve belirti→çözüm tablosu:
+[`docs/RENDER.md`](docs/RENDER.md).
 
 ---
 
 ## İşletim
 
 ```bash
-make test     # 68 test: parser, adapters, çekirdek, uçtan uca API
-python scripts/test_client.py  # canlı servise karşı 14 kontrol
+make test     # parser, adapter, çekirdek ve uçtan uca API regresyonları
+python scripts/test_client.py  # canlı servise karşı kontroller
 make lint     # ruff
 make docker   # docker compose up --build
 ```
 
 - `GET /health` → devre kesici durumu, model sayısı, oturum sayısı
+- `GET /healthz` → basit liveness; `GET /readyz` → statik dağıtım readiness
 - `GET /metrics` → Prometheus (`apiwrapper_time_to_first_token_seconds` dahil)
 - `POST /v1/admin/breaker/reset`, `/v1/admin/recaptcha/invalidate`, `/v1/admin/sessions/clear`
 - `GET /v1/admin/config` → hassas olmayan etkin yapılandırma
+- `GET /v1/admin/auth` → maskeli token teşhisi; diğer hesaplar için `?slot=2`, `?slot=3`, `?slot=4`
 
 ### Ayar politikaları
 

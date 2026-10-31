@@ -14,6 +14,12 @@ from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 UnsupportedParamPolicy = Literal["ignore", "hint", "error"]
 RecaptchaProviderName = Literal["static", "noop", "browser", "external"]
+RecaptchaVersion = Literal["v3", "enterprise"]
+
+#: cURL içe aktarıcı ve hesap havuzu yalnızca aşağıda açıkça tanımlanan
+#: soneksiz/_2/_3/_4 yuvalarını destekler. Araçların daha fazla yuvaya
+#: "kaydedildi" deyip uygulamanın onları yok saymasını önlemek için tek kaynak.
+MAX_ACCOUNT_SLOTS = 4
 
 
 class Settings(BaseSettings):
@@ -122,6 +128,7 @@ class Settings(BaseSettings):
     upstream_account_name: str = ""
 
     upstream_cookie_2: str = ""
+    target_domain_2: str = ""
     upstream_access_token_2: str = ""
     upstream_auth_from_cookie_2: bool = False
     upstream_auth_scheme_2: str = "Bearer"
@@ -133,6 +140,7 @@ class Settings(BaseSettings):
     upstream_account_2_name: str = ""
 
     upstream_cookie_3: str = ""
+    target_domain_3: str = ""
     upstream_access_token_3: str = ""
     upstream_auth_from_cookie_3: bool = False
     upstream_auth_scheme_3: str = "Bearer"
@@ -144,6 +152,7 @@ class Settings(BaseSettings):
     upstream_account_3_name: str = ""
 
     upstream_cookie_4: str = ""
+    target_domain_4: str = ""
     upstream_access_token_4: str = ""
     upstream_auth_from_cookie_4: bool = False
     upstream_auth_scheme_4: str = "Bearer"
@@ -217,8 +226,10 @@ class Settings(BaseSettings):
     recaptcha_external_url: str = ""
     recaptcha_external_api_key: str = ""
     recaptcha_external_timeout: float = 60.0
-    #: browser (Playwright) sağlayıcı için.
+    #: browser (Playwright) sağlayıcı için. Enterprise hedeflerde hem betik
+    #: hem de `grecaptcha.enterprise.execute()` API'si kullanılır.
     recaptcha_site_key: str = ""
+    recaptcha_version: RecaptchaVersion = "v3"
     recaptcha_action: str = "chat"
     recaptcha_browser_timeout: float = 45.0
 
@@ -272,7 +283,13 @@ class Settings(BaseSettings):
             return [item.strip() for item in text.split(",") if item.strip()]
         return v
 
-    @field_validator("target_domain", mode="before")
+    @field_validator(
+        "target_domain",
+        "target_domain_2",
+        "target_domain_3",
+        "target_domain_4",
+        mode="before",
+    )
     @classmethod
     def _strip_scheme(cls, v: object) -> object:
         """Şema, tırnak, sondaki slash ve yol kısmını temizler."""

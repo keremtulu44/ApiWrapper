@@ -1,0 +1,55 @@
+# Render Blueprint: tek instance, sleep etmeyen Docker Web Service.
+# Gizli değerler depoya yazılmaz; Blueprint oluşturulurken Render sorar.
+services:
+  - type: web
+    name: apiwrapper
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    numInstances: 1
+    autoDeploy: true
+    # Process ayakta olması ile dağıtım ayarlarının hazır olması ayrıdır.
+    healthCheckPath: /readyz
+    envVars:
+      - key: API_KEYS
+        sync: false
+      - key: TARGET_DOMAIN
+        sync: false
+      - key: UPSTREAM_STREAM_PATH
+        value: /nextjs-api/stream/create-evaluation
+      - key: UPSTREAM_REFERER_PATH
+        value: /text/direct
+      - key: UPSTREAM_MODE
+        value: direct-battle
+      - key: UPSTREAM_ACCEPT_LANGUAGE
+        value: tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7
+      - key: UPSTREAM_USER_AGENT
+        value: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0
+      - key: UPSTREAM_COOKIE
+        sync: false
+      - key: UPSTREAM_ACCESS_TOKEN
+        sync: false
+      - key: UPSTREAM_AUTH_FROM_COOKIE
+        value: "false"
+      # Örn. dnt=1;x-arena-web-deployment=...;x-deployment-id=...
+      # Deployment değerleri sabit kabul edilmez; güncel cURL'den alınır.
+      - key: UPSTREAM_EXTRA_HEADERS
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_JSON
+        value: "true"
+      - key: AUTH_DISABLED
+        value: "false"
+      - key: RECAPTCHA_PROVIDER
+        value: browser
+      # reCAPTCHA site key public'tir; cookie/token değildir.
+      - key: RECAPTCHA_SITE_KEY
+        value: 6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0
+      - key: RECAPTCHA_VERSION
+        value: enterprise
+      - key: RECAPTCHA_ACTION
+        value: chat_submit
+      - key: RECAPTCHA_BROWSER_TIMEOUT
+        value: "45"

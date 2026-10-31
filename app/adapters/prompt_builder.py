@@ -55,7 +55,8 @@ def _render_tools(tools: list[dict[str, Any]] | None) -> str:
     for tool in tools:
         if not isinstance(tool, dict):
             continue
-        fn = tool.get("function") if isinstance(tool.get("function"), dict) else tool
+        function = tool.get("function")
+        fn: dict[str, Any] = function if isinstance(function, dict) else tool
         described.append(
             {
                 "name": fn.get("name", ""),

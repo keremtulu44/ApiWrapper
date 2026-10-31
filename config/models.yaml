@@ -1,26 +1,22 @@
 # Model kayıt defteri.
 #
 # id           → istemcinin "model" alanında göndereceği ad (OpenAI tarafı)
-# upstream_id  → upstream gövdesindeki "modelAId" değeri
+# upstream_id  → upstream gövdesindeki modelAId değeri
 # aliases      → aynı modele işaret eden alternatif adlar (opsiyonel)
 #
-# Gerçek upstream model kimliklerini hedef servisin ağ trafiğinden alıp buraya yazın.
-# Kodda hiçbir model kimliği gömülü DEĞİLDİR; tek kaynak bu dosyadır.
+# Max seçiliyken alınan art arda yeni sohbet isteklerinde aynı modelAId görüldü.
+# Bu kimlik Max yönlendirmesinin sabit istek değeridir; cevap içinde seçilen gerçek
+# model değişse bile OpenAI tarafındaki istek "max" olarak kalır.
 #
-# ÖNEMLİ — sıralama: `scripts/curl_to_env.py` bu dosyadaki İLK `upstream_id`
-# satırını, cURL gövdesinden okuduğu gerçek `modelAId` ile değiştirir. Yani
-# hangi modelin otomatik doldurulmasını istiyorsanız onu EN ÜSTE yazın.
+# Başka bir model eklenecekse gerçek modelAId değeri hedefin ağ trafiğinden alınır.
+# curl_to_env.py bu dosyadaki İLK upstream_id satırını günceller.
 
-default: qwen3.6-max-preview
+default: max
 
 models:
-  # Sitede seçili model bu iken aldığınız cURL'ü curl_to_env.py'ye verin;
-  # aşağıdaki upstream_id gerçek modelAId ile kendiliğinden güncellenir.
-  - id: qwen3.6-max-preview
-    upstream_id: REPLACE_WITH_UPSTREAM_MODEL_ID_1
-    owned_by: alibaba
-    description: Qwen3.6-Max Preview (Nisan 2026) — kod ve akıl yürütme odaklı, 262K bağlam.
+  - id: max
+    upstream_id: 019b24bb-5caf-71c3-b854-37d0c7086f21
+    owned_by: arena
+    description: Max — upstream tarafında otomatik model seçimi.
     aliases:
-      - qwen3.6-max
-      - qwen-max
-      - qwen
+      - max-auto

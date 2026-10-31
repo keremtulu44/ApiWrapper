@@ -89,6 +89,29 @@ def test_extracts_every_setting_from_curl(sample):
     assert not any("anonim" in w for w in warnings)
 
 
+def test_extracts_only_safe_static_extra_headers(sample):
+    curl = (
+        "curl 'https://example-llm.ai/nextjs-api/stream/create-evaluation' "
+        f"-H 'cookie: {sample['cookie']}' "
+        "-H 'dnt: 1' "
+        "-H 'x-arena-web-deployment: dpl_test' "
+        "-H 'x-deployment-id: dpl_test' "
+        "-H 'traceparent: dynamic-value' "
+        f"--data-raw '{json.dumps(sample['body'])}'"
+    )
+    env, _, _ = build_settings(parse_curl(curl))
+    extra = dict(
+        part.split("=", 1) for part in env["UPSTREAM_EXTRA_HEADERS"].split(";")
+    )
+    assert extra == {
+        "dnt": "1",
+        "x-arena-web-deployment": "dpl_test",
+        "x-deployment-id": "dpl_test",
+    }
+    assert "traceparent" not in env["UPSTREAM_EXTRA_HEADERS"]
+    assert "cookie" not in env["UPSTREAM_EXTRA_HEADERS"]
+
+
 def test_extracted_cookie_is_single_line(sample):
     """`.env` satır tabanlıdır; değer içinde satır sonu olursa ayar bozulur."""
     env, _, _ = build_settings(parse_curl(_curl(sample["cookie"], sample["body"])))
@@ -190,6 +213,17 @@ def test_telemetry_host_is_flagged_as_critical():
     )
     _, warnings, _ = build_settings(parse_curl(curl))
     assert any(w.startswith("KRİTİK") and "telemetri" in w for w in warnings)
+
+
+def test_same_origin_posthog_capture_is_rejected():
+    """PostHog aynı domainde/proxy'de olsa da sohbet isteği değildir."""
+    curl = (
+        "curl 'https://arena.ai/rpc/i/v0/e/?ip=0&compression=gzip-js' "
+        "-H 'cookie: a-auth-token=xyz1234567890abc' --data-raw 'compressed-events'"
+    )
+    _, warnings, _ = build_settings(parse_curl(curl))
+    assert any(w.startswith("KRİTİK") and "telemetri" in w for w in warnings)
+    assert any("/rpc/i/v0/e/" in w for w in warnings)
 
 
 @pytest.mark.parametrize(

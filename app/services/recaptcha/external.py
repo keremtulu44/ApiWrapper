@@ -54,7 +54,7 @@ class ExternalRecaptchaProvider(RecaptchaProvider):
             "siteKey": self.settings.recaptcha_site_key,
             "pageUrl": self.settings.base_url,
             "action": self.settings.recaptcha_action,
-            "version": "v3",
+            "version": self.settings.recaptcha_version,
         }
         headers = {"content-type": "application/json", "accept": "application/json"}
         if self.settings.recaptcha_external_api_key:
