@@ -8,6 +8,7 @@ import httpx
 import pytest
 import respx
 
+from app.services import completion_service as completion_service_module
 from tests.conftest import TEST_API_KEY, UPSTREAM_DOMAIN, ai_stream
 
 STREAM_URL = f"https://{UPSTREAM_DOMAIN}/nextjs-api/stream/post-to-evaluation/"
@@ -209,6 +210,82 @@ def test_streaming_include_usage(client):
     usage_chunks = [c for c in chunks if c.get("usage")]
     assert usage_chunks
     assert usage_chunks[-1]["usage"]["total_tokens"] > 0
+
+
+@respx.mock
+def test_streaming_success_has_structured_completion_log(client, monkeypatch):
+    info_events = []
+    monkeypatch.setattr(
+        completion_service_module.logger,
+        "info",
+        lambda event, **fields: info_events.append((event, fields)),
+    )
+    stream_route(respx).mock(return_value=httpx.Response(200, content=ai_stream("ok")))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "messages": [{"role": "user", "content": "say"}],
+        },
+    )
+
+    assert response.status_code == 200
+    event = next(fields for name, fields in info_events if name == "stream_completed")
+    assert event["model"] == "test-model"
+    assert event["stream"] is True
+    assert event["finish_reason"] == "stop"
+    assert event["content_chars"] == 2
+    assert event["content_chunks"] == 1
+    assert event["usage_total_tokens"] > 0
+    assert event["usage_included"] is True
+    assert event["first_token_ms"] >= 0
+    assert event["duration_ms"] >= 0
+
+
+@respx.mock
+def test_stream_http_error_is_explicit_and_logged(client, monkeypatch):
+    warning_events = []
+    monkeypatch.setattr(
+        completion_service_module.logger,
+        "warning",
+        lambda event, **fields: warning_events.append((event, fields)),
+    )
+    stream_route(respx).mock(
+        return_value=httpx.Response(429, content=b'{"error":"prompt failed"}')
+    )
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "stream_options": {"include_usage": True},
+            "messages": [{"role": "user", "content": "say"}],
+        },
+    )
+
+    assert response.status_code == 200  # SSE başladıktan sonra hata gövdede taşınır.
+    payloads = [
+        line[len("data: ") :]
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert payloads[-1] == "[DONE]"
+    chunks = [json.loads(payload) for payload in payloads[:-1]]
+    error = next(chunk["error"] for chunk in chunks if chunk.get("error"))
+    assert error["code"] == "upstream_rate_limited"
+    assert not any(chunk.get("usage") for chunk in chunks)
+
+    event = next(fields for name, fields in warning_events if name == "stream_failed")
+    assert event["model"] == "test-model"
+    assert event["error_code"] == "upstream_rate_limited"
+    assert event["error_type"] == "rate_limit_error"
+    assert event["status"] == 429
+    assert event["content_chars"] == 0
+    assert event["first_token_ms"] is None
 
 
 @respx.mock

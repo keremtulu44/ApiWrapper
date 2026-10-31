@@ -113,6 +113,7 @@ def main() -> int:
     first_token_at = None
     chunks: list[dict] = []
     saw_done = False
+    stream_error: dict | None = None
     text = ""
     with request("/chat/completions", body, stream=True) as response:
         check("content-type text/event-stream",
@@ -127,6 +128,10 @@ def main() -> int:
                 break
             chunk = json.loads(payload)
             chunks.append(chunk)
+            if chunk.get("error") and stream_error is None:
+                error = chunk["error"]
+                stream_error = error if isinstance(error, dict) else {"message": str(error)}
+                continue
             if chunk.get("choices"):
                 piece = chunk["choices"][0].get("delta", {}).get("content") or ""
                 if piece and first_token_at is None:
@@ -135,10 +140,16 @@ def main() -> int:
 
     check("ilk chunk role=assistant",
           bool(chunks) and chunks[0]["choices"][0]["delta"].get("role") == "assistant")
-    check("metin biriktirildi", bool(text), f"{len(text)} karakter")
-    check("finish_reason chunk'ı var",
-          any(c.get("choices") and c["choices"][0].get("finish_reason") for c in chunks))
-    check("usage chunk'ı var", any(c.get("usage") for c in chunks))
+    if stream_error is not None:
+        # HTTP 200 ile başlayan SSE içindeki upstream hatasını "boş cevap" gibi
+        # göstermemek için asıl kod ve mesajı doğrudan yüzeye çıkar.
+        check("stream sırasında hata yok", False,
+              json.dumps(stream_error, ensure_ascii=False))
+    else:
+        check("metin biriktirildi", bool(text), f"{len(text)} karakter")
+        check("finish_reason chunk'ı var",
+              any(c.get("choices") and c["choices"][0].get("finish_reason") for c in chunks))
+        check("usage chunk'ı var", any(c.get("usage") for c in chunks))
     check("[DONE] alındı", saw_done)
     if first_token_at is not None:
         print(f"{DIM}    TTFT: {first_token_at * 1000:.0f} ms · "

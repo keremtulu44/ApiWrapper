@@ -284,6 +284,27 @@ def test_no_switch_when_all_accounts_are_locked(pool_client):
     assert route.call_count == 2
 
 
+@respx.mock
+def test_invalid_messages_stay_400_when_all_accounts_are_locked(pool_client):
+    route = route_by_cookie(
+        respx,
+        {
+            "COOKIE-1": httpx.Response(429, content=b'{"error":"upstream limit reached"}'),
+            "COOKIE-2": httpx.Response(429, content=b'{"error":"upstream limit reached"}'),
+        },
+    )
+    locked = pool_client.post("/v1/chat/completions", json=chat_body())
+    assert locked.status_code == 429
+
+    invalid = pool_client.post(
+        "/v1/chat/completions", json={"model": "test-model", "messages": []}
+    )
+
+    assert invalid.status_code == 400
+    assert invalid.json()["error"]["param"] == "messages"
+    assert route.call_count == 2  # Geçersiz istek yeni upstream denemesi başlatmaz.
+
+
 # ------------------------------------------------ metin mesajı ile gelen kota
 # Gerçek hedef kısıtlamayı HTTP hatası olarak değil, *akışın içinde metin*
 # olarak gönderiyor. Kota tespiti çağıran tarafta yapıldığı sürece istisna

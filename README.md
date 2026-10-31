@@ -26,7 +26,7 @@ Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**
 | Hesap havuzu | Çoklu çerez/token; kayan pencere sayacı, kilitte otomatik hesap geçişi, AIMD ile öğrenilen bütçe, hesap başına captcha token'ı |
 | Sohbet yönetimi | `SESSION_REUSE=true` ile istemci başına tek upstream sohbeti; `SESSION_ROTATE_AFTER_MESSAGES`/`_SECONDS` eşiğinde yeni sohbete geçilir (Continue gibi `conversation_id` gönderemeyen istemciler için) |
 | reCAPTCHA v3 | `static` (varsayılan) · `noop` · `browser` (Playwright) · `external` — TTL cache + tek-uçuş kilidi |
-| Gözlemlenebilirlik | structlog JSON, `X-Request-ID`, Prometheus metrikleri (TTFT dahil) |
+| Gözlemlenebilirlik | structlog JSON, `X-Request-ID`, `completion_completed`/`stream_completed`/`stream_failed` olayları, Prometheus metrikleri (TTFT dahil) |
 | Uyumluluk | `stop` dizileri (yerel kesme), `stream_options.include_usage`, alias'lı model kayıt defteri, multimodal içerik parçaları |
 
 ---
@@ -371,6 +371,9 @@ make docker   # docker compose up --build
 
 - `GET /health` → devre kesici durumu, model sayısı, oturum sayısı
 - `GET /healthz` → basit liveness; `GET /readyz` → statik dağıtım readiness
+- Streaming başarı/hatası `stream_completed`/`stream_failed` JSON loglarında ayrılır;
+  HTTP 200 ile başlayan SSE içindeki upstream hatası `test_client.py` çıktısında kod ve
+  mesajıyla gösterilir. Ayrıntı: [`docs/RENDER.md`](docs/RENDER.md#7-json-logları-ve-sse-hata-ayıklama)
 - `GET /metrics` → Prometheus (`apiwrapper_time_to_first_token_seconds` dahil)
 - `POST /v1/admin/breaker/reset`, `/v1/admin/recaptcha/invalidate`, `/v1/admin/sessions/clear`
 - `GET /v1/admin/config` → hassas olmayan etkin yapılandırma

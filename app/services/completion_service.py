@@ -6,7 +6,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator
 
-from app.adapters.openai_to_upstream import build_upstream_request
+from app.adapters.openai_to_upstream import build_upstream_request, validate_request
 from app.adapters.upstream_to_openai import (
     build_usage,
     make_completion,
@@ -309,6 +309,10 @@ class CompletionService:
         Kota tespiti de burada yapılır (HTTP hata gövdesi + hata olayı + düz
         metin delta'sı) ki `report_quota` her yolda çağrılsın.
         """
+        # Geçersiz istekleri hesap seçimi, sohbet açma ve CAPTCHA üretiminden
+        # önce reddet. Aksi halde örneğin boş `messages`, hesaplar cooldown'dayken
+        # doğru 400 yerine yanıltıcı bir 429 döndürür ve gereksiz iş yapar.
+        validate_request(request, self.settings)
         max_switches = max(0, self.settings.account_max_switches)
         switches = 0
         captcha_retried = False
@@ -473,7 +477,7 @@ class CompletionService:
         )
         metrics.inc("apiwrapper_tokens_total", usage.total_tokens, {"model": entry.id})
 
-        return make_completion(
+        response = make_completion(
             completion_id=completion_id,
             model=entry.id,
             content=content,
@@ -482,6 +486,17 @@ class CompletionService:
             created=now_ts(),
             system_fingerprint=self.system_fingerprint,
         )
+        logger.info(
+            "completion_completed",
+            completion_id=completion_id,
+            model=entry.id,
+            stream=False,
+            finish_reason=finish_reason,
+            content_chars=len(content),
+            usage_total_tokens=usage.total_tokens,
+            duration_ms=round((time.monotonic() - started) * 1000, 2),
+        )
+        return response
 
     # ------------------------------------------------------------- stream
     async def stream_completion(
@@ -501,7 +516,7 @@ class CompletionService:
         reported_usage: dict[str, int] = {}
         completion_text: list[str] = []
         first_token_at: float | None = None
-        finished_cleanly = False
+        usage_total_tokens: int | None = None
         scanner = self._new_quota_scanner()
 
         metrics.inc("apiwrapper_requests_total", labels={"endpoint": "completions",
@@ -514,7 +529,13 @@ class CompletionService:
             try:
                 async for event in self._events(request, client_identity=client_identity):
                     if is_disconnected is not None and await is_disconnected():
-                        logger.info("client_disconnected", completion_id=completion_id)
+                        logger.info(
+                            "client_disconnected",
+                            completion_id=completion_id,
+                            model=entry.id,
+                            content_chars=sum(len(part) for part in completion_text),
+                            duration_ms=round((time.monotonic() - started) * 1000, 2),
+                        )
                         return
 
                     if event.type is EventType.ERROR:
@@ -556,12 +577,25 @@ class CompletionService:
                     yield sse_event(
                         _dump(make_content_chunk(completion_id, entry.id, created, tail))
                     )
-                finished_cleanly = True
 
             except Exception as exc:
                 api_error = self._translate(exc)
                 logger.warning(
-                    "stream_failed", error=api_error.message, status=api_error.status_code
+                    "stream_failed",
+                    completion_id=completion_id,
+                    model=entry.id,
+                    error=api_error.message,
+                    error_code=api_error.code,
+                    error_type=api_error.err_type,
+                    status=api_error.status_code,
+                    content_chars=sum(len(part) for part in completion_text),
+                    content_chunks=len(completion_text),
+                    first_token_ms=(
+                        round((first_token_at - started) * 1000, 2)
+                        if first_token_at is not None
+                        else None
+                    ),
+                    duration_ms=round((time.monotonic() - started) * 1000, 2),
                 )
                 yield sse_event(api_error.to_payload())
                 return
@@ -578,9 +612,28 @@ class CompletionService:
                     reported_usage or None,
                 )
                 metrics.inc("apiwrapper_tokens_total", usage.total_tokens, {"model": entry.id})
+                usage_total_tokens = usage.total_tokens
                 yield sse_event(
                     _dump(make_usage_chunk(completion_id, entry.id, created, usage))
                 )
+
+            logger.info(
+                "stream_completed",
+                completion_id=completion_id,
+                model=entry.id,
+                stream=True,
+                finish_reason=finish_reason,
+                content_chars=sum(len(part) for part in completion_text),
+                content_chunks=len(completion_text),
+                first_token_ms=(
+                    round((first_token_at - started) * 1000, 2)
+                    if first_token_at is not None
+                    else None
+                ),
+                usage_total_tokens=usage_total_tokens,
+                usage_included=request.wants_usage(),
+                duration_ms=round((time.monotonic() - started) * 1000, 2),
+            )
 
         finally:
             metrics.inc("apiwrapper_active_streams", -1.0)
@@ -590,7 +643,6 @@ class CompletionService:
                 {"endpoint": "completions"},
             )
             # `[DONE]` her durumda gönderilir; istemciler buna güvenir.
-            del finished_cleanly
             yield sse_done()
 
     # ------------------------------------------------------------ private
