@@ -407,9 +407,11 @@ Telegram sınırına göre parçalanır.
 
 Bot normal (non-streaming) yolu test eder; SSE/stream regresyonu için ayrıca
 `scripts/test_client.py --model max` çalıştırın. 429 yanıtı upstream rate limit olarak
-görünür; restart veya cookie yenileme çözümü değildir. Botu 7/24 çalıştırmak isterseniz
-aynı Docker imajıyla Render Background Worker kullanıp start command olarak
-`python -m app.telegram.bot` verin; worker'a yalnız Telegram/wrapper env alanlarını ekleyin.
+görünür; restart veya cookie yenileme çözümü değildir. Botu 7/24 çalıştırmak için
+Render **Background Worker** oluşturun. Runtime `Docker`, Dockerfile Path
+`./Dockerfile.telegram` olsun; Build/Start/Docker Command alanlarını boş bırakın. Bu dosyanın `CMD` satırı botu kendisi başlatır. Web Service `./Dockerfile`
+kullanmaya devam etmelidir. Worker'a yalnız Telegram/wrapper env alanlarını ekleyin;
+`WRAPPER_BASE_URL` Web Service'in kök adresidir (`/v1` ve `/docs` olmadan).
 Gerçek Telegram ve Render testleri bu ortamda token/secret olmadan çalıştırılmaz.
 
 ---

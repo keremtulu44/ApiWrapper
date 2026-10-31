@@ -120,3 +120,10 @@ def test_render_blueprint_is_single_instance_always_on_and_secret_free():
     assert env["RECAPTCHA_SITE_KEY"]["value"] == "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0"
     assert env["RECAPTCHA_VERSION"]["value"] == "enterprise"
     assert env["RECAPTCHA_ACTION"]["value"] == "chat_submit"
+
+
+def test_telegram_worker_dockerfile_starts_bot_without_a_start_command():
+    dockerfile = Path("Dockerfile.telegram").read_text(encoding="utf-8")
+    assert 'CMD ["python", "-m", "app.telegram.bot"]' in dockerfile
+    assert "uvicorn" not in dockerfile
+    assert "playwright install" not in dockerfile

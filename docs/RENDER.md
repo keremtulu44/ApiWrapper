@@ -165,13 +165,22 @@ python -m app.telegram.bot
 3. `/ping` wrapper `/healthz` kontrolünü, normal metin gerçek non-streaming tamamlamayı
    test eder. `/help` kullanım bilgisini gösterir.
 
-7/24 bot için Render'da aynı depo/imajla **Background Worker** oluşturun ve start command
-olarak `python -m app.telegram.bot` verin. Worker'a yalnız yukarıdaki dört env alanını
-ekleyin; `UPSTREAM_CURL` web servisinde kalır. Wrapper URL'si public servisin kök URL'si
-olabilir. Bot token'ı ve wrapper API key'i hiçbir zaman Telegram mesajına veya depoya
-yazılmaz. Bot tek turluktur, konuşma geçmişi tutmaz; stream testi için `test_client.py`
-kullanılır. Gerçek Telegram/Render bağlantısı secret'lar olmadan bu geliştirme ortamında
-canlı doğrulanmamıştır.
+7/24 bot için Render'da aynı repo/branch ile **Background Worker** oluşturun:
+
+| Alan | Değer |
+|---|---|
+| Runtime | `Docker` |
+| Dockerfile Path | `./Dockerfile.telegram` |
+| Build Command | Boş |
+| Start/Docker Command | Boş; dosyanın `CMD` satırı botu başlatır |
+
+Web Service `./Dockerfile` kullanmaya devam etmelidir; onun komutunu botla değiştirmeyin.
+Worker'a yalnız yukarıdaki dört env alanını ekleyin; `UPSTREAM_CURL` web servisinde kalır.
+`WRAPPER_BASE_URL`, kök ApiWrapper JSON'unu veren Web Service adresidir; `/v1` veya
+`/docs` eklemeyin. Render worker'da `127.0.0.1` kullanmayın. Bot token'ı ve wrapper API
+key'i hiçbir zaman Telegram mesajına veya depoya yazılmaz. Bot tek turluktur, konuşma
+geçmişi tutmaz; stream testi için `test_client.py` kullanılır. Gerçek Telegram/Render
+bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamıştır.
 
 ## 7. 7/24 çalışma sınırları
 
