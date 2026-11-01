@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 import httpx
@@ -471,3 +472,120 @@ def test_snapshot_reports_configured_source_before_first_read():
     assert snapshot["managed"] is True
     assert snapshot["source"] == "configured"
     assert snapshot["age_seconds"] is None
+
+
+# ------------------------------------------------------- /ping: gerçek durum
+def test_describe_probe_when_no_probe_has_run_yet():
+    from app.services.keepalive import describe_probe
+
+    text = describe_probe(None)
+    assert "henüz çalışmadı" in text
+    assert "keepalive" in text
+
+
+def test_describe_probe_reports_age_and_failure_code():
+    from app.services.keepalive import ProbeSnapshot, describe_probe
+
+    now = 1_700_000_000.0
+    ok = ProbeSnapshot(kind="probe", ok=True, status_code=200, code="",
+                       duration_ms=120.0, at=now - 300)
+    assert describe_probe(ok, now=now) == "✓ Son upstream kontrolü: 5 dk önce, başarılı (HTTP 200)."
+
+    bad = ProbeSnapshot(kind="probe", ok=False, status_code=409,
+                        code="upstream_refresh_required", duration_ms=90.0, at=now - 7200)
+    text = describe_probe(bad, now=now)
+    assert "BAŞARISIZ" in text
+    assert "2 sa önce" in text
+    assert "upstream_refresh_required" in text
+
+    smoke = ProbeSnapshot(kind="stream_smoke", ok=True, status_code=200, code="",
+                          duration_ms=50.0, at=now - 10)
+    assert "akış kontrolü" in describe_probe(smoke, now=now)
+
+
+def test_keepalive_records_last_probe_for_ping(monkeypatch):
+    import app.services.keepalive as keepalive_module
+
+    keepalive_module.reset_last_probe()
+
+    class FakeResponse:
+        status_code = 200
+        text = ""
+
+    class FakeClient:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        async def __aenter__(self) -> FakeClient:
+            return self
+
+        async def __aexit__(self, *_args: Any) -> None:
+            return None
+
+        async def post(self, _url: str, **_kwargs: Any) -> FakeResponse:
+            await asyncio.sleep(0.001)
+            return FakeResponse()
+
+    monkeypatch.setattr(keepalive_module.httpx, "AsyncClient", FakeClient)
+    settings = make_settings(
+        upstream_keepalive_interval_seconds=0.01,
+        upstream_keepalive_initial_delay_seconds=0.0,
+    )
+    assert keepalive_module.last_probe() is None
+
+    async def run() -> None:
+        task = asyncio.create_task(keepalive_module.run_upstream_keepalive(settings))
+        for _ in range(100):
+            if keepalive_module.last_probe() is not None:
+                break
+            await asyncio.sleep(0.01)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(run())
+    snapshot = keepalive_module.last_probe()
+    assert snapshot is not None
+    assert snapshot.ok is True
+    keepalive_module.reset_last_probe()
+
+
+@pytest.mark.asyncio
+async def test_ping_includes_last_upstream_probe():
+    from app.services.keepalive import ProbeResult, record_probe, reset_last_probe
+    from app.telegram.bot import TelegramBot, TelegramSettings
+
+    reset_last_probe()
+    record_probe(ProbeResult(ok=False, status_code=409, code="upstream_refresh_required"))
+
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(lambda _r: httpx.Response(200, json={"ok": True})),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(
+            TelegramSettings(
+                _env_file=None,
+                telegram_bot_token="test-bot-token",
+                wrapper_api_key="test-wrapper-key",
+                wrapper_base_url="https://wrapper.test",
+                telegram_allowed_chat_ids="42",
+            ),
+            telegram,
+            wrapper,
+        )
+        await bot.handle_message({"chat": {"id": 42}, "text": "/ping"})
+
+    text = sent[0]["text"]
+    assert "Wrapper /healthz" in text
+    assert "BAŞARISIZ" in text
+    assert "upstream_refresh_required" in text
+    reset_last_probe()

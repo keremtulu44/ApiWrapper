@@ -18,6 +18,7 @@ import asyncio
 import json
 import random
 import time
+from dataclasses import dataclass
 from typing import Any
 
 import httpx
@@ -39,6 +40,78 @@ _KEEPALIVE_PROMPTS: tuple[str, ...] = (
     "Kısaca bir motivasyon cümlesi yaz.",
 )
 _REQUEST_TIMEOUT = 180.0
+
+
+@dataclass(slots=True)
+class ProbeSnapshot:
+    """Son probe'un özeti. Telegram `/ping` bunu okur.
+
+    `/healthz` yalnızca sürecin ayakta olduğunu söyler; upstream oturumunun
+    yaşayıp yaşamadığını yalnızca gerçek bir upstream isteği gösterir.
+    """
+
+    kind: str  # "probe" | "stream_smoke"
+    ok: bool
+    status_code: int | None
+    code: str
+    duration_ms: float
+    at: float  # unix zaman damgası
+
+
+_LAST_PROBE: ProbeSnapshot | None = None
+
+
+def record_probe(result: ProbeResult, *, kind: str = "probe") -> ProbeSnapshot:
+    """Son probe sonucunu süreç içinde saklar (Telegram `/ping` için)."""
+    global _LAST_PROBE
+    snapshot = ProbeSnapshot(
+        kind=kind,
+        ok=result.ok,
+        status_code=result.status_code,
+        code=result.code,
+        duration_ms=result.duration_ms,
+        at=time.time(),
+    )
+    _LAST_PROBE = snapshot
+    return snapshot
+
+
+def last_probe() -> ProbeSnapshot | None:
+    """Son kaydedilen probe özeti (hiç çalışmadıysa None)."""
+    return _LAST_PROBE
+
+
+def reset_last_probe() -> None:
+    """Testler için durumu sıfırlar."""
+    global _LAST_PROBE
+    _LAST_PROBE = None
+
+
+def format_age(seconds: float) -> str:
+    """Yaşı Türkçe, kısa biçimde yazar (örn. "12 dk önce")."""
+    if seconds < 90:
+        return "az önce"
+    if seconds < 5400:
+        return f"{int(round(seconds / 60))} dk önce"
+    return f"{int(round(seconds / 3600))} sa önce"
+
+
+def describe_probe(snapshot: ProbeSnapshot | None, now: float | None = None) -> str:
+    """`/ping` için tek satırlık Türkçe özet üretir."""
+    if snapshot is None:
+        return (
+            "Upstream kontrolü: bu süreçte henüz çalışmadı "
+            "(keepalive kapalı olabilir)."
+        )
+    age = format_age(max(0.0, (now if now is not None else time.time()) - snapshot.at))
+    label = "akış kontrolü" if snapshot.kind == "stream_smoke" else "upstream kontrolü"
+    if snapshot.ok:
+        detail = f"HTTP {snapshot.status_code}" if snapshot.status_code else "yanıt alındı"
+        return f"✓ Son {label}: {age}, başarılı ({detail})."
+    detail = f"HTTP {snapshot.status_code}" if snapshot.status_code else "ağ hatası"
+    if snapshot.code:
+        detail = f"{detail}, {snapshot.code}"
+    return f"⚠ Son {label}: {age}, BAŞARISIZ ({detail})."
 
 
 def pick_prompt(index: int) -> str:
@@ -227,6 +300,7 @@ async def run_upstream_keepalive(
                     # Akış yolu kontrolü kendi hata/probe dönüşünü üretir.
                     result = await stream_smoke(client, headers, settings)
                     next_smoke_at = time.monotonic() + smoke_interval
+                    record_probe(result, kind="stream_smoke")
                     if alerter is not None:
                         await alerter.notify(result)
                     continue
@@ -266,5 +340,6 @@ async def run_upstream_keepalive(
                         duration_ms=duration_ms,
                     )
 
+            record_probe(result)
             if alerter is not None:
                 await alerter.notify(result)

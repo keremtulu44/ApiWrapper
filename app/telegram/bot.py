@@ -23,13 +23,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.diagnostics import format_failure
 from app.core.logging import configure_logging, get_logger
+from app.services.keepalive import describe_probe, last_probe
 
 logger = get_logger(__name__)
 
 _HELP = (
     "ApiWrapper test botu aktif.\n"
     "Bir metin gönderin; wrapper /v1/chat/completions üzerinden yanıt üretir.\n"
-    "Komutlar: /ping (wrapper health), /help.\n"
+    "Komutlar: /ping (wrapper + son upstream kontrolü), /help.\n"
     "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
 )
 
@@ -219,17 +220,26 @@ class TelegramBot:
         await self.ask_wrapper(chat_id, text)
 
     async def ping(self, chat_id: int) -> None:
+        """`/ping`: wrapper süreci + son upstream kontrolünü birlikte raporlar.
+
+        `/healthz` upstream'e dokunmaz; süreç ayakta olsa bile oturum ölmüş
+        olabilir. Bu yüzden son keepalive sonucu da yazılır: telefondan tek
+        bakışta "gerçekten çalışıyor mu" sorusu cevaplanır.
+        """
+        lines: list[str] = []
         try:
             response = await self.wrapper.get("/healthz")
         except httpx.HTTPError as exc:
             logger.warning("telegram_wrapper_health_failed", error_type=type(exc).__name__)
-            await self.send_text(chat_id, "Wrapper health kontrolüne ulaşılamadı.")
-            return
-        await self.send_text(
-            chat_id,
-            f"Wrapper /healthz: HTTP {response.status_code}"
-            + (" (hazır değil)" if response.status_code != 200 else " (çalışıyor)"),
-        )
+            lines.append("Wrapper health kontrolüne ulaşılamadı.")
+        else:
+            lines.append(
+                f"Wrapper /healthz: HTTP {response.status_code}"
+                + (" (hazır değil)" if response.status_code != 200 else " (çalışıyor)")
+            )
+        # Süreç ayakta olsa da upstream oturumu ölmüş olabilir.
+        lines.append(describe_probe(last_probe()))
+        await self.send_text(chat_id, "\n".join(lines))
 
     async def ask_wrapper(self, chat_id: int, prompt: str) -> None:
         payload = {

@@ -405,6 +405,11 @@ Render Free uyuduğunda task da durur. Sonuçlar timestamp'li
 `upstream_keepalive_completed`, `upstream_keepalive_failed` ve
 `upstream_keepalive_stream_smoke_*` loglarından izlenir.
 
+Telegram `/ping` yalnızca `/healthz` demez; **son upstream kontrolünün** ne zaman
+ve hangi sonuçla çalıştığını da yazar (`✓ ... başarılı (HTTP 200)` /
+`⚠ ... BAŞARISIZ (HTTP 409, upstream_refresh_required)`). Böylece `/healthz` 200
+dönerken upstream oturumu ölmüş olsa bile bu tek komutla görülür.
+
 `refresh_required`/`forced_update` (HTTP 409) artık çoğunlukla **kendiliğinden**
 geçer: wrapper sürüm damgasını (`x-deployment-id`, `x-arena-web-deployment`)
 upstream'in kendi sayfasından okuyup tazeler ve 409 alırsa isteği bir kez taze
