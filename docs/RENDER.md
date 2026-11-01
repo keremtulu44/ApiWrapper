@@ -215,6 +215,11 @@ bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamı
   instance'lar arasında senkronize etmez.
 - Her deploy/restart cookie jar'ı environment'taki başlangıç değerlerinden kurar ve
   öğrenilen kota/sohbet durumunu sıfırlar.
+- `UPSTREAM_KEEPALIVE_INTERVAL_SECONDS=10800` süreç ayaktayken üç saatte bir kısa
+  non-stream completion gönderir; varsayılan `0` kapalıdır. Bu kota kullanan bir
+  hareketsizlik deneyidir, auth refresh uygulaması değildir. Free sleep task'ı da
+  durdurur. `upstream_keepalive_started`, `upstream_keepalive_completed` ve
+  `upstream_keepalive_failed` timestamp'li logları secret/prompt/cevap taşımaz.
 - Max için `modelAId` art arda isteklerde sabit, `cx` ise değişkendir. `cx` sabit
   yazılmaz; ilk canlı test bu alan olmadan yapılır. Upstream zorunlu tutarsa istemci
   JS'sindeki gerçek üretim yöntemi ayrıca eklenmelidir.

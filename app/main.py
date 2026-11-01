@@ -23,6 +23,7 @@ from app.core.middleware import (
 )
 from app.services.account import build_account_pool
 from app.services.completion_service import CompletionService
+from app.services.keepalive import run_upstream_keepalive
 from app.services.model_registry import ModelEntry, ModelRegistry
 from app.services.recaptcha import create_recaptcha_provider
 from app.services.session_manager import SessionManager
@@ -156,6 +157,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             _run_embedded_telegram(telegram_settings), name="telegram-bot"
         )
 
+    keepalive_task: asyncio.Task[None] | None = None
+    if settings.upstream_keepalive_interval_seconds > 0:
+        keepalive_task = asyncio.create_task(
+            run_upstream_keepalive(settings), name="upstream-keepalive"
+        )
+
     logger.info(
         "application_started",
         version=settings.app_version,
@@ -167,6 +174,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if keepalive_task is not None:
+            keepalive_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await keepalive_task
         if telegram_task is not None:
             telegram_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

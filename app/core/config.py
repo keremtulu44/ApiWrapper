@@ -193,6 +193,12 @@ class Settings(BaseSettings):
     #: İki token arasında izin verilen en uzun sessizlik.
     stream_idle_timeout: float = 120.0
 
+    # ------------------------------------------------------------- keepalive
+    #: 0 = kapalı. Örn. 10800 üç saatte bir sentetik non-stream completion.
+    #: Süreç ayaktayken çalışır; upstream oturumunu yenileme garantisi değildir.
+    upstream_keepalive_interval_seconds: float = 0.0
+    upstream_keepalive_model: str = "max"
+
     # ----------------------------------------------------------------- pools
     max_connections: int = 200
     max_keepalive_connections: int = 50

@@ -383,6 +383,20 @@ Upstream token'ı reddederse (403) dinamik sağlayıcıda cache otomatik geçers
   public site key'i, Enterprise modunu ve `chat_submit` action'unu hazır getirir.
   Chromium ve sistem bağımlılıkları imajda hazırdır.
 
+Hareketsizlikte upstream oturumunun eskiyip eskimediğini sınamak için isteğe bağlı
+servis içi keepalive kullanılabilir. Varsayılan `0` kapalıdır; `10800` üç saatte bir
+kısa non-stream completion gönderir:
+
+```text
+UPSTREAM_KEEPALIVE_INTERVAL_SECONDS=10800
+UPSTREAM_KEEPALIVE_MODEL=max
+```
+
+Bu yaklaşık 8 gerçek istek/gün ve kota/CAPTCHA kullanımıdır. Sabit token TTL'sini veya
+`refresh_required`/`forced_update` yanıtını otomatik çözmez. Render Free uyuduğunda
+task da durur. Sonuçlar timestamp'li `upstream_keepalive_completed` ve
+`upstream_keepalive_failed` loglarından izlenir.
+
 Dağıtım sırası, istek yaşam döngüsü, readiness hata kodları ve belirti→çözüm tablosu:
 [`docs/RENDER.md`](docs/RENDER.md).
 
