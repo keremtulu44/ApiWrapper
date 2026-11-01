@@ -23,6 +23,11 @@ logger = get_logger(__name__)
 #: Token bulunamadigi uyarisi her istekte degil, sureç basina bir kez verilir.
 _WARNED_NO_TOKEN = False
 
+#: İstemci sürümünü/deployment'ını taşıyan başlıklar (Vercel skew protection).
+#: Değer `UPSTREAM_CURL`'den donmuş gelir; güncel değer kanaryadan okunur
+#: (`app/upstream/deployment.py`).
+DEPLOYMENT_HEADERS: tuple[str, ...] = ("x-deployment-id", "x-arena-web-deployment")
+
 _CHROME_VERSION_RE = re.compile(r"Chrome/(\d+)")
 _EDGE_VERSION_RE = re.compile(r"(?:Edg|Edge|EdgA|EdgiOS)/(\d+)")
 
@@ -115,9 +120,19 @@ def _apply_auth(headers: dict[str, str], settings: Settings) -> None:
 
 
 def build_stream_headers(
-    settings: Settings, chat_id: str, *, include_cookie: bool = True
+    settings: Settings,
+    chat_id: str,
+    *,
+    include_cookie: bool = True,
+    deployment_id: str | None = None,
 ) -> dict[str, str]:
-    """Stream uç noktası için tam başlık kümesi."""
+    """Stream uç noktası için tam başlık kümesi.
+
+    `deployment_id` verilirse, kullanıcının **zaten gönderdiği** deployment
+    başlıkları (varsa) bu taze değerle değiştirilir. Böylece tanımadığımız
+    upstream'lere yeni başlık uydurmayız; yalnızca eskimesi bilinen damgayı
+    tazeleriz.
+    """
     ua = settings.upstream_user_agent
     trace_id = secrets.token_hex(16)
     span_id = secrets.token_hex(8)
@@ -143,6 +158,10 @@ def build_stream_headers(
     _apply_auth(headers, settings)
     # Kullanıcı tanımlı başlıklar en son uygulanır; bilinçli override'a izin verilir.
     headers.update(settings.parsed_extra_headers())
+    if deployment_id:
+        for name in DEPLOYMENT_HEADERS:
+            if name in headers:
+                headers[name] = deployment_id
     return headers
 
 

@@ -217,12 +217,23 @@ bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamı
   öğrenilen kota/sohbet durumunu sıfırlar.
 - `UPSTREAM_KEEPALIVE_INTERVAL_SECONDS=10800` süreç ayaktayken üç saatte bir kısa
   non-stream completion gönderir; varsayılan `0` kapalıdır. Bu kota kullanan bir
-  hareketsizlik deneyidir, auth refresh uygulaması değildir. Free sleep task'ı da
-  durdurur. `upstream_keepalive_started`, `upstream_keepalive_completed` ve
-  `upstream_keepalive_failed` timestamp'li logları secret/prompt/cevap taşımaz.
-- Max için `modelAId` art arda isteklerde sabit, `cx` ise değişkendir. `cx` sabit
-  yazılmaz; ilk canlı test bu alan olmadan yapılır. Upstream zorunlu tutarsa istemci
-  JS'sindeki gerçek üretim yöntemi ayrıca eklenmelidir.
+  hareketsizlik deneyidir, auth refresh uygulaması değildir. Aralık
+  `UPSTREAM_KEEPALIVE_JITTER_SECONDS` (± vars. 300 sn) ile sapmalanır, her probe
+  farklı bir kısa istem gönderir ve günde bir kez aynı kontrol `stream: true` ile
+  yapılır. Free sleep task'ı da durdurur. `upstream_keepalive_started`,
+  `upstream_keepalive_completed`, `upstream_keepalive_failed` ve
+  `upstream_keepalive_stream_smoke_*` timestamp'li logları secret/prompt/cevap
+  taşımaz.
+- Sürüm damgası (`x-deployment-id`, `x-arena-web-deployment`) `UPSTREAM_CURL`'den
+  donmuş taşınmaz: `UPSTREAM_DEPLOYMENT_ID_TTL_SECONDS` (vars. 1800) aralığıyla
+  upstream'in ana sayfasından okunur ve 409 alınırsa istek bir kez taze damgayla
+  tekrar edilir. Sayfa okunamazsa (bot koruması/ağ) donmuş değer kullanılır; yani
+  kanarya isteği bozmaz. Durum `GET /health` → `upstream.deployment_stamp`
+  alanında **değer olmadan** görünür.
+- `cx` iki farklı sohbette aynı değerde gözlendi (oturum/uygulama bazlı, mesaj bazlı
+  değil) ve wrapper bu alan olmadan başarılı istek atıyor. Bu yüzden zorunlu kabul
+  edilmez; bir 4xx gövdesi `cx` alanına atıfta bulunursa logda `upstream_cx_flag`
+  ve `apiwrapper_upstream_cx_flags_total` metriği görünür.
 
 ## 8. JSON logları ve SSE hata ayıklama
 

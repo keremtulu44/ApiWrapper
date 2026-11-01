@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -15,6 +16,7 @@ from app.core.metrics import metrics
 from app.services.account import Account
 from app.upstream.auth import parse_cookie_header
 from app.upstream.breaker import CircuitBreaker
+from app.upstream.deployment import DeploymentIdResolver
 from app.upstream.exceptions import (
     CircuitOpen,
     RecaptchaRejected,
@@ -52,6 +54,12 @@ REFRESH_MARKERS = (
     "deployment_disabled",
     "stale_client",
 )
+#: Gövdede oturum kimliği / istemci parmak izi alanı olarak geçen kısa anahtar.
+#: Canlı cURL'lerde upstream'in gönderdiği stabil bir değer; wrapper şimdilik
+#: göndermiyor ve istekler çalışıyor. Bir 4xx gövdesinde geçmeye başlarsa bu
+#: yeni bir zorunlu alan sınıfı demektir.
+CX_FLAG_PATTERN = re.compile(r'"cx"|\bcx\b|_cx_', re.IGNORECASE)
+
 #: Gövdede oturum/token sorununa işaret eden anahtar kelimeler.
 AUTH_MARKERS = (
     "unauthorized",
@@ -98,6 +106,8 @@ class UpstreamClient:
         # Cookie jar ve bağlantı havuzu hesaplar arasında paylaşılmaz. Ortak jar,
         # bir hesabın Set-Cookie cevabını başka hesabın isteğine sızdırıyordu.
         self._account_clients: dict[int, httpx.AsyncClient] = {}
+        # Sürüm damgası (x-deployment-id / x-arena-web-deployment) kanaryası.
+        self.deployment = DeploymentIdResolver(settings)
 
     # ----------------------------------------------------------- lifecycle
     async def startup(self) -> None:
@@ -105,6 +115,7 @@ class UpstreamClient:
             return
         self._client = self._build_client(self.settings)
         logger.info("upstream_client_started", base_url=self.settings.base_url)
+        self._log_referer_hint()
 
     def _build_client(self, settings: Settings) -> httpx.AsyncClient:
         timeout = httpx.Timeout(
@@ -178,6 +189,41 @@ class UpstreamClient:
         return client
 
     # ------------------------------------------------------------- helpers
+    def _log_referer_hint(self) -> None:
+        """Sohbet sayfası yolunun gerçek isteklerle uyumlu olduğunu görünür kıl.
+
+        Canlı cURL'lerde `referer` her zaman `<domain>/text/direct` biçiminde
+        geliyor; wrapper'ın eski varsayılanı `/c/{chat_id}` idi. `UPSTREAM_CURL`
+        varsa yol oradan okunur, bu yüzden uyarı yalnızca cURL yokken üretilir.
+        """
+        path = (self.settings.upstream_referer_path or "").strip()
+        if path and path != "/c/{chat_id}":
+            logger.info("upstream_referer_path", referer_path=path)
+            return
+        if self.settings.upstream_curl.strip():
+            # cURL gövdesinden gelen yol referer_path'e yazılmadıysa ufak not.
+            logger.info(
+                "upstream_referer_path_from_curl",
+                referer_path=path or None,
+            )
+            return
+        logger.warning(
+            "upstream_referer_path_default",
+            referer_path=path or None,
+            hint=(
+                "UPSTREAM_REFERER_PATH ayarlanmamış: varsayılan /c/{chat_id} "
+                "kullanılıyor. Canlı isteklerde referer genellikle /text/direct "
+                "olduğu için UPSTREAM_REFERER_PATH=/text/direct önerilir."
+            ),
+        )
+
+    @staticmethod
+    def _cx_flag(status: int, body: str) -> bool:
+        """4xx gövdesi upstream'in `cx` alanına atıfta bulunuyor mu?"""
+        if not (400 <= status < 500) or not body:
+            return False
+        return bool(CX_FLAG_PATTERN.search(body))
+
     @staticmethod
     def _raw_cookie_header_required(settings: Settings) -> bool:
         """Standart dışı/opak eski COOKIE değerlerini geriye uyumlu taşı.
@@ -189,6 +235,78 @@ class UpstreamClient:
         return bool(settings.upstream_cookie.strip()) and not parse_cookie_header(
             settings.upstream_cookie
         )
+
+    async def _retry_with_fresh_stamp(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        request_settings: Settings,
+        sent_value: str | None,
+        status: int,
+        marker: str,
+    ) -> bool:
+        """409 sonrası sürüm damgasını zorla tazeler.
+
+        Yalnızca gerçekten **farklı** bir damga bulursa True döner; aynı değerle
+        tekrar denemek boşuna istek olurdu. Kanarya kapalıysa ya da damga
+        `UPSTREAM_CURL`'de hiç yoksa False döner ve çağıran mevcut net hatayı
+        fırlatır (davranış eskisiyle aynı).
+        """
+        if not request_settings.deployment_id_auto_retry:
+            logger.info("deployment_stamp_retry_disabled", status=status)
+            return False
+        if not self.deployment.active:
+            logger.error(
+                "deployment_stamp_unmanaged",
+                status=status,
+                marker=marker,
+                hint=(
+                    "409 alındı ama takip edilen bir deployment başlığı yok. "
+                    "UPSTREAM_CURL'ü tazelemek gerekiyor."
+                ),
+            )
+            return False
+
+        reading = await self.deployment.refresh(
+            client, request_settings.base_url, force=True
+        )
+        if reading.value and reading.value != sent_value:
+            logger.warning(
+                "deployment_stamp_refreshed",
+                status=status,
+                marker=marker,
+                previous=sent_value,
+                current=reading.value,
+                source=reading.source,
+                hint="İstek taze sürüm damgasıyla bir kez tekrar ediliyor.",
+            )
+            return True
+
+        logger.error(
+            "deployment_stamp_unchanged",
+            status=status,
+            marker=marker,
+            deployment_id=reading.value,
+            source=reading.source,
+            hint=(
+                "Upstream 409 verdi ama okunan sürüm damgası değişmedi. Oturum "
+                "anlık görüntüsü (cookie/token) tazelenmeli."
+            ),
+        )
+        return False
+
+    async def _refresh_session_cookie(
+        self, chat_id: str, account: Account | None = None
+    ) -> None:
+        """409'dan sonra oturum çerezini tazelemek için tek bir sayfa GET'i.
+
+        Bu istek başarısız çağrıyı kurtarmaz; yalnızca cookie jar'ı güncelleyip
+        sonraki isteğin şansını artırır. Hata yutulur (kritik değil).
+        """
+        try:
+            await self.warmup(chat_id, account)
+        except Exception:  # pragma: no cover - warmup zaten hata yutmuyor
+            logger.debug("upstream_session_refresh_failed")
 
     async def warmup(self, chat_id: str, account: Account | None = None) -> None:
         """Sohbet sayfasını seçilen hesabın kimliği ve cookie jar'ı ile ısıtır."""
@@ -320,19 +438,28 @@ class UpstreamClient:
             account.effective_settings(self.settings) if account else self.settings
         )
         url = request_settings.stream_url(chat_id)
+        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+        client = self._client_for(account)
+
+        # Sürüm damgasını tazele (önbellek sıcaksa ağa çıkmaz). Okunamazsa
+        # `UPSTREAM_CURL`'deki donmuş değer kullanılır: kanarya isteği bozmaz.
+        reading = await self.deployment.refresh(client, request_settings.base_url)
+        deployment_id = reading.value
         headers = build_stream_headers(
             request_settings,
             chat_id,
             include_cookie=self._raw_cookie_header_required(request_settings),
+            deployment_id=deployment_id,
         )
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        client = self._client_for(account)
 
         last_error: Exception | None = None
         attempts = max(1, self.settings.retry_max_attempts)
+        attempt = 0
+        # 409 `refresh_required` için tek seferlik damga tazeleme hakkı.
+        stamp_retry_used = False
 
         async with self._total_deadline(request_settings, url), self._semaphore:
-            for attempt in range(attempts):
+            while attempt < attempts:
                 metrics.inc("apiwrapper_upstream_requests_total")
                 request = client.build_request(
                     "POST", url, headers=headers, content=body
@@ -379,6 +506,19 @@ class UpstreamClient:
 
                     if status < 400:
                         await self.breaker.record_success()
+                        if response.headers.get("set-cookie"):
+                            # Oturumun sunucu tarafında uzatıldığını görünür kıl:
+                            # jar bellekte tutulduğu için restart eski cookie'ye döner.
+                            logger.info(
+                                "upstream_set_cookie",
+                                status=status,
+                                count=len(response.headers.get_list("set-cookie")),
+                                hint=(
+                                    "Upstream oturum çerezini tazeledi; bu çerez yalnızca "
+                                    "bellekte tutulur, servis yeniden başlarsa "
+                                    "UPSTREAM_COOKIE değerine döner."
+                                ),
+                            )
                         try:
                             yield response.aiter_bytes()
                         finally:
@@ -396,6 +536,20 @@ class UpstreamClient:
                         url=url,
                         body=error_body[:300],
                     )
+                    if self._cx_flag(status, error_body):
+                        metrics.inc(
+                            "apiwrapper_upstream_cx_flags_total",
+                            labels={"status": str(status)},
+                        )
+                        logger.warning(
+                            "upstream_cx_flag",
+                            status=status,
+                            hint=(
+                                "Upstream gövdesi `cx` alanına atıfta bulunuyor. Bu değer "
+                                "upstream tarafında oturum bazlı; canlı cURL'den "
+                                "UPSTREAM_EXTRA_HEADERS/cx olarak taşınması gerekebilir."
+                            ),
+                        )
 
                     quota_marker = self._is_quota_body(status, error_body)
                     if quota_marker is not None:
@@ -431,6 +585,28 @@ class UpstreamClient:
                         )
 
                     refresh_marker = self._refresh_marker(status, error_body)
+                    if refresh_marker is not None and not stamp_retry_used:
+                        stamp_retry_used = True
+                        if await self._retry_with_fresh_stamp(
+                            client=client,
+                            request_settings=request_settings,
+                            sent_value=deployment_id,
+                            status=status,
+                            marker=refresh_marker,
+                        ):
+                            refreshed = self.deployment.cached(request_settings.base_url)
+                            headers = build_stream_headers(
+                                request_settings,
+                                chat_id,
+                                include_cookie=self._raw_cookie_header_required(
+                                    request_settings
+                                ),
+                                deployment_id=refreshed,
+                            )
+                            deployment_id = refreshed
+                            # Damga retry'ı normal deneme bütçesinden yemez.
+                            continue
+
                     if refresh_marker is not None:
                         # Retry YOK, devre kesiciye kayıt YOK: sorun bizim
                         # sakladığımız istemci anlık görüntüsünde.
@@ -445,12 +621,25 @@ class UpstreamClient:
                             marker=refresh_marker,
                             body=error_body[:200],
                             hint=(
-                                "Tarayıcıdan tamamlanmış isteği yeniden cURL olarak alıp "
-                                "UPSTREAM_CURL'ü güncelleyin (scripts/curl_to_env.py) ve "
-                                "servisi yeniden deploy edin. Sürüm damgası "
-                                "x-...-deployment / x-deployment-id başlıklarında taşınır."
+                                (
+                                    "Sürüm damgası otomatik tazelendi ama upstream yine 409 "
+                                    "verdi. Oturum anlık görüntüsü eskimiş olabilir: "
+                                    "tarayıcıdan tamamlanmış isteği yeni cURL olarak alıp "
+                                    "UPSTREAM_CURL'ü güncelleyin (scripts/curl_to_env.py)."
+                                )
+                                if stamp_retry_used
+                                else (
+                                    "Upstream istemci sürümünü eski buldu. Kanarya pasif ya "
+                                    "da damga takip edilmiyor: tamamlanmış isteği cURL "
+                                    "olarak alıp UPSTREAM_CURL'ü güncelleyin "
+                                    "(scripts/curl_to_env.py)."
+                                )
                             ),
                         )
+                        # Son kademe: damga değişmediyse oturum çerezini tazelemeyi
+                        # dene (tek GET). Bu isteği kurtarmaz ama bir sonraki
+                        # isteğin taze cookie ile gitmesini sağlar.
+                        await self._refresh_session_cookie(chat_id, account)
                         raise UpstreamRefreshRequired(
                             "Upstream rejected the captured client snapshot as outdated.",
                             status_code=status,
@@ -487,7 +676,8 @@ class UpstreamClient:
                         raise last_error
 
                     retry_after = parse_retry_after(response.headers.get("retry-after"))
-                    if attempt < attempts - 1:
+                    attempt += 1
+                    if attempt < attempts:
                         await asyncio.sleep(
                             retry_after
                             if retry_after is not None
@@ -500,7 +690,8 @@ class UpstreamClient:
                         continue
 
                 # Ağ/timeout hatası yolu
-                if attempt < attempts - 1:
+                attempt += 1
+                if attempt < attempts:
                     logger.warning(
                         "upstream_retry",
                         attempt=attempt + 1,

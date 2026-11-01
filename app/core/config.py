@@ -100,6 +100,22 @@ class Settings(BaseSettings):
     upstream_verify_tls: bool = True
     upstream_http2: bool = True
 
+    # ------------------------------------------- deployment (sürüm) kanaryası
+    #: `x-deployment-id` / `x-arena-web-deployment` gibi sürüm damgalarını
+    #: upstream'in kendi sayfasından okuyup tazele. Kapalıysa `UPSTREAM_CURL`'deki
+    #: donmuş değer kullanılır (eski davranış).
+    deployment_id_refresh_enabled: bool = True
+    #: Okunan değerin önbellek ömrü (saniye). Her istekte sayfa okunmaz.
+    deployment_id_ttl_seconds: float = 1800.0
+    #: Damganın okunacağı yol (ana sayfa yeterlidir).
+    deployment_probe_path: str = "/"
+    #: Kanarya okuması için zaman aşımı (saniye).
+    deployment_probe_timeout: float = 8.0
+    #: 409 `refresh_required` alınınca damga zorla yenilenip istek bir kez
+    #: tekrar edilsin mi? (Tekrar edilen istek mevcut retry bütçesinden bir yuva
+    #: kullanır; 409 zaten nadirdir.)
+    deployment_id_auto_retry: bool = True
+
     # --------------------------------------------------------------- quota
     #: Upstream'in hesap kısıtlamasını bildiren metin işaretleri (virgülle ayrılmış).
     #: İşaretler **ayırt edici ifadeler** olmalı: "rate limit" gibi genel sözler bir
@@ -202,6 +218,12 @@ class Settings(BaseSettings):
     #: öğrenmemek için varsayılan 60 sn: servis ayağa kalktıktan hemen sonra
     #: uçtan uca tek bir kontrol yapılır.
     upstream_keepalive_initial_delay_seconds: float = 60.0
+    #: Aralığa eklenecek rastgele sapma (saniye, ±). Tam saatte atılan istek
+    #: deseni "insan davranışı"ndan daha düzenli olduğu için jitter uygulanır.
+    upstream_keepalive_jitter_seconds: float = 300.0
+    #: Günde bir kez `stream: true` ile gerçek akış yolunu dene (0 = kapalı).
+    #: Non-stream probe, streaming ucundaki bir kırılmayı (SSE/parçalama) görmez.
+    upstream_keepalive_stream_smoke_interval_seconds: float = 86400.0
 
     # ---------------------------------------------------------------- alerts
     #: Telegram üzerinden arıza bildirimi. Bot token'ı ve bildirim sohbeti

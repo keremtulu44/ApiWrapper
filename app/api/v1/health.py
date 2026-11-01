@@ -45,6 +45,8 @@ async def health(
             ),
             "circuit_breaker": breaker_state,
             "http2": settings.upstream_http2,
+            # Sürüm damgası kanaryası: değer gizlenir, yalnızca durum paylaşılır.
+            "deployment_stamp": upstream.deployment.snapshot(settings.base_url),
         },
         "models": len(registry),
         "sessions_cached": sessions,

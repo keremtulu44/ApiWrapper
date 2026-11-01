@@ -24,6 +24,9 @@ Amaç her arızada log okumaya sıfırdan başlamamak.
 Loglarda olay adı (event) ile arayın: `upstream_request`, `upstream_http_error`,
 `upstream_refresh_required`, `upstream_quota_exceeded`, `recaptcha_rejected_retrying`,
 `account_switched`, `stream_completed`, `stream_failed`, `request_failed`.
+Sürüm damgası/oturum tarafı: `deployment_id_detected`, `deployment_id_changed`,
+`deployment_stamp_refreshed`, `deployment_stamp_unchanged`, `upstream_set_cookie`,
+`upstream_cx_flag`, `upstream_referer_path_default`.
 
 ---
 
@@ -54,25 +57,67 @@ sürüm yayınladı ve tarayıcıdan alınan cURL'deki **sürüm/deployment damg
 `UPSTREAM_CURL`'den donmuş olarak taşır (`app/upstream/curl_import.py` →
 `PASSTHROUGH_HEADERS`), bu yüzden sağlayıcının her sürüm yayınında tekrarlar.
 
-**Yapılacak (2 dakika)**
+**Otomatik kurtarma (artık çoğu 409 kendiliğinden geçer)**
+
+Wrapper, sürüm damgasını **dondurulmuş** tutmak yerine upstream'in kendi
+sayfasından okuyor (`app/upstream/deployment.py`):
+
+1. **Kanarya:** `UPSTREAM_DEPLOYMENT_ID_TTL_SECONDS` (vars. 1800 sn) boyunca
+   geçerli olacak şekilde ana sayfa bir `GET` ile okunur. Değer önce yanıt
+   başlıklarından (`x-deployment-id`, `x-arena-web-deployment`), olmazsa HTML
+   içindeki `dpl_...` deseninden alınır.
+   * Bu okuma **kota harcamaz** (completion değil, sayfa isteği).
+   * Bot koruması (403/challenge), ağ hatası ya da sayfa değişikliği olursa
+     kanarya sessizce devre dışı kalır ve `UPSTREAM_CURL`'deki değer kullanılır.
+     **Kanarya hiçbir zaman isteği bozmaz.**
+   * Damga değiştiğinde logda `deployment_id_changed` görünür.
+2. **409 kurtarma:** 409 `refresh_required` alınırsa damga **zorla** yeniden
+   okunur; gerçekten farklıysa istek **bir kez** taze damgayla tekrar edilir
+   (bu tekrar normal retry bütçesinden yemez). Logda `deployment_stamp_refreshed`.
+3. **Son kademe:** damga değişmiyorsa oturum çerezini tazelemek için tek bir
+   sayfa `GET`'i yapılır (`upstream_warmup`) ve hata mevcut net mesajla
+   (`503 upstream_refresh_required`) döner.
+
+İlgili ayarlar (hepsi opsiyonel):
+
+```env
+UPSTREAM_DEPLOYMENT_ID_REFRESH_ENABLED=true   # kanaryayı tamamen kapat: false
+UPSTREAM_DEPLOYMENT_ID_TTL_SECONDS=1800       # ne sıklıkla okunacak
+UPSTREAM_DEPLOYMENT_PROBE_PATH=/              # okunacak sayfa
+UPSTREAM_DEPLOYMENT_PROBE_TIMEOUT=8
+UPSTREAM_DEPLOYMENT_ID_AUTO_RETRY=true        # 409 sonrası tek taze-damga denemesi
+```
+
+Kanarya yalnızca istekte **zaten bulunan** deployment başlıklarını tazeler;
+tanımadığı upstream'lere yeni başlık eklemez. `UPSTREAM_CURL` içinde hiç
+deployment başlığı yoksa kanarya hiç çalışmaz (`http_409` gibi jenerik 409'lar
+damga sorunu sayılmaz).
+
+**Hâlâ elle müdahale gereken durum**
+
+Logda `deployment_stamp_unchanged` görünüyorsa upstream damgayı değiştirmemiş ama
+isteği yine reddediyor: bu durumda oturum anlık görüntüsü (cookie/token) eskimiş
+olabilir. O zaman:
 
 1. Tarayıcıda uygulamayı **Ctrl+Shift+R** ile sert yenile ve giriş yap.
 2. Yeni bir sohbet mesajı gönder, isteği **Copy as cURL** ile kopyala.
 3. Render'da `UPSTREAM_CURL` secret'ını bu değerle güncelle → **Manual Deploy**.
 4. Doğrula: Telegram `/ping` sonrası bir mesaj ya da `POST /v1/chat/completions`.
-5. Farkı görmek istersen: `python scripts/compare_curl.py request.txt` —
-   `x-...-deployment` satırı değişmiş olacak.
+5. Farkı görmek istersen: `python scripts/compare_curl.py request.txt`.
 
-**Neden otomatik değil?** Token/cookie değil, istemci sürümü eski. Değeri
-tahmin etmek yerine tarayıcıdan almak gerekiyor. Bunu bir *kanarya* ile
-izliyoruz: keepalive/probe arıza çıkınca Telegram'a yazıyor, böylece kesintiyi
-kullanıcıdan önce öğreniyorsunuz.
+**Bu hata sınıfı:**
 
-**Bu hata artık:**
+* devre kesiciyi **açmaz** (upstream sağlıklı; açsaydı diğer hesaplar da
+  bloklanırdı),
+* otomatik kurtarma tükendikten sonra `503` + `upstream_refresh_required` +
+  `Retry-After: 300` olarak döner.
 
-* retry edilmez (aynı cevap döner, kotayı boşa harcar),
-* devre kesiciyi açmaz (upstream sağlıklı; açsaydı diğer hesaplar da bloklanırdı),
-* `503` + `upstream_refresh_required` + `Retry-After: 300` olarak döner.
+**409 gövdesinde `cx` geçiyorsa**
+
+Canlı cURL'lerde stabil bir `cx` değeri var; wrapper şimdilik göndermiyor ve
+istekler çalışıyor. Bir 4xx gövdesi `cx` alanına atıfta bulunmaya başlarsa logda
+`upstream_cx_flag` + `apiwrapper_upstream_cx_flags_total` metriği görünür: bu,
+alanın zorunlu hâle geldiği anlamına gelir.
 
 ---
 

@@ -395,10 +395,21 @@ UPSTREAM_KEEPALIVE_INTERVAL_SECONDS=10800
 UPSTREAM_KEEPALIVE_MODEL=max
 ```
 
-Bu yaklaşık 8 gerçek istek/gün ve kota/CAPTCHA kullanımıdır. Sabit token TTL'sini veya
-`refresh_required`/`forced_update` yanıtını otomatik çözmez. Render Free uyuduğunda
-task da durur. Sonuçlar timestamp'li `upstream_keepalive_completed` ve
-`upstream_keepalive_failed` loglarından izlenir.
+Bu yaklaşık 8 gerçek istek/gün ve kota/CAPTCHA kullanımıdır. Aralığa
+`UPSTREAM_KEEPALIVE_JITTER_SECONDS` (vars. ±300 sn) kadar rastgele sapma eklenir ve
+her probe farklı, kısa bir istem gönderir; böylece tam saatte atılan, birbirinin
+aynısı isteklerden oluşan robotik desen oluşmaz. Günde bir kez
+(`UPSTREAM_KEEPALIVE_STREAM_SMOKE_INTERVAL_SECONDS`, vars. 86400) aynı kontrol
+`stream: true` ile yapılır: non-stream probe akış yolundaki bir kırılmayı göremez.
+Render Free uyuduğunda task da durur. Sonuçlar timestamp'li
+`upstream_keepalive_completed`, `upstream_keepalive_failed` ve
+`upstream_keepalive_stream_smoke_*` loglarından izlenir.
+
+`refresh_required`/`forced_update` (HTTP 409) artık çoğunlukla **kendiliğinden**
+geçer: wrapper sürüm damgasını (`x-deployment-id`, `x-arena-web-deployment`)
+upstream'in kendi sayfasından okuyup tazeler ve 409 alırsa isteği bir kez taze
+damgayla tekrar eder. Ayrıntılar ve kalan elle müdahale senaryosu:
+[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 Dağıtım sırası, istek yaşam döngüsü, readiness hata kodları ve belirti→çözüm tablosu:
 [`docs/RENDER.md`](docs/RENDER.md).
