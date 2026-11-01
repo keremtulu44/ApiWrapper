@@ -9,7 +9,8 @@ OpenAI-compatible istemcilerle çalışır.
         ◀──(SSE chat.completion.chunk)──          ◀──(AI SDK data-stream)──
 ```
 
-Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**
+Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** ·
+arıza/teşhis için: **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)**
 
 ---
 
@@ -27,6 +28,8 @@ Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**
 | Sohbet yönetimi | `SESSION_REUSE=true` ile istemci başına tek upstream sohbeti; `SESSION_ROTATE_AFTER_MESSAGES`/`_SECONDS` eşiğinde yeni sohbete geçilir (Continue gibi `conversation_id` gönderemeyen istemciler için) |
 | reCAPTCHA v3 | `static` (varsayılan) · `noop` · `browser` (Playwright) · `external` — TTL cache + tek-uçuş kilidi |
 | Gözlemlenebilirlik | structlog JSON, `X-Request-ID`, `completion_completed`/`stream_completed`/`stream_failed` olayları, Prometheus metrikleri (TTFT dahil) |
+| Arıza bildirimi | Saatlik probe → Telegram: **ne oldu + hangi kod + ne yapmalı**; yeni arıza/düzelme her zaman, aynı arıza `TELEGRAM_ALERT_REPEAT_SECONDS` aralıkla (vars. 6 saat) — spam yok |
+| Sürüm eskimesi | Upstream `409 refresh_required`/`forced_update` → `upstream_refresh_required` (retry yok, devre kesiciye sayılmaz, net eylem metni) |
 | Uyumluluk | `stop` dizileri (yerel kesme), `stream_options.include_usage`, alias'lı model kayıt defteri, multimodal içerik parçaları |
 
 ---

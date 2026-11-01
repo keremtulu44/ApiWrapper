@@ -12,6 +12,7 @@ from app.api.deps import get_registry, get_settings_dep
 from app.core.config import Settings
 from app.core.errors import ModelNotFoundError
 from app.core.metrics import metrics
+from app.core.security import verify_api_key
 from app.services.account import AccountPool
 from app.services.model_registry import ModelRegistry
 from app.upstream.breaker import BreakerState
@@ -35,7 +36,13 @@ async def health(
         "version": settings.app_version,
         "uptime_seconds": round(time.time() - _STARTED_AT, 2),
         "upstream": {
-            "base_url": settings.base_url,
+            # Uç nokta kimlik doğrulamasız: sağlayıcı adresi varsayılan olarak
+            # gizlenir. Teşhis için operatör HEALTH_EXPOSE_UPSTREAM=true der.
+            **(
+                {"base_url": settings.base_url}
+                if settings.health_expose_upstream
+                else {"configured": bool(settings.target_domain.strip())}
+            ),
             "circuit_breaker": breaker_state,
             "http2": settings.upstream_http2,
         },
@@ -120,10 +127,15 @@ async def readyz(
 
 @router.get("/metrics", response_class=PlainTextResponse, summary="Prometheus metrics")
 async def prometheus_metrics(
+    request: Request,
     settings: Settings = Depends(get_settings_dep),
 ) -> PlainTextResponse:
     if not settings.metrics_enabled:
         return PlainTextResponse("# metrics disabled\n", status_code=404)
+    if settings.metrics_require_auth:
+        # Prometheus scrape'i anahtar gönderebilir; herkese açık Render
+        # adresinde metrikleri (model adları, hacim) korumak için.
+        verify_api_key(request, settings)
     return PlainTextResponse(metrics.render(), media_type="text/plain; version=0.0.4")
 
 

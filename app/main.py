@@ -22,6 +22,7 @@ from app.core.middleware import (
     RequestIDMiddleware,
 )
 from app.services.account import build_account_pool
+from app.services.alerting import build_alerter
 from app.services.completion_service import CompletionService
 from app.services.keepalive import run_upstream_keepalive
 from app.services.model_registry import ModelEntry, ModelRegistry
@@ -159,8 +160,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     keepalive_task: asyncio.Task[None] | None = None
     if settings.upstream_keepalive_interval_seconds > 0:
+        # Aynı görev hem canlılık denemesi hem teşhis/bildirim kaynağıdır.
         keepalive_task = asyncio.create_task(
-            run_upstream_keepalive(settings), name="upstream-keepalive"
+            run_upstream_keepalive(settings, alerter=build_alerter(settings)),
+            name="upstream-keepalive",
         )
 
     logger.info(

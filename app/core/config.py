@@ -198,6 +198,27 @@ class Settings(BaseSettings):
     #: Süreç ayaktayken çalışır; upstream oturumunu yenileme garantisi değildir.
     upstream_keepalive_interval_seconds: float = 0.0
     upstream_keepalive_model: str = "max"
+    #: İlk probe'un gecikmesi (saniye). Deploy sonrası durumu bir saat bekleyip
+    #: öğrenmemek için varsayılan 60 sn: servis ayağa kalktıktan hemen sonra
+    #: uçtan uca tek bir kontrol yapılır.
+    upstream_keepalive_initial_delay_seconds: float = 60.0
+
+    # ---------------------------------------------------------------- alerts
+    #: Telegram üzerinden arıza bildirimi. Bot token'ı ve bildirim sohbeti
+    #: (TELEGRAM_ALERT_CHAT_ID veya ilk allowlist kaydı) yoksa sessizce kapalıdır.
+    telegram_alerts_enabled: bool = True
+    #: Aynı arıza kodu bu süre boyunca **tekrar** bildirilmez (saniye).
+    #: Durum değişimleri (yeni kod / düzelme) bu sınırı beklemez; bu yalnızca
+    #: "aynı arıza sürüyor" hatırlatmasını seyreltir. 0 = her probe'da bildir.
+    telegram_alert_repeat_seconds: float = 21600.0
+
+    # ----------------------------------------------------------- health/docs
+    #: `/health` çıktısında upstream host'u görünsün mü? Varsayılan kapalı:
+    #: uç nokta kimlik doğrulamasızdır ve sağlayıcı adresini sızdırmamalıdır.
+    health_expose_upstream: bool = False
+    #: `/metrics` için API anahtarı istensin mi? Varsayılan kapalı (mevcut
+    #: kurulumları bozmamak için); herkese açık ortamda açılması önerilir.
+    metrics_require_auth: bool = False
 
     # ----------------------------------------------------------------- pools
     max_connections: int = 200

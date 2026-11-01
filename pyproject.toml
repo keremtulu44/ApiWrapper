@@ -5,25 +5,29 @@ description = "OpenAI-compatible REST API wrapper for an upstream Web LLM servic
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "fastapi>=0.110",
-    "uvicorn[standard]>=0.27",
-    "httpx[http2]>=0.27",
-    "pydantic>=2.6",
-    "pydantic-settings>=2.3",
-    "structlog>=24.1",
-    "pyyaml>=6.0",
-    "python-multipart>=0.0.9",
+    # Üst sınırlar bilinçlidir: sınırsız `>=` altında bir rebuild (Render'da
+    # autoDeploy) majör sürüm atlayabilir ve çalışan servis sessizce değişir.
+    "fastapi>=0.110,<1.0",
+    "uvicorn[standard]>=0.27,<1.0",
+    "httpx[http2]>=0.27,<1.0",
+    "pydantic>=2.6,<3.0",
+    "pydantic-settings>=2.3,<3.0",
+    "structlog>=24.1,<26.0",
+    "pyyaml>=6.0,<7.0",
+    "python-multipart>=0.0.9,<1.0",
 ]
 
 [project.optional-dependencies]
-browser = ["playwright>=1.42"]
-tokens = ["tiktoken>=0.6"]
+browser = ["playwright>=1.42,<2.0"]
+tokens = ["tiktoken>=0.6,<1.0"]
 dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-    "respx>=0.21",
-    "ruff>=0.3",
-    "mypy>=1.9",
+    "pytest>=8.0,<9.0",
+    "pytest-asyncio>=0.23,<2.0",
+    "respx>=0.21,<1.0",
+    "ruff>=0.3,<1.0",
+    "mypy>=1.9,<2.0",
+    # mypy'nin `import yaml` için stub'ı; aksi halde CI'daki mypy adımı kırılır.
+    "types-PyYAML>=6.0,<7.0",
 ]
 
 [build-system]

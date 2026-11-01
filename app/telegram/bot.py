@@ -21,6 +21,7 @@ import httpx
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.diagnostics import format_failure
 from app.core.logging import configure_logging, get_logger
 
 logger = get_logger(__name__)
@@ -63,6 +64,8 @@ class TelegramSettings(BaseSettings):
     wrapper_base_url: str = "http://127.0.0.1:8000"
     wrapper_api_key: str = ""
     telegram_allowed_chat_ids: str = ""
+    #: Arıza bildirimlerinin gideceği sohbet. Boşsa ilk allowlist kaydı kullanılır.
+    telegram_alert_chat_id: str = ""
     telegram_model: str = "max"
     telegram_poll_timeout: int = Field(default=30, ge=1, le=50)
     telegram_request_timeout: float = Field(default=180.0, gt=0)
@@ -85,6 +88,24 @@ class TelegramSettings(BaseSettings):
     @property
     def allowed_chat_ids(self) -> frozenset[int]:
         return parse_allowed_chat_ids(self.telegram_allowed_chat_ids)
+
+    @property
+    def alert_chat_id(self) -> int | None:
+        """Arıza bildirimlerinin hedefi; yoksa ``None`` (bildirim kapalı).
+
+        Ayrı bir değişken zorunlu değildir: botu zaten kullandığınız sohbet
+        (allowlist'in ilk kaydı) varsayılan hedeftir. Böylece ek ayar
+        yapılmadan da anlamlı uyarı alınır.
+        """
+        raw = self.telegram_alert_chat_id.replace(";", ",").split(",")[0].strip()
+        if raw:
+            try:
+                return int(raw)
+            except ValueError:
+                logger.warning("telegram_alert_chat_id_invalid")
+                return None
+        allowed = sorted(self.allowed_chat_ids)
+        return allowed[0] if allowed else None
 
     def missing_secrets(self) -> list[str]:
         missing = []
@@ -229,15 +250,13 @@ class TelegramBot:
             return
 
         if response.status_code != 200:
+            # Kullanıcıya "upstream_failure" gibi anlamsız bir kod yerine
+            # ne olduğunu ve ne yapılacağını tek bakışta söyle.
             code = wrapper_error_code(response)
-            suffix = f" — {code}" if code else ""
-            if response.status_code == 401:
-                message = "Wrapper API anahtarı reddedildi (401)."
-            elif response.status_code == 429:
-                message = "Wrapper/upstream rate limit (429); bir süre sonra tekrar deneyin."
-            else:
-                message = f"Wrapper isteği başarısız: HTTP {response.status_code}."
-            await self.send_text(chat_id, message + suffix)
+            await self.send_text(
+                chat_id,
+                format_failure(response.status_code, code or None),
+            )
             return
 
         try:

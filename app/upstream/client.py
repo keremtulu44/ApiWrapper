@@ -22,6 +22,7 @@ from app.upstream.exceptions import (
     UpstreamHTTPError,
     UpstreamNetworkError,
     UpstreamQuotaExceeded,
+    UpstreamRefreshRequired,
     UpstreamTimeout,
 )
 from app.upstream.headers import build_page_headers, build_stream_headers
@@ -38,6 +39,19 @@ RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 522, 524})
 CAPTCHA_STATUS = frozenset({401, 403})
 #: Gövdede captcha izi yokken oturum sorununa işaret eden kodlar.
 AUTH_STATUS = frozenset({401})
+#: İstemci sürümünün eskidiğini bildiren durum kodları (deployment/forced update).
+REFRESH_STATUS = frozenset({409, 426})
+#: Gövdede "istemciyi yenile" anlamına gelen işaretler. Genel sözler ("update",
+#: "deployment") bilinçli olarak dışarıda: model çıktısında da geçebilirler.
+REFRESH_MARKERS = (
+    "refresh_required",
+    "forced_update",
+    "force_update",
+    "client_outdated",
+    "outdated_client",
+    "deployment_disabled",
+    "stale_client",
+)
 #: Gövdede oturum/token sorununa işaret eden anahtar kelimeler.
 AUTH_MARKERS = (
     "unauthorized",
@@ -52,6 +66,21 @@ AUTH_MARKERS = (
     "login",
     "session",
 )
+
+
+def _is_availability_failure(error: Exception | None) -> bool:
+    """Hata gerçekten "upstream erişilemez" sınıfında mı?
+
+    Devre kesici yalnızca erişilebilirliği izler. Kota (429), kimlik (401/403),
+    captcha reddi ve istemci sürümü (409) bizim tarafımızdaki ya da hesap
+    bazındaki sorunlardır; bunları saymak sağlıklı hesapları da bloklar.
+    """
+    if isinstance(error, (UpstreamTimeout, UpstreamNetworkError)):
+        return True
+    if isinstance(error, UpstreamHTTPError):
+        status = error.status_code or 0
+        return status == 429 or status >= 500
+    return False
 
 
 class UpstreamClient:
@@ -209,6 +238,23 @@ class UpstreamClient:
         return find_quota_marker(body, markers)
 
     @staticmethod
+    def _refresh_marker(status: int, body: str) -> str | None:
+        """Upstream istemciyi eski bulduysa eşleşen işareti döndürür.
+
+        Bu sınıf hata, "upstream bozuk" demek değildir: sunucu yeni bir sürüm
+        yayınlamış, gönderdiğimiz `x-...-deployment`/`x-deployment-id` başlığı
+        ya da oturum anlık görüntüsü eskimiş demektir. Yeniden denemek faydasız,
+        devre kesiciyi açmak ise zararlıdır (sağlıklı istekleri de engeller).
+        """
+        lowered = body.lower()
+        for marker in REFRESH_MARKERS:
+            if marker in lowered:
+                return marker
+        if status in REFRESH_STATUS and not lowered.strip():
+            return f"http_{status}"
+        return None
+
+    @staticmethod
     def _is_auth_body(status: int, body: str) -> bool:
         """401 yanıtının oturum/`access_token` reddi olup olmadığını ayırt eder.
 
@@ -319,14 +365,17 @@ class UpstreamClient:
                             url=url,
                             location=location or None,
                         )
-                        await self.breaker.record_failure()
-                        raise UpstreamHTTPError(
+                        redirect_error = UpstreamHTTPError(
                             f"Upstream redirected HTTP {status} from {url} "
                             f"to {location or '(no Location header)'}.",
                             status_code=status,
                             body=error_body,
                             url=url,
                         )
+                        # Hedef yol istemciye yalnızca path olarak gösterilir;
+                        # hata sınıfı bunu taşımıyorsa öznitelikle ekliyoruz.
+                        redirect_error.location = location
+                        raise redirect_error
 
                     if status < 400:
                         await self.breaker.record_success()
@@ -353,7 +402,8 @@ class UpstreamClient:
                         retry_after = parse_retry_after(
                             response.headers.get("retry-after")
                         )
-                        await self.breaker.record_failure()
+                        # Kota bir erişilebilirlik arızası değildir: devre kesiciyi
+                        # açmak sağlıklı hesapları da bloke ederdi.
                         metrics.inc(
                             "apiwrapper_upstream_quota_errors_total",
                             labels={"source": "http_body", "status": str(status)},
@@ -380,10 +430,38 @@ class UpstreamClient:
                             marker=quota_marker,
                         )
 
+                    refresh_marker = self._refresh_marker(status, error_body)
+                    if refresh_marker is not None:
+                        # Retry YOK, devre kesiciye kayıt YOK: sorun bizim
+                        # sakladığımız istemci anlık görüntüsünde.
+                        metrics.inc(
+                            "apiwrapper_upstream_errors_total",
+                            labels={"status": str(status), "reason": "refresh_required"},
+                        )
+                        logger.error(
+                            "upstream_refresh_required",
+                            status=status,
+                            url=url,
+                            marker=refresh_marker,
+                            body=error_body[:200],
+                            hint=(
+                                "Tarayıcıdan tamamlanmış isteği yeniden cURL olarak alıp "
+                                "UPSTREAM_CURL'ü güncelleyin (scripts/curl_to_env.py) ve "
+                                "servisi yeniden deploy edin. Sürüm damgası "
+                                "x-...-deployment / x-deployment-id başlıklarında taşınır."
+                            ),
+                        )
+                        raise UpstreamRefreshRequired(
+                            "Upstream rejected the captured client snapshot as outdated.",
+                            status_code=status,
+                            body=error_body,
+                            url=url,
+                            marker=refresh_marker,
+                        )
+
                     if self._is_auth_body(status, error_body) and not self._is_captcha_body(
                         status, error_body
                     ):
-                        await self.breaker.record_failure()
                         raise UpstreamAuthRejected(
                             "Upstream rejected the session credentials.",
                             status_code=status,
@@ -392,7 +470,6 @@ class UpstreamClient:
                         )
 
                     if self._is_captcha_body(status, error_body):
-                        await self.breaker.record_failure()
                         raise RecaptchaRejected(
                             "Upstream rejected the reCAPTCHA token.",
                             status_code=status,
@@ -407,7 +484,6 @@ class UpstreamClient:
                         url=url,
                     )
                     if status not in RETRYABLE_STATUS:
-                        await self.breaker.record_failure()
                         raise last_error
 
                     retry_after = parse_retry_after(response.headers.get("retry-after"))
@@ -439,7 +515,8 @@ class UpstreamClient:
                         )
                     )
 
-            await self.breaker.record_failure()
+            if _is_availability_failure(last_error):
+                await self.breaker.record_failure()
             raise last_error or UpstreamNetworkError("Upstream request failed.")
 
     @staticmethod
