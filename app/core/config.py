@@ -100,6 +100,27 @@ class Settings(BaseSettings):
     upstream_verify_tls: bool = True
     upstream_http2: bool = True
 
+    # ------------------------------------------- deployment (sürüm) kanaryası
+    #: `x-deployment-id` / `x-arena-web-deployment` gibi sürüm damgalarını
+    #: upstream'in kendi sayfasından okuyup tazele. Kapalıysa `UPSTREAM_CURL`'deki
+    #: donmuş değer kullanılır (eski davranış).
+    deployment_id_refresh_enabled: bool = True
+    #: Okunan değerin önbellek ömrü (saniye). Her istekte sayfa okunmaz.
+    deployment_id_ttl_seconds: float = 1800.0
+    #: Damganın okunacağı yol (ana sayfa yeterlidir).
+    deployment_probe_path: str = "/"
+    #: Kanarya okuması için zaman aşımı (saniye).
+    deployment_probe_timeout: float = 8.0
+    #: 409 `refresh_required` alınınca damga zorla yenilenip istek bir kez
+    #: tekrar edilsin mi? (Tekrar edilen istek mevcut retry bütçesinden bir yuva
+    #: kullanır; 409 zaten nadirdir.)
+    deployment_id_auto_retry: bool = True
+    #: Damga tazelenemiyorsa (kanarya yeni değeri bulamadı) istek, eskimiş
+    #: deployment başlıkları **çıkarılarak** bir kez daha denenir. Skew koruması
+    #: olmayan istekler genelde kabul edilir; bu kademe hiçbir şey bilmeden
+    #: çalıştığı için 409 sınıfını tamamen kapatabilir.
+    deployment_stamp_strip_on_conflict: bool = True
+
     # --------------------------------------------------------------- quota
     #: Upstream'in hesap kısıtlamasını bildiren metin işaretleri (virgülle ayrılmış).
     #: İşaretler **ayırt edici ifadeler** olmalı: "rate limit" gibi genel sözler bir
@@ -198,6 +219,33 @@ class Settings(BaseSettings):
     #: Süreç ayaktayken çalışır; upstream oturumunu yenileme garantisi değildir.
     upstream_keepalive_interval_seconds: float = 0.0
     upstream_keepalive_model: str = "max"
+    #: İlk probe'un gecikmesi (saniye). Deploy sonrası durumu bir saat bekleyip
+    #: öğrenmemek için varsayılan 60 sn: servis ayağa kalktıktan hemen sonra
+    #: uçtan uca tek bir kontrol yapılır.
+    upstream_keepalive_initial_delay_seconds: float = 60.0
+    #: Aralığa eklenecek rastgele sapma (saniye, ±). Tam saatte atılan istek
+    #: deseni "insan davranışı"ndan daha düzenli olduğu için jitter uygulanır.
+    upstream_keepalive_jitter_seconds: float = 300.0
+    #: Günde bir kez `stream: true` ile gerçek akış yolunu dene (0 = kapalı).
+    #: Non-stream probe, streaming ucundaki bir kırılmayı (SSE/parçalama) görmez.
+    upstream_keepalive_stream_smoke_interval_seconds: float = 86400.0
+
+    # ---------------------------------------------------------------- alerts
+    #: Telegram üzerinden arıza bildirimi. Bot token'ı ve bildirim sohbeti
+    #: (TELEGRAM_ALERT_CHAT_ID veya ilk allowlist kaydı) yoksa sessizce kapalıdır.
+    telegram_alerts_enabled: bool = True
+    #: Aynı arıza kodu bu süre boyunca **tekrar** bildirilmez (saniye).
+    #: Durum değişimleri (yeni kod / düzelme) bu sınırı beklemez; bu yalnızca
+    #: "aynı arıza sürüyor" hatırlatmasını seyreltir. 0 = her probe'da bildir.
+    telegram_alert_repeat_seconds: float = 21600.0
+
+    # ----------------------------------------------------------- health/docs
+    #: `/health` çıktısında upstream host'u görünsün mü? Varsayılan kapalı:
+    #: uç nokta kimlik doğrulamasızdır ve sağlayıcı adresini sızdırmamalıdır.
+    health_expose_upstream: bool = False
+    #: `/metrics` için API anahtarı istensin mi? Varsayılan kapalı (mevcut
+    #: kurulumları bozmamak için); herkese açık ortamda açılması önerilir.
+    metrics_require_auth: bool = False
 
     # ----------------------------------------------------------------- pools
     max_connections: int = 200

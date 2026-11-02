@@ -1,0 +1,23 @@
+# Build context'i şişiren ve imaja girmemesi gereken her şey.
+.git
+.gitignore
+.venv
+venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+htmlcov
+dist
+build
+*.egg-info
+.env
+.env.*
+!.env.example
+docs
+tests
+scripts
+node_modules
+.DS_Store

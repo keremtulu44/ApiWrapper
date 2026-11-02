@@ -68,8 +68,9 @@ def test_keepalive_starts_and_stops_with_web_service(monkeypatch):
     stopped = threading.Event()
     seen: dict[str, float] = {}
 
-    async def fake_run(settings):
+    async def fake_run(settings, alerter=None):
         seen["interval"] = settings.upstream_keepalive_interval_seconds
+        seen["alerter"] = 1.0 if alerter is not None else 0.0
         started.set()
         try:
             await asyncio.Future()
@@ -83,4 +84,4 @@ def test_keepalive_starts_and_stops_with_web_service(monkeypatch):
         assert started.wait(2)
         assert client.get("/healthz").status_code == 200
     assert stopped.wait(2)
-    assert seen == {"interval": 10800}
+    assert seen["interval"] == 10800

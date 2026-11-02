@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Awaitable, Callable
+from typing import Any
 
 from fastapi import Request, Response
 from fastapi.responses import JSONResponse
@@ -73,31 +74,85 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
         return response
 
 
-class BodyLimitMiddleware(BaseHTTPMiddleware):
-    """`Content-Length` üzerinden erken gövde boyutu reddi."""
-
-    def __init__(self, app, max_bytes: int) -> None:
-        super().__init__(app)
-        self.max_bytes = max_bytes
-
-    async def dispatch(self, request: Request, call_next: Handler) -> Response:
-        raw_length = request.headers.get("content-length")
-        if raw_length:
+def _declared_content_length(scope: Any) -> int | None:
+    """`Content-Length` başlığını (varsa) tamsayıya çevirir."""
+    for name, value in scope.get("headers") or []:
+        if name == b"content-length":
             try:
-                length = int(raw_length)
-            except ValueError:
-                length = 0
-            if length > self.max_bytes:
-                return JSONResponse(
-                    status_code=413,
-                    content=error_payload(
-                        f"Request body too large ({length} bytes); "
-                        f"limit is {self.max_bytes} bytes.",
-                        "invalid_request_error",
-                        code="payload_too_large",
-                    ),
-                )
-        return await call_next(request)
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+    return None
+
+
+async def _reject_too_large(
+    scope: Any, receive: Any, send: Any, limit: int, declared: int | None = None
+) -> None:
+    detail = f" ({declared} bytes declared)" if declared else ""
+    response = JSONResponse(
+        status_code=413,
+        content=error_payload(
+            f"Request body too large{detail}; limit is {limit} bytes.",
+            "invalid_request_error",
+            code="payload_too_large",
+        ),
+    )
+    await response(scope, receive, send)
+
+
+class BodyLimitMiddleware:
+    """Gövde boyutu sınırı — başlığa ek olarak **akan baytı** da sayar.
+
+    Önceki sürüm yalnızca `Content-Length` başlığına bakıyordu. `Transfer-Encoding:
+    chunked` ile gönderilen bir istek sınırı tamamen atlıyor, 4 MB'lık JSON
+    doğrudan Pydantic'e giriyordu (küçük bir instance'ta OOM riski).
+
+    Çözüm saf ASGI'de: gövde `max_bytes` sınırına kadar okunur ve uygulamaya
+    **tekrar oynatılır**. Sınır aşılırsa uygulama hiç çağrılmadan `413` döner.
+    (`receive` içinden istisna fırlatmak işe yaramıyordu: FastAPI gövde ayrıştırma
+    hatalarını yutup 400'e çeviriyor.)
+    """
+
+    def __init__(self, app: Any, max_bytes: int) -> None:
+        self.app = app
+        self.max_bytes = int(max_bytes)
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self.app(scope, receive, send)
+            return
+
+        limit = self.max_bytes
+        declared = _declared_content_length(scope)
+        if declared is not None and declared > limit:
+            await _reject_too_large(scope, receive, send, limit, declared)
+            return
+
+        buffered: list[Any] = []
+        total = 0
+        more_body = True
+        while more_body:
+            message = await receive()
+            if message.get("type") != "http.request":
+                # İstemci koptu: olduğu gibi uygulamaya ilet.
+                buffered.append(message)
+                break
+            body = message.get("body", b"")
+            total += len(body)
+            if total > limit:
+                await _reject_too_large(scope, receive, send, limit, total)
+                return
+            buffered.append(message)
+            more_body = bool(message.get("more_body", False))
+
+        pending = list(buffered)
+
+        async def replay() -> Any:
+            if pending:
+                return pending.pop(0)
+            return await receive()
+
+        await self.app(scope, replay, send)
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):

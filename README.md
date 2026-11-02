@@ -9,7 +9,8 @@ OpenAI-compatible istemcilerle çalışır.
         ◀──(SSE chat.completion.chunk)──          ◀──(AI SDK data-stream)──
 ```
 
-Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**
+Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** ·
+arıza/teşhis için: **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)**
 
 ---
 
@@ -27,6 +28,8 @@ Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)**
 | Sohbet yönetimi | `SESSION_REUSE=true` ile istemci başına tek upstream sohbeti; `SESSION_ROTATE_AFTER_MESSAGES`/`_SECONDS` eşiğinde yeni sohbete geçilir (Continue gibi `conversation_id` gönderemeyen istemciler için) |
 | reCAPTCHA v3 | `static` (varsayılan) · `noop` · `browser` (Playwright) · `external` — TTL cache + tek-uçuş kilidi |
 | Gözlemlenebilirlik | structlog JSON, `X-Request-ID`, `completion_completed`/`stream_completed`/`stream_failed` olayları, Prometheus metrikleri (TTFT dahil) |
+| Arıza bildirimi | Saatlik probe → Telegram: **ne oldu + hangi kod + ne yapmalı**; yeni arıza/düzelme her zaman, aynı arıza `TELEGRAM_ALERT_REPEAT_SECONDS` aralıkla (vars. 6 saat) — spam yok |
+| Sürüm eskimesi | Upstream `409 refresh_required`/`forced_update` → `upstream_refresh_required` (retry yok, devre kesiciye sayılmaz, net eylem metni) |
 | Uyumluluk | `stop` dizileri (yerel kesme), `stream_options.include_usage`, alias'lı model kayıt defteri, multimodal içerik parçaları |
 
 ---
@@ -392,10 +395,26 @@ UPSTREAM_KEEPALIVE_INTERVAL_SECONDS=10800
 UPSTREAM_KEEPALIVE_MODEL=max
 ```
 
-Bu yaklaşık 8 gerçek istek/gün ve kota/CAPTCHA kullanımıdır. Sabit token TTL'sini veya
-`refresh_required`/`forced_update` yanıtını otomatik çözmez. Render Free uyuduğunda
-task da durur. Sonuçlar timestamp'li `upstream_keepalive_completed` ve
-`upstream_keepalive_failed` loglarından izlenir.
+Bu yaklaşık 8 gerçek istek/gün ve kota/CAPTCHA kullanımıdır. Aralığa
+`UPSTREAM_KEEPALIVE_JITTER_SECONDS` (vars. ±300 sn) kadar rastgele sapma eklenir ve
+her probe farklı, kısa bir istem gönderir; böylece tam saatte atılan, birbirinin
+aynısı isteklerden oluşan robotik desen oluşmaz. Günde bir kez
+(`UPSTREAM_KEEPALIVE_STREAM_SMOKE_INTERVAL_SECONDS`, vars. 86400) aynı kontrol
+`stream: true` ile yapılır: non-stream probe akış yolundaki bir kırılmayı göremez.
+Render Free uyuduğunda task da durur. Sonuçlar timestamp'li
+`upstream_keepalive_completed`, `upstream_keepalive_failed` ve
+`upstream_keepalive_stream_smoke_*` loglarından izlenir.
+
+Telegram `/ping` yalnızca `/healthz` demez; **son upstream kontrolünün** ne zaman
+ve hangi sonuçla çalıştığını da yazar (`✓ ... başarılı (HTTP 200)` /
+`⚠ ... BAŞARISIZ (HTTP 409, upstream_refresh_required)`). Böylece `/healthz` 200
+dönerken upstream oturumu ölmüş olsa bile bu tek komutla görülür.
+
+`refresh_required`/`forced_update` (HTTP 409) artık çoğunlukla **kendiliğinden**
+geçer: wrapper sürüm damgasını (`x-deployment-id`, `x-arena-web-deployment`)
+upstream'in kendi sayfasından okuyup tazeler, 409 alırsa isteği bir kez taze
+damgayla, olmadı eskimiş başlıkları **hiç göndermeden** tekrar eder. Ayrıntılar ve kalan elle müdahale senaryosu:
+[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 Dağıtım sırası, istek yaşam döngüsü, readiness hata kodları ve belirti→çözüm tablosu:
 [`docs/RENDER.md`](docs/RENDER.md).

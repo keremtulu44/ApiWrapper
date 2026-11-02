@@ -7,6 +7,7 @@ import time
 from collections.abc import AsyncIterator
 
 from app.adapters.openai_to_upstream import build_upstream_request, validate_request
+from app.adapters.prompt_builder import build_prompt
 from app.adapters.upstream_to_openai import (
     build_usage,
     make_completion,
@@ -41,6 +42,7 @@ from app.upstream.exceptions import (
     UpstreamNetworkError,
     UpstreamProtocolError,
     UpstreamQuotaExceeded,
+    UpstreamRefreshRequired,
     UpstreamTimeout,
 )
 from app.upstream.quota import QuotaTextScanner, find_quota_marker, quota_error_message
@@ -159,6 +161,19 @@ class CompletionService:
             if exc.retry_after is not None:
                 headers["retry-after"] = str(max(1, int(exc.retry_after + 0.999)))
             return UpstreamQuotaError(exc.message, headers=headers)
+        if isinstance(exc, UpstreamRefreshRequired):
+            # İstemci anlık görüntüsü eskimiş: erişilebilirlik arızası değil,
+            # yeniden ele alınması gereken bir yapılandırma durumu.
+            return APIWrapperError(
+                "The upstream service rejected the captured client snapshot as "
+                "outdated (HTTP 409 refresh_required). Re-copy the browser request "
+                "as cURL, update UPSTREAM_CURL and redeploy. Cookies, quota and "
+                "the API key are not the cause.",
+                status_code=503,
+                err_type="upstream_error",
+                code="upstream_refresh_required",
+                headers={"retry-after": "300"},
+            )
         if isinstance(exc, UpstreamAuthRejected):
             return APIWrapperError(
                 "The upstream service rejected the session credentials (401). "
@@ -178,7 +193,6 @@ class CompletionService:
             return UpstreamTimeoutError(str(exc))
         if isinstance(exc, UpstreamHTTPError):
             status = exc.status_code or 502
-            url = exc.url or ""
             if status == 429:
                 return APIWrapperError(
                     "Upstream rate limit reached. Please retry later.",
@@ -187,30 +201,34 @@ class CompletionService:
                     code="upstream_rate_limited",
                 )
             if status == 404:
-                target = url or "the configured stream URL"
+                # Sağlayıcının URL'i istemciye yansıtılmaz; operatör için
+                # ayrıntı logda (`upstream_http_error`) zaten var.
                 return APIWrapperError(
-                    f"Upstream returned HTTP 404 for {target}. "
-                    "UPSTREAM_STREAM_PATH does not match the live endpoint "
-                    "(the default '/nextjs-api/stream/post-to-evaluation/{chat_id}' "
-                    "is often outdated; newer hosts use "
-                    "'/nextjs-api/stream/create-evaluation' with the id only in the body). "
-                    "Copy the browser request as cURL and run "
-                    "`python scripts/curl_to_env.py <file> --write`.",
+                    "Upstream returned HTTP 404: UPSTREAM_STREAM_PATH does not match "
+                    "the live endpoint. Re-import the path from a fresh browser cURL "
+                    "(scripts/curl_to_env.py).",
                     status_code=502,
                     err_type="upstream_error",
                     code="upstream_not_found",
                 )
             if 300 <= status < 400:
+                # Yalnızca yol gösterilir: sağlayıcı host'u istemciye sızmaz.
+                location = str(getattr(exc, "location", "") or "")
+                path = location.split("://", 1)[-1]
+                if "://" in location:
+                    path = "/" + path.split("/", 1)[-1] if "/" in path else "/"
+                suffix = f" Target path: {path}." if path else ""
                 return APIWrapperError(
-                    f"{exc.message} Update UPSTREAM_STREAM_PATH to the redirected "
-                    "path (`python scripts/curl_to_env.py <file> --write`).",
+                    "Upstream redirected the request instead of answering it."
+                    + suffix
+                    + " Update UPSTREAM_STREAM_PATH to the redirected path "
+                    "(scripts/curl_to_env.py).",
                     status_code=502,
                     err_type="upstream_error",
                     code="upstream_redirect",
                 )
             return UpstreamError(
-                f"Upstream request failed with HTTP {status}"
-                + (f" for {url}." if url else "."),
+                f"Upstream request failed with HTTP {status}."
             )
         if isinstance(exc, (UpstreamNetworkError, UpstreamProtocolError)):
             return UpstreamError(str(exc))
@@ -281,9 +299,9 @@ class CompletionService:
         )
         return entry, built
 
-    def _pick_account(self) -> Account | None:
+    def _pick_account(self, exclude_slot: int | None = None) -> Account | None:
         """Kullanılabilir bir hesap seçer; havuz boşsa `None` (eski davranış)."""
-        account = self.accounts.pick()
+        account = self.accounts.pick(exclude_slot=exclude_slot)
         if account is None and self.accounts.size:
             # Tüm hesaplar dinlenmede: ne zaman açılacağını söyleyerek reddet.
             wait = self.accounts.next_cooldown_end()
@@ -407,6 +425,31 @@ class CompletionService:
                 )
                 account = replacement
                 continue
+            except UpstreamAuthRejected:
+                # Oturum kimliği reddedildi (401). Kota yolundan farkı: hesabı
+                # cezalandırmıyoruz (token global olarak düşmüş olabilir), ama
+                # başka hesap varsa onu denemek toplam kesintiyi önler.
+                retryable = emitted == 0 and switches < max_switches and account is not None
+                replacement = (
+                    self._pick_account(exclude_slot=account.slot)
+                    if retryable and account is not None
+                    else None
+                )
+                if replacement is None:
+                    raise
+                switches += 1
+                metrics.inc(
+                    "apiwrapper_account_switches_total", labels={"reason": "auth"}
+                )
+                logger.warning(
+                    "account_switched",
+                    from_account=account_label,
+                    to_account=replacement.label,
+                    switch=switches,
+                    reason="auth_rejected",
+                )
+                account = replacement
+                continue
             except RecaptchaRejected:
                 self.recaptcha.invalidate()
                 can_refresh = self.settings.recaptcha_provider in {"browser", "external"}
@@ -518,6 +561,7 @@ class CompletionService:
         first_token_at: float | None = None
         usage_total_tokens: int | None = None
         scanner = self._new_quota_scanner()
+        stream_failed = False
 
         metrics.inc("apiwrapper_requests_total", labels={"endpoint": "completions",
                                                           "stream": "true"})
@@ -598,13 +642,16 @@ class CompletionService:
                     duration_ms=round((time.monotonic() - started) * 1000, 2),
                 )
                 yield sse_event(api_error.to_payload())
-                return
+                stream_failed = True
 
-            yield sse_event(
-                _dump(make_finish_chunk(completion_id, entry.id, created, finish_reason))
-            )
+            if not stream_failed:
+                yield sse_event(
+                    _dump(
+                        make_finish_chunk(completion_id, entry.id, created, finish_reason)
+                    )
+                )
 
-            if request.wants_usage():
+            if not stream_failed and request.wants_usage():
                 content = "".join(completion_text)
                 usage = build_usage(
                     count_tokens(self._prompt_preview(request)),
@@ -617,24 +664,32 @@ class CompletionService:
                     _dump(make_usage_chunk(completion_id, entry.id, created, usage))
                 )
 
-            logger.info(
-                "stream_completed",
-                completion_id=completion_id,
-                model=entry.id,
-                stream=True,
-                finish_reason=finish_reason,
-                content_chars=sum(len(part) for part in completion_text),
-                content_chunks=len(completion_text),
-                first_token_ms=(
-                    round((first_token_at - started) * 1000, 2)
-                    if first_token_at is not None
-                    else None
-                ),
-                usage_total_tokens=usage_total_tokens,
-                usage_included=request.wants_usage(),
-                duration_ms=round((time.monotonic() - started) * 1000, 2),
-            )
+            if not stream_failed:
+                logger.info(
+                    "stream_completed",
+                    completion_id=completion_id,
+                    model=entry.id,
+                    stream=True,
+                    finish_reason=finish_reason,
+                    content_chars=sum(len(part) for part in completion_text),
+                    content_chunks=len(completion_text),
+                    first_token_ms=(
+                        round((first_token_at - started) * 1000, 2)
+                        if first_token_at is not None
+                        else None
+                    ),
+                    usage_total_tokens=usage_total_tokens,
+                    usage_included=request.wants_usage(),
+                    duration_ms=round((time.monotonic() - started) * 1000, 2),
+                )
 
+        except (asyncio.CancelledError, GeneratorExit):
+            # İstemci koptu ya da sunucu iptal etti. `finally` içinde yield
+            # etmek jeneratörü bozar: kapanış sırasında Python
+            # "async generator ignored GeneratorExit" fırlatır ve bağlantı
+            # askıda kalır. Bu yüzden burada yalnızca yukarı fırlatıyoruz;
+            # `[DONE]` iptal edilmiş bir bağlantıya zaten yazılamaz.
+            raise
         finally:
             metrics.inc("apiwrapper_active_streams", -1.0)
             metrics.observe(
@@ -642,10 +697,29 @@ class CompletionService:
                 time.monotonic() - started,
                 {"endpoint": "completions"},
             )
-            # `[DONE]` her durumda gönderilir; istemciler buna güvenir.
-            yield sse_done()
+
+        # `[DONE]` başarı ve hata yollarında, `finally` dışında gönderilir;
+        # istemciler bunun varlığına güvenir.
+        yield sse_done()
 
     # ------------------------------------------------------------ private
     def _prompt_preview(self, request: ChatCompletionRequest) -> str:
-        """Token sayımı için prompt metnini yeniden üretir (ucuz yaklaşım)."""
-        return "\n".join(m.text_content() for m in request.messages)
+        """Token sayımı için **gerçek** prompt metnini üretir.
+
+        Ham `messages` metnini toplamak prompt token'ını sistematik olarak düşük
+        gösteriyordu: rol etiketleri, `System:` bloğu, araç tanımları, ipuçları
+        ve `Assistant:` işareti sayılmıyordu. Burada aynı `build_prompt` çağrısı
+        kullanılır; saf string işlemi olduğu için maliyeti yoktur.
+        """
+        try:
+            return build_prompt(
+                request.messages,
+                tools=request.tools,
+                include_hints=self.settings.unsupported_params == "hint",
+                temperature=request.temperature,
+                top_p=request.top_p,
+                max_tokens=request.max_tokens or request.max_completion_tokens,
+                response_format=request.response_format,
+            )
+        except Exception:  # pragma: no cover - sayım asla isteği bozmamalı
+            return "\n".join(m.text_content() for m in request.messages)

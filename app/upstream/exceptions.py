@@ -24,6 +24,10 @@ class UpstreamException(Exception):
 class UpstreamHTTPError(UpstreamException):
     """Upstream 4xx/5xx döndürdü."""
 
+    #: 3xx yanıtlarında `Location` başlığının ham değeri. İstemciye yalnızca
+    #: yol kısmı gösterilir; sağlayıcı host'u yansıtılmaz.
+    location: str = ""
+
 
 class UpstreamNetworkError(UpstreamException):
     """Bağlantı/DNS/TLS düzeyinde hata."""
@@ -57,6 +61,28 @@ class UpstreamQuotaExceeded(UpstreamException):
     ) -> None:
         super().__init__(message, status_code=status_code, body=body, url=url)
         self.retry_after = retry_after
+        self.marker = marker
+
+
+class UpstreamRefreshRequired(UpstreamHTTPError):
+    """Upstream, istemci anlık görüntüsünü eski buldu (örn. HTTP 409 refresh_required).
+
+    Tipik gövde: ``{"error":"refresh_required","reason":"forced_update"}``. Bu bir
+    erişilebilirlik arızası **değildir**: upstream ayakta, kimlik doğru, kota boş;
+    yalnızca tarayıcıdan alınan cURL'deki sürüm/deployment damgası eski. Yeniden
+    denemek aynı cevabı üretir, bu yüzden retry edilmez ve devre kesiciye sayılmaz.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        body: str = "",
+        url: str = "",
+        marker: str = "",
+    ) -> None:
+        super().__init__(message, status_code=status_code, body=body, url=url)
         self.marker = marker
 
 

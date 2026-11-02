@@ -195,19 +195,26 @@ class AccountPool:
         return learned if learned > 0 else max(1, self.settings.account_msg_budget)
 
     # -------------------------------------------------------------- seçim
-    def pick(self, now: float | None = None) -> Account | None:
+    def pick(
+        self, now: float | None = None, exclude_slot: int | None = None
+    ) -> Account | None:
         """Kullanılabilir en uygun hesabı döndürür; hepsi dinlenmedeyse `None`.
 
         Sıralama ölçütü: pencere içi mesaj sayısı (az olan önce), eşitlikte en
         uzun süredir kullanılmayan. Böylece bütçe bir engelden çok bir tercih
         sırası olarak çalışır — tek hesaplı kurulumda istek hiçbir zaman
         reddedilmez.
+
+        ``exclude_slot`` verilirse o yuva (örn. az önce 401 alan hesap) atlanır;
+        aksi halde devir aynı hesabı seçip sonsuz döngü üretebilirdi.
         """
         current = time.time() if now is None else now
         usable = [
             account
             for account in self.accounts
-            if account.is_configured and self.cooldown_remaining(account.slot, current) <= 0
+            if account.is_configured
+            and account.slot != exclude_slot
+            and self.cooldown_remaining(account.slot, current) <= 0
         ]
         if not usable:
             return None
