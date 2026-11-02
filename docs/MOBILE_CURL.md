@@ -138,12 +138,31 @@ düşmez.
 `create-evaluation` listede yok mu? → [`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
 bölüm **1c**.
 
-### 3.5 İleri seviye: Termux + mitmproxy
+### 3.5 Telefonda DevTools (Kiwi / Lemur) — "istek listede yok" sorunu
+
+Kiwi ve Lemur masaüstü DevTools'u açar; ama mobilde iki tuzak var:
+
+1. **`Fetch/XHR` filtresi.** Sohbet akışı `fetch` ile açılan bir **SSE** akışıysa
+   listede `Fetch/XHR` altında görünür; `EventSource` ise **`Other`** altında
+   çıkar. → Filtre olarak **`All`** seçin, filtre kutusunu tamamen boşaltın.
+2. **Panel sonradan açıldı.** DevTools açılırken sayfa yenilenir; istek
+   yenilemeden **önce** atıldıysa listede olmaz. → DevTools'u açın → **Preserve
+   log** işaretleyin → sayfayı yenileyin → **ilk** mesajı gönderin.
+
+Ek kontrol listesi:
+
+* Arama kutusuna `stream`, `evaluation` veya `nextjs` yazın (isim farklı olabilir).
+* Kırmızı `ERR_BLOCKED_BY_CLIENT` → reklam/script engelleyiciyi kapatın.
+* DevTools'u **masaüstü modunda** açın (Lemur/Kiwi "Desktop site").
+* Hâlâ yoksa: **Cookie-Editor → Export → Header String → `/cookie <satır>`**.
+  Network'e hiç bakmanız gerekmez; iki dokunuş.
+
+### 3.6 İleri seviye: Termux + mitmproxy
 
 Telefonda `mitmproxy` çalıştırıp trafiği izlemek teknik olarak mümkündür ama sertifika
 kurulumu/Android sürüm kısıtları nedeniyle zahmetlidir. Önerilmez.
 
-### 3.6 En pratik alternatif
+### 3.7 En pratik alternatif
 
 Bir kereliğine masaüstü/başka bir cihazda: DevTools → Network → ilgili istek →
 **Copy as cURL** → Telegram `/curl <...>`. Sonrasında sunucu tarayıcısı devralır.
