@@ -5,8 +5,15 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
+from pydantic import BaseModel, Field
 
-from app.api.deps import get_recaptcha, get_sessions, get_upstream
+from app.api.deps import (
+    get_recaptcha,
+    get_sessions,
+    get_settings_dep,
+    get_upstream,
+)
+from app.core.config import Settings
 from app.core.errors import InvalidRequestError
 from app.core.logging import mask_value
 from app.core.metrics import metrics
@@ -25,6 +32,7 @@ from app.upstream.auth import (
 )
 from app.upstream.breaker import BreakerState
 from app.upstream.client import UpstreamClient
+from app.upstream.curl_runtime import apply_curl_to_settings
 from app.upstream.headers import build_authorization
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(api_key_dependency)])
@@ -89,6 +97,64 @@ async def invalidate_recaptcha(
 async def reset_breaker(upstream: UpstreamClient = Depends(get_upstream)) -> dict[str, Any]:
     upstream.breaker.reset()
     return {"status": "closed"}
+
+
+class UpstreamCurlPayload(BaseModel):
+    """Taze cURL metni (ham değer hiçbir yere loglanmaz/yanıtta dönmez)."""
+
+    curl: str = Field(min_length=20, max_length=30000)
+
+
+@router.post("/upstream/curl", summary="Swap upstream credentials from a fresh cURL")
+async def update_upstream_curl(
+    payload: UpstreamCurlPayload,
+    request: Request,
+    settings: Settings = Depends(get_settings_dep),
+    upstream: UpstreamClient = Depends(get_upstream),
+    accounts: AccountPool = Depends(get_accounts),
+    sessions: SessionManager = Depends(get_sessions),
+) -> dict[str, Any]:
+    """Çalışan servise yeni cURL uygular — **yeniden deploy gerekmez**.
+
+    Oturum düştüğünde (401 "User not found") ya da sürüm damgası eskidiğinde tek
+    gereken şey taze bir cURL'dir. Render'da secret güncelleyip 2-3 dakika deploy
+    beklemek yerine bu uç nokta alanları yerinde değiştirir, hesap cookie
+    jar'larını kapatır ve oturum önbelleğini temizler.
+
+    Not: bu değişiklik **bellekte**dir; süreç yeniden başlarsa Render'daki
+    `UPSTREAM_CURL` değerine döner. Kalıcı olması için secret'ı da güncelleyin.
+    """
+    from app.core.logging import get_logger
+
+    logger = get_logger(__name__)
+    try:
+        result = apply_curl_to_settings(settings, payload.curl)
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc), param="curl") from exc
+
+    account_changes = accounts.reload_credentials(settings)
+    dropped_clients = await upstream.reset_account_clients()
+    upstream.breaker.reset()
+    await sessions.clear()
+    request.app.state.recaptcha.invalidate()
+
+    logger.info(
+        "upstream_curl_applied",
+        fields=result["fields"],
+        accounts=sorted(account_changes),
+        dropped_clients=dropped_clients,
+    )
+    return {
+        "status": "applied",
+        "fields": result["fields"],
+        "accounts_updated": account_changes,
+        "clients_reset": dropped_clients,
+        "upstream_model": result["model_id"],
+        "note": (
+            "Değişiklik bellekte uygulandı; kalıcı olması için Render'daki "
+            "UPSTREAM_CURL secret'ını da aynı cURL ile güncelleyin."
+        ),
+    }
 
 
 @router.get("/config", summary="Effective non-sensitive configuration")

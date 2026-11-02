@@ -77,6 +77,16 @@ AUTH_MARKERS = (
     "not signed in",
     "login",
     "session",
+    # Canlı gözlem: oturum düştüğünde upstream 401 + {"message":"User not found"}
+    # döndürüyor. Bu metin eski listede yoktu, bu yüzden hata "upstream_failure"
+    # gibi jenerik görünüyordu.
+    "user not found",
+    "user_not_found",
+    "no such user",
+    "user does not exist",
+    "unknown user",
+    "account not found",
+    "invalid user",
 )
 
 
@@ -191,6 +201,19 @@ class UpstreamClient:
             self._account_clients[account.slot] = client
             logger.debug("upstream_account_client_started", account=account.label)
         return client
+
+    async def reset_account_clients(self) -> int:
+        """Hesap bazlı client/cookie jar'larını kapatır ve damga önbelleğini siler.
+
+        Yeni kimlik bilgileri uygulandığında eski jar'daki çerezlerin isteğe
+        karışmaması için gerekir.
+        """
+        clients = list(self._account_clients.values())
+        self._account_clients.clear()
+        for client in clients:
+            await client.aclose()
+        self.deployment.reset()
+        return len(clients)
 
     # ------------------------------------------------------------- helpers
     def _log_referer_hint(self) -> None:
@@ -389,6 +412,31 @@ class UpstreamClient:
         return None
 
     @staticmethod
+    def _is_user_missing(status: int, body: str) -> bool:
+        """Upstream "bu kullanıcı yok" diyor mu? (401/403, oturum ölümü)
+
+        Gövde boşsa da kimlik reddi sayılır: 401/403 + boş gövde bizim
+        tarafımızdaki oturum sorunudur.
+        """
+        if status not in CAPTCHA_STATUS:
+            return False
+        lowered = (body or "").lower()
+        if not lowered.strip():
+            return True
+        return any(
+            marker in lowered
+            for marker in (
+                "user not found",
+                "user_not_found",
+                "no such user",
+                "user does not exist",
+                "unknown user",
+                "account not found",
+                "invalid user",
+            )
+        )
+
+    @staticmethod
     def _is_auth_body(status: int, body: str) -> bool:
         """401 yanıtının oturum/`access_token` reddi olup olmadığını ayırt eder.
 
@@ -474,6 +522,8 @@ class UpstreamClient:
         # 409 `refresh_required` için tek seferlik tazeleme hakları.
         stamp_retry_used = False
         stamp_strip_used = False
+        # 409 sonrası damga çıkarılınca oturum da reddedildiyse ısıtma faydasız.
+        session_dead = False
 
         async with self._total_deadline(request_settings, url), self._semaphore:
             while attempt < attempts:
@@ -553,6 +603,26 @@ class UpstreamClient:
                         url=url,
                         body=error_body[:300],
                     )
+                    if stamp_strip_used and self._is_user_missing(status, error_body):
+                        # Kritik ayrım: 409 "refresh_required" damga sorunu gibi
+                        # görünür ama damga çıkarılınca oturum da reddediliyorsa
+                        # asıl arıza oturumun ölmüş olmasıdır. Yeni cURL şart.
+                        session_dead = True
+                        metrics.inc("apiwrapper_upstream_session_dead_total")
+                        logger.error(
+                            "upstream_session_dead",
+                            status=status,
+                            account=account.label if account else None,
+                            body=error_body[:200],
+                            hint=(
+                                "Damga tazelenemedi ve damga çıkarılınca upstream "
+                                "oturumu da reddetti (401/403 'user not found'). "
+                                "Sorun sürüm damgası değil, oturumun kendisi: "
+                                "tarayıcıdan taze cURL alıp UPSTREAM_CURL'ü "
+                                "güncelleyin ve servisi yeniden deploy edin."
+                            ),
+                        )
+
                     if self._cx_flag(status, error_body):
                         metrics.inc(
                             "apiwrapper_upstream_cx_flags_total",
@@ -681,7 +751,8 @@ class UpstreamClient:
                         # Son kademe: damga değişmediyse oturum çerezini tazelemeyi
                         # dene (tek GET). Bu isteği kurtarmaz ama bir sonraki
                         # isteğin taze cookie ile gitmesini sağlar.
-                        await self._refresh_session_cookie(chat_id, account)
+                        if not session_dead:
+                            await self._refresh_session_cookie(chat_id, account)
                         raise UpstreamRefreshRequired(
                             "Upstream rejected the captured client snapshot as outdated.",
                             status_code=status,
@@ -694,7 +765,13 @@ class UpstreamClient:
                         status, error_body
                     ):
                         raise UpstreamAuthRejected(
-                            "Upstream rejected the session credentials.",
+                            (
+                                "Upstream rejected the session (401/403 after a stale "
+                                "deployment 409); the captured cookie/token is no "
+                                "longer valid."
+                            )
+                            if session_dead
+                            else "Upstream rejected the session credentials.",
                             status_code=status,
                             body=error_body,
                             url=url,

@@ -741,3 +741,50 @@ def test_warmup_page_can_supply_the_stamp_without_extra_requests():
 
     asyncio.run(run())
     assert len(page_gets) >= 2
+
+
+# ---------------------------------------- 409'un arkasındaki ölü oturum (canlı)
+def test_user_not_found_body_counts_as_auth_failure():
+    # Canlı log: 401 + {"message":"User not found"} jenerik "upstream_failure"
+    # olarak görünüyordu; artık kimlik reddi sınıfına giriyor.
+    assert UpstreamClient._is_auth_body(401, '{"message":"User not found"}') is True
+    assert UpstreamClient._is_user_missing(401, '{"message":"User not found"}') is True
+    assert UpstreamClient._is_user_missing(401, "") is True
+    assert UpstreamClient._is_user_missing(500, "user not found") is False
+    assert UpstreamClient._is_user_missing(401, '{"error":"quota"}') is False
+
+
+def test_409_then_user_not_found_is_reported_as_session_dead():
+    from app.upstream.exceptions import UpstreamAuthRejected
+
+    page_gets: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            page_gets.append(request.url.path)
+            return httpx.Response(200, text="<html>no stamp</html>")
+        if _stamp_of(request):
+            return httpx.Response(409, text=REFRESH_BODY)
+        # Damga çıkarılınca gerçek sorun ortaya çıkıyor: oturum ölmüş.
+        return httpx.Response(401, text='{"message":"User not found"}')
+
+    async def run() -> None:
+        settings = make_settings(
+            upstream_extra_headers=f"{STAMP_HEADER}={OLD_STAMP}",
+            retry_max_attempts=1,
+        )
+        client = UpstreamClient(settings)
+        transport_client = _install_client(client, handler)
+        try:
+            with pytest.raises(UpstreamAuthRejected) as excinfo:
+                async with client.stream_completion("chat-1", PAYLOAD):
+                    pass  # pragma: no cover
+            assert "cookie/token" in str(excinfo.value)
+        finally:
+            await transport_client.aclose()
+
+    asyncio.run(run())
+    # İki kanarya okuması (ilk + 409 sonrası zorunlu), ama sohbet sayfası için
+    # ekstra ısıtma yok: oturum ölüyse bu istek boşa gider.
+    assert page_gets == ["/", "/"]
+    assert "/c/chat-1" not in page_gets

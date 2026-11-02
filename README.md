@@ -405,6 +405,12 @@ Render Free uyuduğunda task da durur. Sonuçlar timestamp'li
 `upstream_keepalive_completed`, `upstream_keepalive_failed` ve
 `upstream_keepalive_stream_smoke_*` loglarından izlenir.
 
+Oturum düştüğünde (401 "User not found") yeni cURL'ü servi­se **deploy etmeden**
+uygulamak için: Telegram `/curl <cURL>` ya da
+`POST /v1/admin/upstream/curl {"curl": "..."}`. Değişiklik bellekte uygulanır
+(hesap cookie jar'ları kapatılır, oturum önbelleği temizlenir); kalıcı olması
+için Render'daki `UPSTREAM_CURL` da güncellenmelidir.
+
 Telegram `/ping` yalnızca `/healthz` demez; **son upstream kontrolünün** ne zaman
 ve hangi sonuçla çalıştığını da yazar (`✓ ... başarılı (HTTP 200)` /
 `⚠ ... BAŞARISIZ (HTTP 409, upstream_refresh_required)`). Böylece `/healthz` 200

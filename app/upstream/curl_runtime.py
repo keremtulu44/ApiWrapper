@@ -29,6 +29,48 @@ _CURL_FIELDS: dict[str, str] = {
 }
 
 
+def _runtime_fields() -> tuple[str, ...]:
+    """Canlı `Settings` nesnesine yazılabilecek alan adları (allowlist)."""
+    fields: list[str] = list(_CURL_FIELDS.values())
+    for slot in range(2, MAX_ACCOUNT_SLOTS + 1):
+        fields.extend(
+            [
+                f"upstream_cookie_{slot}",
+                f"upstream_access_token_{slot}",
+                f"target_domain_{slot}",
+                f"recaptcha_static_token_{slot}",
+                f"upstream_account_{slot}_name",
+            ]
+        )
+    return tuple(dict.fromkeys(fields))
+
+
+def apply_curl_to_settings(settings: Settings, raw: str) -> dict[str, object]:
+    """Yeni bir cURL'ü **çalışan** ayarlara uygular (yeniden deploy gerekmez).
+
+    Oturum düştüğünde tek yapılacak iş taze bir cURL'dir; her seferinde Render'da
+    secret güncelleyip redeploy etmek yerine bu fonksiyon alanları yerinde
+    değiştirir. Ham cURL hiçbir yere yazılmaz/loglanmaz; yalnızca hangi alanların
+    değiştiği döner.
+    """
+    text = (raw or "").strip()
+    if not text:
+        raise ValueError("Boş cURL gönderildi.")
+    candidate = settings.model_copy(update={"upstream_curl": text})
+    updated, model_id = apply_upstream_curl(candidate)
+
+    changed: list[str] = []
+    for field in _runtime_fields():
+        new_value = getattr(updated, field)
+        if getattr(settings, field, None) != new_value:
+            setattr(settings, field, new_value)
+            changed.append(field)
+    # Ham cURL bellekte tutulmaz: yalnızca çıkarılan alanlar yaşar.
+    settings.upstream_curl = ""
+    logger.info("upstream_curl_hot_swapped", fields=changed)
+    return {"fields": changed, "model_id": model_id}
+
+
 def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
     """Ham cURL varsa onu mevcut upstream alanlarının üzerine uygular.
 

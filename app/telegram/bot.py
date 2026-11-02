@@ -30,7 +30,8 @@ logger = get_logger(__name__)
 _HELP = (
     "ApiWrapper test botu aktif.\n"
     "Bir metin gönderin; wrapper /v1/chat/completions üzerinden yanıt üretir.\n"
-    "Komutlar: /ping (wrapper + son upstream kontrolü), /help.\n"
+    "Komutlar: /ping (wrapper + son upstream kontrolü), /curl <cURL> "
+    "(oturumu tazele), /help.\n"
     "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
 )
 
@@ -214,6 +215,9 @@ class TelegramBot:
         if command == "/ping":
             await self.ping(chat_id)
             return
+        if command in {"/curl", "/setcurl"}:
+            await self.set_upstream_curl(chat_id, text)
+            return
         if text.startswith("/"):
             await self.send_text(chat_id, "Bilinmeyen komut. /help yazın.")
             return
@@ -239,6 +243,85 @@ class TelegramBot:
             )
         # Süreç ayakta olsa da upstream oturumu ölmüş olabilir.
         lines.append(describe_probe(last_probe()))
+        await self.send_text(chat_id, "\n".join(lines))
+
+    async def set_upstream_curl(self, chat_id: int, text: str) -> None:
+        """Taze cURL'ü çalışan servise uygular — Render'da yeniden deploy gerekmez.
+
+        Oturum düştüğünde (401 "User not found") veya sürüm damgası eskidiğinde
+        tek gereken şey yeni bir cURL'dir. Kullanım: `/curl <cURL metni>`.
+        Ham cURL hiçbir log/yanıt içine yazılmaz.
+        """
+        parts = text.split(maxsplit=1)
+        body = parts[1].strip() if len(parts) > 1 else ""
+        if not body:
+            await self.send_text(
+                chat_id,
+                "Kullanım: /curl <cURL>\n"
+                "Tarayıcıda Network → create-evaluation isteği → Copy as cURL, "
+                "ardından komutun yanına yapıştırın.",
+            )
+            return
+        if "curl" not in body.lower():
+            await self.send_text(
+                chat_id,
+                "Gönderilen metin bir cURL gibi görünmüyor. "
+                "Network sekmesinden create-evaluation isteğini "
+                "'Copy as cURL' ile kopyalayın.",
+            )
+            return
+        if len(body) > 30000:
+            await self.send_text(
+                chat_id,
+                f"cURL çok uzun ({len(body)} karakter). Gereksiz başlıkları "
+                "(-H) çıkarıp tekrar deneyin.",
+            )
+            return
+
+        try:
+            response = await self.wrapper.post(
+                "/v1/admin/upstream/curl", json={"curl": body}
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("telegram_curl_upload_failed", error_type=type(exc).__name__)
+            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; cURL uygulanmadı.")
+            return
+
+        if response.status_code != 200:
+            detail = ""
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            error = payload.get("error") if isinstance(payload, dict) else None
+            if isinstance(error, dict):
+                detail = str(error.get("message") or "")
+            await self.send_text(
+                chat_id,
+                "cURL uygulanamadı: "
+                + (detail or f"HTTP {response.status_code}")
+                + "\nÖrnek geçerli biçim: /curl curl 'https://...' -H 'cookie: ...'",
+            )
+            return
+
+        payload = {}
+        try:
+            payload = response.json()
+        except ValueError:  # pragma: no cover - sözleşme her zaman JSON
+            payload = {}
+        fields = payload.get("fields") or []
+        accounts = payload.get("accounts_updated") or {}
+        lines = [
+            f"✓ cURL uygulandı: {len(fields)} alan güncellendi.",
+            "Hesap: " + (", ".join(sorted(accounts)) if accounts else "değişmedi"),
+        ]
+        if payload.get("upstream_model"):
+            lines.append(f"Upstream model: {payload['upstream_model']}")
+        lines.append(
+            "Değişiklik bellekte; kalıcı olması için Render'daki UPSTREAM_CURL'ü de "
+            "güncelleyin."
+        )
+        lines.append("Şimdi bir mesaj atarak test edin.")
         await self.send_text(chat_id, "\n".join(lines))
 
     async def ask_wrapper(self, chat_id: int, prompt: str) -> None:
