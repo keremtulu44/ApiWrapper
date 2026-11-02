@@ -34,6 +34,7 @@ from app.upstream.breaker import BreakerState
 from app.upstream.client import UpstreamClient
 from app.upstream.curl_runtime import apply_curl_to_settings
 from app.upstream.headers import build_authorization
+from app.upstream.session_capture import apply_capture_to_settings, capture_with_provider
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(api_key_dependency)])
 
@@ -153,6 +154,71 @@ async def update_upstream_curl(
         "note": (
             "Değişiklik bellekte uygulandı; kalıcı olması için Render'daki "
             "UPSTREAM_CURL secret'ını da aynı cURL ile güncelleyin."
+        ),
+    }
+
+
+@router.post("/upstream/capture", summary="Capture a fresh session with the server browser")
+async def capture_upstream_session(
+    request: Request,
+    settings: Settings = Depends(get_settings_dep),
+    upstream: UpstreamClient = Depends(get_upstream),
+    accounts: AccountPool = Depends(get_accounts),
+    sessions: SessionManager = Depends(get_sessions),
+    recaptcha: RecaptchaProvider = Depends(get_recaptcha),
+) -> dict[str, Any]:
+    """Telefonda DevTools olmadan taze oturum yakalar.
+
+    Servisteki Chromium (reCAPTCHA sağlayıcısı) hedef sayfayı açar, gerçek bir
+    `create-evaluation` isteğini yakalar ve cookie/sürüm damgası/`cx`/referer
+    yolunu çalışan ayarlara uygular. Hiçbir gizli değer yanıta konmaz.
+    """
+    from app.core.logging import get_logger
+
+    logger = get_logger(__name__)
+    try:
+        result = await capture_with_provider(recaptcha, settings)
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc)) from exc
+    except Exception as exc:  # pragma: no cover - tarayıcı hatası
+        logger.warning("upstream_capture_failed", error_type=type(exc).__name__)
+        raise InvalidRequestError(
+            "Oturum yakalanamadı (tarayıcı hatası). Birkaç saniye sonra tekrar deneyin."
+        ) from exc
+
+    changed = apply_capture_to_settings(settings, result)
+    if result.has_cookie:
+        accounts.reload_credentials(settings)
+        await upstream.reset_account_clients()
+        upstream.breaker.reset()
+        await sessions.clear()
+        recaptcha.invalidate()
+
+    logger.info(
+        "upstream_capture",
+        logged_in=result.logged_in,
+        cookie_found=result.has_cookie,
+        deployment_found=bool(result.deployment_id),
+        cx_found=bool(result.cx),
+        triggered=result.triggered_request,
+        changed=changed,
+    )
+    return {
+        "status": "captured" if changed else "unchanged",
+        "logged_in": result.logged_in,
+        "cookie_found": result.has_cookie,
+        "deployment_found": bool(result.deployment_id),
+        "cx_found": bool(result.cx),
+        "triggered_request": result.triggered_request,
+        "fields": changed,
+        "notes": result.notes,
+        "next": (
+            "Bir mesaj atarak test edin."
+            if changed
+            else (
+                "Yeni oturum yakalanamadı: tarayıcıda oturum açık değil. "
+                "Telefonda giriş yapıp cURL'ü /curl ile gönderin."
+            )
         ),
     }
 

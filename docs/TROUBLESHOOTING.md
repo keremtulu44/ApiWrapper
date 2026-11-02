@@ -164,15 +164,23 @@ Bu senaryoda damga kanaryası işe yaramaz: ana sayfa oturum olmadan `dpl_`
 kimliğini yayınlamıyor (`source: configured`). Sıralama doğru çalışıyor:
 tazeleme → sıyırma → hata.
 
-**Yapılacak**
+**Yapılacak — telefonda DevTools gerekmez**
 
-1. Tarayıcıda uygulamaya **yeniden giriş yapın** (sert yenile + login).
-2. Yeni bir sohbet mesajı gönderin → **Copy as cURL**.
-3. Aşağıdaki iki yoldan biri:
-   * **Telegram:** `/curl <cURL>` → değişiklik **anında** uygulanır, deploy
-     beklemez (bellekte; kalıcı olması için Render secret'ını da güncelleyin).
-   * **Render:** `UPSTREAM_CURL` secret'ını güncelleyip Manual Deploy.
+1. **`/yenile`** (veya `/refresh`) → servisteki Chromium hedef sayfayı açar,
+   gerçek bir `create-evaluation` isteğini yakalar ve cookie + sürüm damgası +
+   `cx` + referer yolunu **anında** uygular. Deploy yok, cURL yok.
+   * `✓ Oturum yakalandı` → bir mesaj atıp test edin.
+   * `⚠ Oturum yakalanamadı` → site oturumu tamamen düşmüş; 2. adıma geçin.
+2. **Telefonda giriş + cURL:** siteye giriş yapıp bir mesaj gönderin, isteği
+   cURL olarak alın (mobilde DevTools olmadığı için **Kiwi Browser** — dahili
+   DevTools — veya **Firefox Android + HTTP header eklentisi** kullanın), sonra
+   **`/curl <cURL>`** ile gönderin. Bu da deploy gerektirmez.
+3. Son çare **Render:** `UPSTREAM_CURL` secret'ını güncelleyip Manual Deploy.
 4. Doğrula: bot'a bir mesaj atın ya da `/ping` → `✓ Son upstream kontrolü: ...`.
+
+API karşılıkları: `POST /v1/admin/upstream/capture` (gövdesiz) ve
+`POST /v1/admin/upstream/curl {"curl": "..."}`. Gizli değerler ne yanıtta ne de
+loglarda görünür.
 
 **Logda ayırt etme**
 
