@@ -30,7 +30,8 @@ logger = get_logger(__name__)
 _HELP = (
     "ApiWrapper test botu aktif.\n"
     "Bir metin gönderin; wrapper /v1/chat/completions üzerinden yanıt üretir.\n"
-    "Komutlar: /ping (wrapper + son upstream kontrolü), /yenile (sunucu "
+    "Komutlar: /ping (wrapper + son upstream kontrolü), /tani (kimlik teşhisi), "
+    "/yenile (sunucu "
     "tarayıcısıyla oturumu tazele), /cookie <çerez> ya da /curl <cURL>, /help.\n"
     "/cookie! <çerez> = kontrolü atlayıp zorla uygula.\n"
     "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
@@ -216,6 +217,9 @@ class TelegramBot:
         if command == "/ping":
             await self.ping(chat_id)
             return
+        if command in {"/tani", "/tanı", "/durum", "/status", "/diagnose"}:
+            await self.diagnose(chat_id)
+            return
         if command in {"/curl", "/setcurl"}:
             await self.set_upstream_curl(chat_id, text)
             return
@@ -254,6 +258,101 @@ class TelegramBot:
         # Süreç ayakta olsa da upstream oturumu ölmüş olabilir.
         lines.append(describe_probe(last_probe()))
         await self.send_text(chat_id, "\n".join(lines))
+
+    async def diagnose(self, chat_id: int) -> None:
+        """`/tani`: telefonda tek mesajda "neyim eksik, ne yapayım".
+
+        `/auth` ucunun gizli değer içermeyen çıktısını okunur bir özete çevirir;
+        Network/DevTools açmadan oturumun neden çalışmadığını söyler.
+        """
+        try:
+            response = await self.wrapper.get("/v1/admin/auth")
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; teşhis yapılamadı.")
+            return
+        if response.status_code != 200 or not isinstance(payload, dict):
+            await self.send_text(
+                chat_id,
+                f"Teşhis alınamadı (HTTP {response.status_code}). API anahtarını "
+                "kontrol edin.",
+            )
+            return
+
+        lines = ["🔎 Teşhis"]
+        names = [str(item) for item in (payload.get("cookie_names_present") or [])]
+        shown = ", ".join(names[:8]) + (f" (+{len(names) - 8})" if len(names) > 8 else "")
+        lines.append(
+            f"Çerez: {payload.get('cookie_count', 0)} ad"
+            + (f" → {shown}" if shown else " → **hiç yok**")
+        )
+        candidates_raw = payload.get("session_cookie_candidates")
+        candidates: list[Any] = candidates_raw if isinstance(candidates_raw, list) else []
+        session_names = [
+            str(item.get("cookie"))
+            for item in candidates
+            if isinstance(item, dict) and item.get("cookie")
+        ]
+        lines.append(
+            "Oturum adayı çerez: "
+            + (", ".join(session_names[:5]) if session_names else "yok")
+        )
+        token_raw = payload.get("token")
+        token: dict[str, Any] = token_raw if isinstance(token_raw, dict) else {}
+        if token.get("found"):
+            remaining = token.get("expires_in_seconds")
+            if token.get("expired"):
+                lines.append("Token: **süresi dolmuş**")
+            elif isinstance(remaining, int):
+                lines.append(f"Token: var (≈{remaining // 60} dk kaldı)")
+            else:
+                lines.append("Token: var (süre bilgisi yok)")
+        else:
+            lines.append("Token: **yok** (ne çerezden ne UPSTREAM_ACCESS_TOKEN'dan)")
+        lines.append(
+            "Yetkilendirme başlığı gidecek: "
+            + ("evet" if payload.get("authorization_header_will_be_sent") else "**hayır**")
+        )
+        probe = describe_probe(last_probe())
+        lines.append(f"Son upstream: {probe}")
+        lines.append("→ " + self._diagnose_advice(payload, probe))
+        await self.send_text(chat_id, "\n".join(lines))
+
+    @staticmethod
+    def _diagnose_advice(payload: dict[str, Any], probe: str) -> str:
+        """Teşhis çıktısından tek bir sonraki adım seçer."""
+        token_raw = payload.get("token")
+        token: dict[str, Any] = token_raw if isinstance(token_raw, dict) else {}
+        count = int(payload.get("cookie_count") or 0)
+        candidates = payload.get("session_cookie_candidates") or []
+        if not count:
+            return (
+                "Elde çerez yok. Giriş yapmış tarayıcıda Cookie-Editor → Export → "
+                "Header String → /cookie <çerez>."
+            )
+        if not token.get("found"):
+            if candidates:
+                return (
+                    "Çerez var ama oturum token'ı ayıklanamadı: /yenile deneyin; "
+                    "olmazsa tam çerez setini /cookie ile gönderin."
+                )
+            return (
+                "Çerezlerde oturum izi yok (muhtemelen eksik set). Giriş yapmış "
+                "tarayıcıdan TÜM çerezleri /cookie ile gönderin."
+            )
+        if token.get("expired"):
+            return (
+                "Token süresi dolmuş: tarayıcıda yeniden giriş → /cookie <çerez>. "
+                "/yenile ölü oturumu diriltmez."
+            )
+        if "401" in probe:
+            return (
+                "Kimlik var ama upstream 401 veriyor: damga/referer eski olabilir → "
+                "/yenile; sürerse taze çerez."
+            )
+        if "409" in probe:
+            return "Kimlik sağlam; 409 damga eskimesi → /yenile."
+        return "Kimlik görünüşte sağlam. Test için bir mesaj gönderin."
 
     async def send_cookie(self, chat_id: int, text: str, *, force: bool = False) -> None:
         """Yalnızca çerez satırıyla oturumu tazeler (mobilde en kolay yol).

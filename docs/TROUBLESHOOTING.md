@@ -20,6 +20,7 @@ Amaç her arızada log okumaya sıfırdan başlamamak.
 | `POST /v1/admin/breaker/reset` | Devre kesiciyi kapat (arıza geçtiyse) |
 | `POST /v1/admin/recaptcha/invalidate` | reCAPTCHA token'ını zorla yenile |
 | Telegram `/ping` | Wrapper `/healthz` **+ son upstream kontrolünün saati/sonucu** |
+| Telegram `/tani` | Çerez adları, oturum adayı, token durumu **+ tek satır "ne yapmalı"** |
 
 Loglarda olay adı (event) ile arayın: `upstream_request`, `upstream_http_error`,
 `upstream_refresh_required`, `upstream_quota_exceeded`, `recaptcha_rejected_retrying`,

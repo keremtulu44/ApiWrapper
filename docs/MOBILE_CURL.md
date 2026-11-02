@@ -12,6 +12,7 @@ dürüst cevabıdır.
 | Elinde tam cURL var (masaüstü/başka cihaz) | kolay | `/curl <cURL>` |
 | Ne çerez ne cURL üretebiliyorsun | tarayıcı/araç gerekir | aşağıdaki 3. bölüm |
 | Emin değilsin: çerez işe yarar mı? | hiçbir şeyi bozmaz | `?dry_run=true` |
+| "Neyim eksik?" diye sormak | tek mesaj, gizli değer yok | **`/tani`** |
 
 **Altın kural:** `/yenile` ve `/capture` **asla giriş yapmaz** (parola/OTP/SMS
 yolu yoktur). Oturum öldüyse tek çözüm, giriş yapmış tarayıcıdan **çerez**

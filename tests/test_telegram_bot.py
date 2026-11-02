@@ -405,3 +405,72 @@ async def test_curl_command_shows_warnings_from_wrapper():
 
     assert "⚠" in sent[-1]["text"]
     assert "Canlı akış yolu korundu" in sent[-1]["text"]
+
+
+def _auth_payload(**overrides: Any) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "cookie_count": 3,
+        "cookie_names_present": ["arena-auth-prod-v1.0", "__cf_bm", "_dd_s"],
+        "session_cookie_candidates": [{"cookie": "arena-auth-prod-v1.0"}],
+        "token": {"found": True, "expired": False, "expires_in_seconds": 3600},
+        "authorization_header_will_be_sent": True,
+    }
+    payload.update(overrides)
+    return payload
+
+
+async def _run_diagnose(payload: dict[str, Any]) -> str:
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/admin/auth"
+        return httpx.Response(200, json=payload)
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/tani"})
+    return str(sent[-1]["text"])
+
+
+@pytest.mark.asyncio
+async def test_diagnose_reports_healthy_identity():
+    text = await _run_diagnose(_auth_payload())
+    assert "Çerez: 3 ad" in text
+    assert "arena-auth-prod-v1.0" in text
+    assert "Token: var" in text
+    assert "sağlam" in text
+
+
+@pytest.mark.asyncio
+async def test_diagnose_points_to_cookie_when_no_credentials():
+    text = await _run_diagnose(
+        _auth_payload(
+            cookie_count=0,
+            cookie_names_present=[],
+            session_cookie_candidates=[],
+            token={"found": False, "expired": False},
+            authorization_header_will_be_sent=False,
+        )
+    )
+    assert "hiç yok" in text
+    assert "/cookie" in text
+
+
+@pytest.mark.asyncio
+async def test_diagnose_explains_expired_token():
+    text = await _run_diagnose(
+        _auth_payload(token={"found": True, "expired": True, "expires_in_seconds": -60})
+    )
+    assert "süresi dolmuş" in text
+    assert "/cookie" in text
+    assert "diriltmez" in text
