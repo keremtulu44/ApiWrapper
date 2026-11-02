@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import time
 from typing import Any
 
 import httpx
@@ -20,6 +22,17 @@ def make_settings(**overrides: Any) -> TelegramSettings:
     }
     values.update(overrides)
     return TelegramSettings(_env_file=None, **values)
+
+
+def _jwt(*, exp: float) -> str:
+    """İmzası doğrulanmayan, `exp` taşıyan sahte JWT (yalnız biçim testi)."""
+    header = base64.urlsafe_b64encode(b'{"alg":"ES256"}').decode().rstrip("=")
+    payload = (
+        base64.urlsafe_b64encode(json.dumps({"exp": int(exp)}).encode())
+        .decode()
+        .rstrip("=")
+    )
+    return f"{header}.{payload}.signature"
 
 
 def ok_telegram(request: httpx.Request) -> httpx.Response:
@@ -244,7 +257,7 @@ async def test_cookie_command_reports_token_sync():
         )
 
     assert "Çerez uygulandı" in sent[-1]["text"]
-    assert "bearer token da güncellendi" in sent[-1]["text"]
+    assert "Bearer token da güncellendi" in sent[-1]["text"]
 
 
 @pytest.mark.asyncio
@@ -512,3 +525,123 @@ async def test_diagnose_reports_refresh_token_when_access_token_expired():
     )
     assert "Refresh token: var (42 karakter)" in text
     assert "refresh token duruyor" in text
+
+
+def _export_json(chunk_count: int = 2) -> list[dict[str, Any]]:
+    """Cookie-Editor JSON dışa aktarımına benzeyen gerçek biçim (parçalı çerez)."""
+    payload = {
+        "access_token": _jwt(exp=time.time() + 3000),
+        "refresh_token": "l6lb6efhioff",
+        "expires_in": 3600,
+    }
+    value = "base64-" + base64.b64encode(json.dumps(payload).encode()).decode()
+    size = len(value) // chunk_count + 1
+    items: list[dict[str, Any]] = [
+        {
+            "domain": "arena.ai",
+            "hostOnly": True,
+            "httpOnly": False,
+            "name": f"arena-auth-prod-v1.{index}",
+            "path": "/",
+            "sameSite": "lax",
+            "secure": False,
+            "session": False,
+            "value": value[index * size : (index + 1) * size],
+        }
+        for index in range(chunk_count)
+    ]
+    items.append(
+        {
+            "domain": ".arena.ai",
+            "hostOnly": False,
+            "httpOnly": True,
+            "name": "__cf_bm",
+            "path": "/",
+            "sameSite": "no_restriction",
+            "secure": True,
+            "session": False,
+            "value": "bm-value",
+        }
+    )
+    return items
+
+
+@pytest.mark.asyncio
+async def test_cookie_json_uploaded_in_parts_is_joined_then_applied():
+    """Telegram 4 KB sınırı: uzun JSON parça parça gönderilip birleştirilmeli."""
+    calls: list[dict[str, Any]] = []
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content) if request.content else {}
+        calls.append({"dry": "dry_run" in request.url.query.decode(), "cookie": body.get("cookie")})
+        if "dry_run" in request.url.query.decode():
+            return httpx.Response(
+                200,
+                json={
+                    "status": "inspected",
+                    "applied": False,
+                    "safe_to_apply": True,
+                    "cookie_names": ["arena-auth-prod-v1.0", "arena-auth-prod-v1.1"],
+                    "session_cookie_found": True,
+                    "access_token_found": True,
+                    "access_token_expired": False,
+                    "access_token_expires_in_seconds": 3000,
+                    "refresh_token_found": True,
+                    "chunked_families": {"arena-auth-prod-v1": 2},
+                    "problems": [],
+                },
+            )
+        return httpx.Response(
+            200, json={"status": "applied", "fields": ["upstream_cookie"]}
+        )
+
+    export = json.dumps(_export_json())
+    first, second = export[: len(export) // 2], export[len(export) // 2 :]
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/cookie " + first})
+        assert not calls, "yarım JSON uygulanmamalı"
+        assert "Parça alındı" in sent[-1]["text"]
+        await bot.handle_message({"chat": {"id": 42}, "text": "/cookie " + second})
+
+    assert calls[0]["dry"] is True
+    assert calls[-1]["dry"] is False
+    assert json.loads(calls[-1]["cookie"]) == json.loads(export), "parçalar birebir birleşmeli"
+    assert "Çerez uygulandı" in sent[-1]["text"]
+    assert "Refresh token: var" in sent[-1]["text"]
+    assert "≈50 dk" in sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_cookie_finish_and_cancel_commands():
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/cookie iptal"})
+        assert "temizlendi" in sent[-1]["text"].lower()
+
+        await bot.handle_message({"chat": {"id": 42}, "text": "/cookie bitir"})
+        assert "Bekleyen parça yok" in sent[-1]["text"]

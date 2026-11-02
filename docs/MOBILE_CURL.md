@@ -139,6 +139,21 @@ düşmez.
 `create-evaluation` listede yok mu? → [`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
 bölüm **1c**.
 
+### 3.4b Uzun çerez: parça parça yapıştırma (Telegram 4 KB sınırı)
+
+Cookie-Editor'ün **JSON** çıktısı birkaç KB olur; Telegram tek mesajda ~4 KB
+kabul eder. Bu yüzden bot parçalı yapıştırmayı destekler:
+
+1. `/cookie` (boş) → "yapıştırmaya başla" der, tamponu temizler.
+2. JSON'u 2-4 parçaya bölüp sırayla gönderin:
+   `/cookie <1. parça>` → `Parça alındı (1)…`
+   `/cookie <2. parça>` → birleşim tamamsa **otomatik uygulanır**
+3. Erken bitirmek isterseniz: `/cookie bitir`. Vazgeçmek için `/cookie iptal`.
+
+Bot uygulamadan önce yine denetler ve şunu söyler: kaç çerez, hangi parçalı
+aile (`arena-auth-prod-v1: 2 parça`), token kaç dakika geçerli, refresh token
+var mı, **eksik/bozuk parça var mı**.
+
 ### 3.5 Telefonda DevTools (Kiwi / Lemur) — "istek listede yok" sorunu
 
 Kiwi ve Lemur masaüstü DevTools'u açar; ama mobilde iki tuzak var:

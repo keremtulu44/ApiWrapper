@@ -74,6 +74,25 @@ oturum adı yok, ya da token süresi dolmuş. Üçü de **tarayıcıdan çerez**
 | Oturum iptali / çıkış (401 "User not found") | Nadir | `/cookie` ile taze çerez |
 | Telemetri/Cloudflare çerezleri | Sürekli | **Hiçbir şey** |
 
+## 4b. Gerçek biçim (2026-11-02 gözlemi)
+
+`arena-auth-prod-v1.0` + `.1` parçalarının birleşimi:
+
+```
+base64-eyJhY2Nlc3NfdG9rZW4i...   →  {"access_token": "eyJ...", "expires_in": 3600,
+                                     "expires_at": 1793630815,
+                                     "refresh_token": "l6lb6efhioff",
+                                     "user": {...}, "provider_token": "..."}
+```
+
+Yani oturum **1 saatlik** bir erişim token'ı taşıyor; süre dolunca upstream 401
+döner ve `Authorization` başlığı ya hiç gitmez ya bayat gider. Önemli sonuçlar:
+
+* Token ~**saatte bir** ölür → elle çerez taşımak sürdürülebilir değil,
+* `refresh_token` **var** → otomatik yenileme yapılabilir (§5),
+* Parçalardan biri eksik/bozuk kopyalanırsa base64 çözülmez ve wrapper "token
+  yok" der; bu yüzden `inspect_cookie` artık `problems` listesi döndürür.
+
 ## 5. Refresh token: kalıcı çözüm
 
 Oturum çerezinde `refresh_token` varsa, erişim token'ı **elle** değil

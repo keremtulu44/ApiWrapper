@@ -19,13 +19,22 @@ Bulunamazsa uç nokta açıkça "login gerekli" der — sessizce başarısız ol
 
 from __future__ import annotations
 
+import base64
+import binascii
 import contextlib
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
 from app.core.config import Settings
 from app.core.logging import get_logger
-from app.upstream.auth import extract_access_token, is_token_expired, parse_cookie_header
+from app.upstream.auth import (
+    extract_access_token,
+    extract_refresh_token,
+    is_token_expired,
+    parse_cookie_header,
+    token_seconds_remaining,
+)
 from app.upstream.headers import DEPLOYMENT_HEADERS
 
 logger = get_logger(__name__)
@@ -425,6 +434,9 @@ def inspect_cookie(raw: str) -> dict[str, object]:
         for name in cookies
         if any(hint in name.lower() for hint in _SESSION_COOKIE_HINTS)
     ]
+    refresh = extract_refresh_token(normalized) if normalized else None
+    remaining = token_seconds_remaining(token) if token else None
+    problems = _cookie_problems(cookies, token_found=bool(token), refresh_found=bool(refresh))
     return {
         "cookie_count": len(cookies),
         "cookie_names": list(cookies)[:20],
@@ -432,9 +444,87 @@ def inspect_cookie(raw: str) -> dict[str, object]:
         "session_cookie_found": bool(session_names),
         "access_token_found": bool(token),
         "access_token_expired": is_token_expired(token) if token else None,
+        "access_token_expires_in_seconds": (
+            int(remaining) if remaining is not None else None
+        ),
+        "refresh_token_found": bool(refresh),
+        "chunked_families": _chunked_families(cookies),
+        "problems": problems,
         # Oturum taşımayan bir set uygulanırsa çalışan oturum ezilebilir.
         "safe_to_apply": bool(session_names) or bool(token),
     }
+
+
+def _chunked_families(cookies: dict[str, str]) -> dict[str, int]:
+    """`ad.0`, `ad.1` … parçalarını aile başına sayar (ör. `arena-auth-prod-v1`: 2)."""
+    families: dict[str, int] = {}
+    for name in cookies:
+        match = re.match(r"^(?P<base>.+)\.(?P<index>\d+)$", name)
+        if match:
+            base = match.group("base")
+            families[base] = families.get(base, 0) + 1
+    return families
+
+
+def _cookie_problems(
+    cookies: dict[str, str], *, token_found: bool, refresh_found: bool
+) -> list[str]:
+    """Kullanıcıya söylenecek somut eksikler (gizli değer içermez).
+
+    Telefonda tek şans olduğu için "uygulandı" demek yetmiyor: parça eksikse,
+    base64 bozuksa ya da token okunamıyorsa bunu açıkça yazmak gerekiyor.
+    """
+    problems: list[str] = []
+    families = _chunked_families(cookies)
+    for base, count in sorted(families.items()):
+        indices = sorted(
+            int(m.group("index"))
+            for name in cookies
+            if (m := re.match(r"^(?P<base>.+)\.(?P<index>\d+)$", name))
+            and m.group("base") == base
+        )
+        expected = list(range(len(indices)))
+        if indices != expected:
+            missing = [str(i) for i in expected if i not in indices]
+            problems.append(
+                f"`{base}` parçaları eksik: {', '.join(missing)} numaralı parça "
+                "gelmedi. Çerezi yeniden, TÜM parçalarıyla kopyalayın."
+            )
+        merged = "".join(cookies.get(f"{base}.{i}", "") for i in range(count))
+        if len(merged) > 64 and not _decodes_to_json(merged):
+            problems.append(
+                f"`{base}` parçalarının birleşimi çözülemedi (base64 bozuk): "
+                "kopyalama sırasında karakter kaybolmuş olabilir. JSON dışa "
+                "aktarımı yerine 'Header String' deneyin ya da tekrar kopyalayın."
+            )
+    if not token_found and families:
+        problems.append(
+            "Parçalı oturum çerezi var ama içinden erişim token'ı okunamadı; "
+            "parçalar eksik/bozuk olabilir."
+        )
+    elif token_found and not refresh_found:
+        problems.append(
+            "Erişim token'ı okundu ama refresh token yok: token ~1 saatte ölür, "
+            "elle tazelemek gerekecek."
+        )
+    return problems
+
+
+def _decodes_to_json(value: str) -> bool:
+    """`base64-…` gövdesini çözmeyi dener; JSON'a dönüşüyor mu?"""
+    body = value.strip()
+    for prefix in ("base64-", "base64_", "b64-"):
+        if body.startswith(prefix):
+            body = body[len(prefix) :]
+            break
+    body = body.replace("-", "+").replace("_", "/")
+    body += "=" * (-len(body) % 4)
+    try:
+        decoded = base64.b64decode(body, validate=False).decode("utf-8", "ignore")
+    except (ValueError, binascii.Error):
+        return False
+    stripped = decoded.strip()
+    return stripped.startswith(("{", "["))
 
 
 def apply_cookie_to_settings(settings: Settings, raw: str) -> list[str]:

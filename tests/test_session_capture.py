@@ -16,6 +16,7 @@ from app.upstream.session_capture import (
     capture_session,
     capture_with_provider,
     cookie_header_from,
+    inspect_cookie,
 )
 from tests.conftest import TEST_API_KEY, make_settings
 
@@ -674,3 +675,50 @@ def test_admin_cookie_dry_run_flags_an_anonymous_set():
     assert "__cf_bm" in body["cookie_names"]
     assert "TÜM çerezleri" in body["next"]
     assert settings.upstream_cookie == OLD_COOKIE
+
+
+def _chunked_cookie(chunks: int = 2, *, corrupt: bool = False) -> str:
+    """Gerçek biçime benzeyen parçalı `base64-` oturum çerezi."""
+    import base64 as _b64
+
+    payload = {"access_token": _jwt(), "refresh_token": "l6lb6efhioff"}
+    value = "base64-" + _b64.b64encode(json.dumps(payload).encode()).decode()
+    if corrupt:  # kopyalama sırasında karakter kaybı
+        value = value[:120] + value[121:]
+    size = len(value) // chunks + 1
+    parts = [
+        f"arena-auth-prod-v1.{index}={value[index * size : (index + 1) * size]}"
+        for index in range(chunks)
+    ]
+    return "; ".join(parts)
+
+
+def test_inspect_reports_chunked_cookies_and_refresh_token():
+    report = inspect_cookie(_chunked_cookie())
+    assert report["access_token_found"] is True
+    assert report["refresh_token_found"] is True
+    assert report["chunked_families"] == {"arena-auth-prod-v1": 2}
+    assert report["problems"] == []
+
+
+def test_inspect_reports_missing_chunk():
+    cookie = _chunked_cookie().split("; ")[0]  # yalnız .0 parçası
+    report = inspect_cookie(cookie)
+    assert report["access_token_found"] is False
+    problems = " ".join(report["problems"])
+    assert "parçalar eksik" in problems or "okunamadı" in problems
+
+
+def test_inspect_reports_corrupted_base64():
+    report = inspect_cookie(_chunked_cookie(corrupt=True))
+    problems = " ".join(report["problems"])
+    assert "base64" in problems or "okunamadı" in problems
+
+
+def test_inspect_never_echoes_cookie_values():
+    cookie = _chunked_cookie()
+    report = inspect_cookie(cookie)
+    serialized = json.dumps(report)
+    assert "refresh_token" not in serialized.replace("refresh_token_found", "")
+    assert "l6lb6efhioff" not in serialized
+    assert _jwt() not in serialized

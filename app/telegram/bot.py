@@ -163,6 +163,24 @@ class TelegramBot:
         self.settings = settings
         self.telegram = telegram
         self.wrapper = wrapper
+        #: Sohbet başına birleştirilen çerez parçaları (uzun JSON 4 KB'a sığmaz).
+        self._cookie_buffers: dict[int, list[str]] = {}
+
+    @staticmethod
+    def _cookie_complete(text: str) -> bool:
+        """Toplanan metin tamamlandı mı?
+
+        JSON dışa aktarımı geçerli JSON olduğunda tamamdır; `ad=değer` başlık
+        satırı tek mesajda biter (parçalı gönderimde `/cookie bitir` kullanılır).
+        """
+        stripped = text.strip()
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                return False
+            return isinstance(parsed, list) and bool(parsed)
+        return "=" in stripped
 
     @property
     def telegram_api_url(self) -> str:
@@ -403,20 +421,58 @@ class TelegramBot:
         `force=False` iken çerez önce **uygulanmadan** incelenir: oturum çerezi
         içermeyen bir set (ör. yalnız `__cf_bm`) çalışan oturumun üzerine
         yazmasın. Zorlamak için `/cookie! <çerez>`.
+
+        **Parçalı yapıştırma:** Cookie-Editor JSON'u 4-10 KB olabiliyor, Telegram
+        tek mesajda ~4 KB kabul eder. Bu yüzden JSON parçaları sırayla
+        gönderilebilir; birleşim tamamlanınca otomatik uygulanır (`/cookie bitir`
+        ile elle de bitirilebilir, `/cookie iptal` temizler).
         """
         parts = text.split(maxsplit=1)
         body = parts[1].strip() if len(parts) > 1 else ""
+        buffer = self._cookie_buffers.setdefault(chat_id, [])
+        lowered = body.lower()
         if not body:
+            buffer.clear()
             await self.send_text(
                 chat_id,
                 "Kullanım: /cookie ad=değer; ad2=değer2\n"
-                "Tarayıcıdaki oturum çerezlerini (access_token içeren satırı) "
-                "kopyalayıp yapıştırın; cURL gerekmez.",
+                "Cookie-Editor → Export → Header String ya da JSON yapıştırın; "
+                "cURL gerekmez.\n"
+                "Uzun JSON'u parça parça gönderebilirsiniz: her parçayı /cookie "
+                "ile başlatın, bitince **/cookie bitir**. Vazgeçmek için "
+                "/cookie iptal.",
             )
             return
+        if lowered in {"bitir", "bitti", "tamam"}:
+            if not buffer:
+                await self.send_text(
+                    chat_id,
+                    "Bekleyen parça yok. Çerezi /cookie ile gönderin "
+                    "(uzun JSON ise parçalara bölerek).",
+                )
+                return
+            body = "".join(buffer)
+            buffer.clear()
+        elif lowered in {"iptal", "vazgec", "vazgeç"}:
+            buffer.clear()
+            await self.send_text(chat_id, "Bekleyen çerez parçaları temizlendi.")
+            return
+        else:
+            buffer.append(body)
+            joined = "".join(buffer)
+            if not self._cookie_complete(joined):
+                await self.send_text(
+                    chat_id,
+                    f"Parça alındı ({len(buffer)}). Devam edin; bitince "
+                    "/cookie bitir.",
+                )
+                return
+            body = joined
+            buffer.clear()
+        inspection: dict[str, Any] | None = None
         if not force:
-            prefix = await self._cookie_precheck(chat_id, body)
-            if prefix is None:
+            inspection = await self._cookie_precheck(chat_id, body)
+            if inspection is None:
                 return
 
         try:
@@ -444,18 +500,39 @@ class TelegramBot:
             return
         fields = payload.get("fields") if isinstance(payload, dict) else None
         applied = [str(item) for item in fields] if isinstance(fields, list) else []
-        token_synced = "upstream_access_token" in applied
-        detail = " (bearer token da güncellendi)" if token_synced else ""
-        await self.send_text(
-            chat_id,
-            f"✓ Çerez uygulandı{detail}. Şimdi bir mesaj atarak test edin.",
-        )
+        lines = [f"✓ Çerez uygulandı ({len(applied)} alan)."]
+        if "upstream_access_token" in applied:
+            lines.append("Bearer token da güncellendi.")
+        info = inspection if isinstance(inspection, dict) else {}
+        if info:
+            if info.get("access_token_found"):
+                remaining = info.get("access_token_expires_in_seconds")
+                if isinstance(remaining, int) and remaining > 0:
+                    lines.append(f"Çerezdeki token: ≈{remaining // 60} dk geçerli")
+                elif info.get("access_token_expired"):
+                    lines.append("⚠ Çerezdeki token **süresi dolmuş**")
+                else:
+                    lines.append("Çerezdeki token: var")
+            else:
+                lines.append("⚠ Çerezde okunabilir access_token yok")
+            if info.get("refresh_token_found"):
+                lines.append("Refresh token: var (otomatik yenileme mümkün)")
+            families = info.get("chunked_families")
+            if isinstance(families, dict) and families:
+                shown = ", ".join(f"{k} ({v} parça)" for k, v in families.items())
+                lines.append(f"Parçalı çerez: {shown}")
+            problems = info.get("problems")
+            if isinstance(problems, list):
+                for item in problems[:3]:
+                    lines.append(f"⚠ {item}")
+        lines.append("Şimdi bir mesaj atarak test edin.")
+        await self.send_text(chat_id, "\n".join(lines))
 
-    async def _cookie_precheck(self, chat_id: int, body: str) -> str | None:
+    async def _cookie_precheck(self, chat_id: int, body: str) -> dict[str, Any] | None:
         """Çerezi uygulamadan incele; uygunsuzsa uyarıp `None` döndürür.
 
-        Dönen değer `""` ise akış devam eder (uygulanabilir). Ağ hatasında
-        engellemeyiz: karar veremiyorsak kullanıcıyı kilitlemek yanlış olur.
+        Dönen değer inceleme sonucudur (uygulanabilir). Ağ hatasında engellemeyiz:
+        karar veremiyorsak kullanıcıyı kilitlemek yanlış olur.
         """
         try:
             response = await self.wrapper.post(
@@ -463,10 +540,10 @@ class TelegramBot:
             )
             payload = response.json()
         except (httpx.HTTPError, ValueError):
-            return ""
+            return {}
 
         if response.status_code != 200 or not isinstance(payload, dict):
-            return ""
+            return {}
 
         names = payload.get("cookie_names") or []
         shown = ", ".join(str(name) for name in names[:8]) or "(yok)"
@@ -478,7 +555,7 @@ class TelegramBot:
                     "uygulanıyor. 401 alırsan tarayıcıda yeniden giriş yapıp "
                     "taze çerez gönder.",
                 )
-            return ""
+            return payload
 
         await self.send_text(
             chat_id,
