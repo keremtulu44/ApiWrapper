@@ -32,9 +32,26 @@ Sunucudaki Chromium (reCAPTCHA için zaten çalışıyor) hedef sayfayı **elimi
 çerezle** açar, gerçek bir `create-evaluation` isteğini yakalar ve cookie +
 `dpl_...` sürüm damgası + `cx` + referer yolunu uygular.
 
+### `/yenile` neyi yapar, neyi **asla** yapamaz
+
+| Yapar | Yapamaz |
+|---|---|
+| Elindeki çerezle sayfayı açar, sayfa açılırken giden gerçek API isteğinden sürüm damgasını, `cx`'i ve referer yolunu okur | **Senin yerine giriş yapamaz.** Sunucuda e-posta/şifre/2FA yok, olmayacak da |
+| Sayfa yüklenirken upstream'in tazelediği `Set-Cookie` değerlerini jar'dan alır | Ölü bir oturumu diriltemez; çerezde oturum yoksa yakalama **hiçbir şey** yapamaz |
+| Damga değiştiği için 409 alıyorsan bunu tek komutla düzeltir | Kota/429 sorununu çözmez |
+
+**Yani:** `/yenile` "oturumu yenile" değil, "elimdeki oturumun **türevlerini**
+(damga, cx, referer) tazele" demektir. Oturum çerezini tazelemek için tarayıcıda
+giriş yapmış olman ve `/cookie` göndermen gerekir.
+
 * `✓ Oturum yakalandı` → bitti, mesaj atıp test edin.
-* `⚠ Oturum yakalanamadı` + neden (örn. "sayfa giriş ekranına yönlendi",
-  "access_token süresi dolmuş") → site oturumu gerçekten düşmüş, giriş gerekiyor.
+* `⚠ Oturum yakalanamadı` → mesaj artık **hangi çerezlerin geldiğini** de yazar
+  (`Gelen çerezler: __cf_bm, _dd_s ...`). Üç ayrı durum:
+  1. `hiç çerez yüklenemedi` → elde çerez yok/bozuk,
+  2. `oturum taşıyan ad yok (gelenler: ...)` → **eksik çerez seti**: giriş yapmış
+     tarayıcıdan *tüm* çerezleri aktar (`auth`, `session`, `token`, `sb-*` adlı
+     çerez mutlaka gelmeli),
+  3. `sayfa giriş ekranına yönlendi` → oturum gerçekten ölmüş, yeniden giriş şart.
 * **Önemli:** yakalama başarısızsa çalışan çerez **değiştirilmez** (anonim çerez
   seti mevcut oturumun üzerine yazmaz). Sürüm damgası/referer yolu yine uygulanır.
 

@@ -259,9 +259,12 @@ async def capture_upstream_session(
     if applied_cookie:
         next_step = "Bir mesaj atarak test edin."
     elif result.reason:
+        # Net olalım: sunucu tarayıcısı **giriş yapamaz** (şifre/2FA yok).
+        # Yapabildiği tek şey, elindeki oturum çerezini kullanmak.
         next_step = (
-            f"Oturum yakalanamadı: {result.reason} Telefonda giriş yapıp "
-            "çerezleri /cookie ile gönderin (cURL de olur: /curl)."
+            f"Oturum yakalanamadı: {result.reason} "
+            "Sunucu sizin yerinize giriş yapamaz; tarayıcıda giriş yapmışken "
+            "TÜM çerezleri /cookie ile gönderin (cURL de olur: /curl)."
         )
     else:
         next_step = "Değişiklik yok; bir mesaj atarak test edin."
@@ -274,6 +277,9 @@ async def capture_upstream_session(
         "cx_found": bool(result.cx),
         "triggered_request": result.triggered_request,
         "injected_cookies": result.injected_cookies,
+        "cookie_names": result.cookie_names,
+        "session_cookie_found": result.session_cookie_found,
+        "login_redirect": result.login_redirect,
         "access_token_found": result.access_token_found,
         "access_token_expired": result.access_token_expired,
         "final_path": result.final_path,

@@ -61,6 +61,13 @@ class CaptureResult:
     #: Oturum yakalanamadıysa nedeni (Türkçe, gizli değer içermez).
     reason: str = ""
     notes: list[str] = field(default_factory=list)
+    #: Tarayıcı jar'ında bulunan çerez **adları** (değer yok). Teşhis için:
+    #: "çerez var" demek yetmiyor — oturumu taşıyan adın gelip gelmediği önemli.
+    cookie_names: list[str] = field(default_factory=list)
+    #: Adında auth/session/token geçen bir çerez var mı?
+    session_cookie_found: bool = False
+    #: Sayfa giriş ekranına yönlendi mi (oturum çerezle birlikte ölmüş)?
+    login_redirect: bool = False
 
     @property
     def has_cookie(self) -> bool:
@@ -88,15 +95,33 @@ def _path_of(url: str) -> str:
 
 
 def _explain_not_logged_in(result: CaptureResult, login_redirect: bool) -> str:
-    """Yakalanamama nedenini tek cümlede, eyleme dönük biçimde yazar."""
+    """Yakalanamama nedenini tek cümlede, eyleme dönük biçimde yazar.
+
+    Üç ayrı durum var ve üçü farklı eylem gerektirir:
+
+    1. Tarayıcıya hiç çerez yüklenmedi → `UPSTREAM_COOKIE` boş/bozuk.
+    2. Çerezler geldi ama içinde oturum taşıyan ad yok → eksik çerez seti
+       (telefonda en sık görülen durum: yalnız birkaç çerez kopyalanmış).
+    3. Çerezlerde oturum adı var ama sayfa giriş ekranına düştü → oturum ölmüş,
+       yeni giriş şart.
+    """
     if login_redirect:
-        return f"sayfa giriş ekranına yönlendi ({result.final_path or '/'})."
+        return (
+            f"sayfa giriş ekranına yönlendi ({result.final_path or '/'}): "
+            "oturum çerezi ölü, yeni giriş gerekiyor."
+        )
+    if not result.cookie_names:
+        return (
+            "tarayıcıya hiç çerez yüklenemedi: UPSTREAM_COOKIE boş ya da "
+            "ayrıştırılamadı."
+        )
     if result.access_token_found and result.access_token_expired:
         return "cookie'deki access_token süresi dolmuş; site oturumu yenilemedi."
-    if not result.access_token_found:
+    if not result.access_token_found and not result.session_cookie_found:
+        names = ", ".join(result.cookie_names[:8])
         return (
-            "cookie'de access_token yok: bağlama yüklenen oturum geçersiz ya da "
-            "sayfa oturumu hiç açmamış."
+            "gelen çerezlerde oturum taşıyan ad yok "
+            f"(gelenler: {names}). Giriş yapmış tarayıcıdan **tüm** çerezleri aktarın."
         )
     return "sayfa oturum açmadı (gerçek sohbet isteği görülmedi)."
 
@@ -235,6 +260,9 @@ async def capture_session(
         except Exception:  # pragma: no cover - savunmacı
             cookies = []
         result.cookies = cookie_header_from(cookies)
+        result.cookie_names = sorted(
+            {str(item.get("name", "")).strip() for item in cookies if item.get("name")}
+        )[:20]
         result.final_path = _path_of(result.final_url)
         token = extract_access_token(result.cookies)
         result.access_token_found = bool(token)
@@ -242,6 +270,8 @@ async def capture_session(
             result.access_token_expired = is_token_expired(token)
         login_redirect = any(hint in result.final_path.lower() for hint in _LOGIN_HINTS)
         session_cookie = _looks_logged_in(cookies)
+        result.session_cookie_found = session_cookie
+        result.login_redirect = login_redirect
         if login_redirect:
             result.logged_in = False
         elif token:

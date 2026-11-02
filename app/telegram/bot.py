@@ -326,6 +326,26 @@ class TelegramBot:
             f"Sürüm damgası: {'var' if payload.get('deployment_found') else 'yok'} · "
             f"cx: {'var' if payload.get('cx_found') else 'yok'}",
         ]
+        injected = payload.get("injected_cookies")
+        if isinstance(injected, int):
+            # "Çerez yüklenmedi" ile "çerez yüklendi ama oturum değil" farkı,
+            # telefondan bakınca görünmeli.
+            lines.append(
+                f"Tarayıcıya yüklenen çerez: {injected} "
+                + ("(eldeki oturum çerezi bağlandı)" if injected else "(elde çerez yok!)")
+            )
+        names = payload.get("cookie_names") or []
+        if names and not payload.get("logged_in"):
+            # Hangi çerezlerin geldiğini göster: "oturum çerezi yok" demek,
+            # eksik çerez setini fark etmenin en hızlı yolu.
+            shown = ", ".join(str(name) for name in names[:8])
+            more = f" (+{len(names) - 8})" if len(names) > 8 else ""
+            lines.append(f"Gelen çerezler: {shown}{more}")
+            if not payload.get("session_cookie_found"):
+                lines.append(
+                    "Oturum çerezi (auth/session/token adlı) gelmedi — giriş "
+                    "yapmış tarayıcıdan TÜM çerezleri gönderin: /cookie <çerez>"
+                )
         if fields:
             lines.append("Güncellenen alanlar: " + ", ".join(fields))
         lines.append(str(payload.get("next") or "Bir mesaj atarak test edin."))
