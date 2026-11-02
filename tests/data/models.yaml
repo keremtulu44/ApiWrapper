@@ -1,0 +1,9 @@
+default: test-model
+models:
+  - id: test-model
+    upstream_id: upstream-model-a
+    owned_by: test
+    aliases:
+      - alias-model
+  - id: second-model
+    upstream_id: upstream-model-b

@@ -1,0 +1,19 @@
+services:
+  apiwrapper:
+    build: .
+    image: apiwrapper:1.0.0
+    container_name: apiwrapper
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - .env
+    volumes:
+      - ./config:/app/config:ro
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8000/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    security_opt:
+      - no-new-privileges:true

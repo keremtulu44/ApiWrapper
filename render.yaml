@@ -1,0 +1,38 @@
+# Render Blueprint: tek instance, sleep etmeyen Docker Web Service.
+# Gizli değerler depoya yazılmaz; Blueprint oluşturulurken Render sorar.
+services:
+  - type: web
+    name: apiwrapper
+    runtime: docker
+    plan: starter
+    dockerfilePath: ./Dockerfile
+    dockerContext: .
+    numInstances: 1
+    autoDeploy: true
+    # Process ayakta olması ile dağıtım ayarlarının hazır olması ayrıdır.
+    healthCheckPath: /readyz
+    envVars:
+      - key: API_KEYS
+        sync: false
+      # Network'teki tamamlanmış create-evaluation isteğini normal cURL olarak
+      # yapıştırın. Domain, yol, mode, cookie/token ve tarayıcı header'ları
+      # başlangıçta bundan çıkarılır; ham değer loglanmaz.
+      - key: UPSTREAM_CURL
+        sync: false
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_JSON
+        value: "true"
+      - key: AUTH_DISABLED
+        value: "false"
+      - key: RECAPTCHA_PROVIDER
+        value: browser
+      # reCAPTCHA site key public'tir; cookie/token değildir.
+      - key: RECAPTCHA_SITE_KEY
+        value: 6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0
+      - key: RECAPTCHA_VERSION
+        value: enterprise
+      - key: RECAPTCHA_ACTION
+        value: chat_submit
+      - key: RECAPTCHA_BROWSER_TIMEOUT
+        value: "45"

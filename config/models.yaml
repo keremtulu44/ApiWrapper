@@ -1,0 +1,22 @@
+# Model kayıt defteri.
+#
+# id           → istemcinin "model" alanında göndereceği ad (OpenAI tarafı)
+# upstream_id  → upstream gövdesindeki modelAId değeri
+# aliases      → aynı modele işaret eden alternatif adlar (opsiyonel)
+#
+# Max seçiliyken alınan art arda yeni sohbet isteklerinde aynı modelAId görüldü.
+# Bu kimlik Max yönlendirmesinin sabit istek değeridir; cevap içinde seçilen gerçek
+# model değişse bile OpenAI tarafındaki istek "max" olarak kalır.
+#
+# Başka bir model eklenecekse gerçek modelAId değeri hedefin ağ trafiğinden alınır.
+# curl_to_env.py bu dosyadaki İLK upstream_id satırını günceller.
+
+default: max
+
+models:
+  - id: max
+    upstream_id: 019b24bb-5caf-71c3-b854-37d0c7086f21
+    owned_by: arena
+    description: Max — upstream tarafında otomatik model seçimi.
+    aliases:
+      - max-auto
