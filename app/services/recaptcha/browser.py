@@ -115,6 +115,16 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
             raise RecaptchaError(f"Browser startup failed: {exc}") from exc
         logger.info("recaptcha_browser_started")
 
+    async def browser_context(self) -> Any:
+        """Yakalama (oturum tazeleme) için mevcut tarayıcı bağlamını döndürür.
+
+        Aynı Chromium kullanılır: Render'da ikinci bir tarayıcı belleğe sığmaz.
+        """
+        async with self._lock:
+            if self._context is None:
+                await self.startup()
+            return self._context
+
     async def shutdown(self) -> None:
         for closer in (self._context, self._browser):
             if closer is not None:

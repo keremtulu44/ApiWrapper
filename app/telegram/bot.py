@@ -30,8 +30,8 @@ logger = get_logger(__name__)
 _HELP = (
     "ApiWrapper test botu aktif.\n"
     "Bir metin gönderin; wrapper /v1/chat/completions üzerinden yanıt üretir.\n"
-    "Komutlar: /ping (wrapper + son upstream kontrolü), /curl <cURL> "
-    "(oturumu tazele), /help.\n"
+    "Komutlar: /ping (wrapper + son upstream kontrolü), /yenile (sunucu "
+    "tarayıcısıyla oturumu tazele), /curl <cURL> (elle cURL), /help.\n"
     "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
 )
 
@@ -218,6 +218,9 @@ class TelegramBot:
         if command in {"/curl", "/setcurl"}:
             await self.set_upstream_curl(chat_id, text)
             return
+        if command in {"/yenile", "/refresh", "/capture"}:
+            await self.capture_upstream_session(chat_id)
+            return
         if text.startswith("/"):
             await self.send_text(chat_id, "Bilinmeyen komut. /help yazın.")
             return
@@ -243,6 +246,42 @@ class TelegramBot:
             )
         # Süreç ayakta olsa da upstream oturumu ölmüş olabilir.
         lines.append(describe_probe(last_probe()))
+        await self.send_text(chat_id, "\n".join(lines))
+
+    async def capture_upstream_session(self, chat_id: int) -> None:
+        """Sunucudaki Chromium ile taze oturum yakalar (telefonda DevTools gerekmez)."""
+        await self.send_text(chat_id, "Oturum yakalanıyor, bu 10-40 sn sürebilir…")
+        try:
+            response = await self.wrapper.post("/v1/admin/upstream/capture", json={})
+        except httpx.HTTPError as exc:
+            logger.warning("telegram_capture_failed", error_type=type(exc).__name__)
+            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; yakalama yapılmadı.")
+            return
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if response.status_code != 200:
+            error = payload.get("error") if isinstance(payload, dict) else None
+            detail = (
+                str(error.get("message") or "")
+                if isinstance(error, dict)
+                else f"HTTP {response.status_code}"
+            )
+            await self.send_text(chat_id, "Yakalama başarısız: " + detail)
+            return
+
+        fields = payload.get("fields") or []
+        lines = [
+            ("✓ Oturum yakalandı." if payload.get("logged_in") else "⚠ Oturum yakalanamadı."),
+            f"Cookie: {'var' if payload.get('cookie_found') else 'yok'} · "
+            f"Sürüm damgası: {'var' if payload.get('deployment_found') else 'yok'} · "
+            f"cx: {'var' if payload.get('cx_found') else 'yok'}",
+        ]
+        if fields:
+            lines.append("Güncellenen alanlar: " + ", ".join(fields))
+        lines.append(str(payload.get("next") or "Bir mesaj atarak test edin."))
         await self.send_text(chat_id, "\n".join(lines))
 
     async def set_upstream_curl(self, chat_id: int, text: str) -> None:
