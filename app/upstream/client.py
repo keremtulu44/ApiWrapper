@@ -27,7 +27,11 @@ from app.upstream.exceptions import (
     UpstreamRefreshRequired,
     UpstreamTimeout,
 )
-from app.upstream.headers import build_page_headers, build_stream_headers
+from app.upstream.headers import (
+    DEPLOYMENT_HEADERS,
+    build_page_headers,
+    build_stream_headers,
+)
 from app.upstream.quota import find_quota_marker, normalize_markers, quota_error_message
 from app.utils.backoff import full_jitter_delay, parse_retry_after
 
@@ -218,6 +222,16 @@ class UpstreamClient:
         )
 
     @staticmethod
+    def _strip_deployment_headers(headers: dict[str, str]) -> dict[str, str] | None:
+        """Deployment başlıklarını çıkarır; çıkarılacak başlık yoksa None."""
+        stripped = {
+            name: value
+            for name, value in headers.items()
+            if name.lower() not in DEPLOYMENT_HEADERS
+        }
+        return stripped if len(stripped) != len(headers) else None
+
+    @staticmethod
     def _cx_flag(status: int, body: str) -> bool:
         """4xx gövdesi upstream'in `cx` alanına atıfta bulunuyor mu?"""
         if not (400 <= status < 500) or not body:
@@ -323,6 +337,8 @@ class UpstreamClient:
                 ),
                 timeout=httpx.Timeout(request_settings.connect_timeout + 10.0),
             )
+            # Aynı yanıtı damga için de değerlendir (ek istek yok).
+            self.deployment.ingest(response, request_settings.base_url)
             logger.debug(
                 "upstream_warmup",
                 status=response.status_code,
@@ -455,8 +471,9 @@ class UpstreamClient:
         last_error: Exception | None = None
         attempts = max(1, self.settings.retry_max_attempts)
         attempt = 0
-        # 409 `refresh_required` için tek seferlik damga tazeleme hakkı.
+        # 409 `refresh_required` için tek seferlik tazeleme hakları.
         stamp_retry_used = False
+        stamp_strip_used = False
 
         async with self._total_deadline(request_settings, url), self._semaphore:
             while attempt < attempts:
@@ -605,6 +622,31 @@ class UpstreamClient:
                             )
                             deployment_id = refreshed
                             # Damga retry'ı normal deneme bütçesinden yemez.
+                            continue
+
+                    if (
+                        refresh_marker is not None
+                        and not stamp_strip_used
+                        and request_settings.deployment_stamp_strip_on_conflict
+                    ):
+                        # İkinci kademe: yeni damga bulunamadıysa eskisini hiç
+                        # gönderme. Skew koruması devre dışı kalan istek genelde
+                        # kabul edilir; bu kademe hiçbir değer bilmeyi gerektirmez.
+                        stripped = self._strip_deployment_headers(headers)
+                        if stripped is not None:
+                            stamp_strip_used = True
+                            headers = stripped
+                            deployment_id = None
+                            metrics.inc("apiwrapper_deployment_stamp_strip_total")
+                            logger.warning(
+                                "deployment_stamp_stripped",
+                                status=status,
+                                marker=refresh_marker,
+                                hint=(
+                                    "Sürüm damgası tazelenemedi; istek deployment "
+                                    "başlıkları gönderilmeden bir kez daha denenecek."
+                                ),
+                            )
                             continue
 
                     if refresh_marker is not None:

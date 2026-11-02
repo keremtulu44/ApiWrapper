@@ -71,12 +71,20 @@ sayfasından okuyor (`app/upstream/deployment.py`):
      kanarya sessizce devre dışı kalır ve `UPSTREAM_CURL`'deki değer kullanılır.
      **Kanarya hiçbir zaman isteği bozmaz.**
    * Damga değiştiğinde logda `deployment_id_changed` görünür.
-2. **409 kurtarma:** 409 `refresh_required` alınırsa damga **zorla** yeniden
-   okunur; gerçekten farklıysa istek **bir kez** taze damgayla tekrar edilir
-   (bu tekrar normal retry bütçesinden yemez). Logda `deployment_stamp_refreshed`.
-3. **Son kademe:** damga değişmiyorsa oturum çerezini tazelemek için tek bir
+2. **409 kurtarma (1. kademe):** 409 `refresh_required` alınırsa damga **zorla**
+   yeniden okunur; gerçekten farklıysa istek **bir kez** taze damgayla tekrar
+   edilir (normal retry bütçesinden yemez). Logda `deployment_stamp_refreshed`.
+3. **409 kurtarma (2. kademe):** yeni damga bulunamadıysa istek, eskimiş
+   `x-deployment-id` / `x-arena-web-deployment` başlıkları **tamamen
+   çıkarılarak** bir kez daha denenir. Bu kademe hiçbir değer bilmeyi
+   gerektirmez; skew koruması olmayan istek genelde kabul edilir. Logda
+   `deployment_stamp_stripped`, metrikte `apiwrapper_deployment_stamp_strip_total`.
+   Kapalı tutmak için: `UPSTREAM_DEPLOYMENT_STAMP_STRIP_ON_CONFLICT=false`.
+4. **Son kademe:** ikisi de işe yaramazsa oturum çerezini tazelemek için tek bir
    sayfa `GET`'i yapılır (`upstream_warmup`) ve hata mevcut net mesajla
-   (`503 upstream_refresh_required`) döner.
+   (`503 upstream_refresh_required`) döner. Bu `GET` aynı zamanda sayfada
+   görünen damgayı yakalar (`deployment_id_detected`), yani bir sonraki istek
+   taze damgayla gider.
 
 İlgili ayarlar (hepsi opsiyonel):
 
@@ -111,6 +119,17 @@ olabilir. O zaman:
   bloklanırdı),
 * otomatik kurtarma tükendikten sonra `503` + `upstream_refresh_required` +
   `Retry-After: 300` olarak döner.
+
+**Saatte bir tekrarlayan 409 (`forced_update`) ne demek?**
+
+Canlıda gözlendi (2026-11-02, saatlik keepalive): her probe `409
+{"error":"refresh_required","reason":"forced_update"}` alıyor, yani
+**upstream yeni bir sürüm yayınladı ve elimizdeki damga geçersiz**. Bu durumda
+`/healthz` hâlâ `200` döner — süreç ayaktadır ama **hiçbir istek çalışmıyor**.
+`/ping` artık son upstream kontrolünü de yazdığı için bu sessiz kesinti
+görünür olur; PR sonrası ayrıca Telegram'a tek bir özet bildirim gider.
+Kalıcı çözüm yukarıdaki otomatik kurtarma kademeleridir; ikisi de tutmazsa
+`deployment_stamp_unchanged` logu ile yeni cURL gerekir.
 
 **409 gövdesinde `cx` geçiyorsa**
 

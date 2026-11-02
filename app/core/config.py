@@ -115,6 +115,11 @@ class Settings(BaseSettings):
     #: tekrar edilsin mi? (Tekrar edilen istek mevcut retry bütçesinden bir yuva
     #: kullanır; 409 zaten nadirdir.)
     deployment_id_auto_retry: bool = True
+    #: Damga tazelenemiyorsa (kanarya yeni değeri bulamadı) istek, eskimiş
+    #: deployment başlıkları **çıkarılarak** bir kez daha denenir. Skew koruması
+    #: olmayan istekler genelde kabul edilir; bu kademe hiçbir şey bilmeden
+    #: çalıştığı için 409 sınıfını tamamen kapatabilir.
+    deployment_stamp_strip_on_conflict: bool = True
 
     # --------------------------------------------------------------- quota
     #: Upstream'in hesap kısıtlamasını bildiren metin işaretleri (virgülle ayrılmış).

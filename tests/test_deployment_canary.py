@@ -226,7 +226,9 @@ def test_409_without_new_stamp_raises_refresh_required_and_refreshes_cookie():
             await transport_client.aclose()
 
     asyncio.run(run())
-    assert posts == 1, "damga değişmediyse boşuna tekrar denememeli"
+    # Aynı damgayla boşuna tekrar denenmez, ama son kademe (başlığı sıyırıp
+    # bir kez deneme) çalışır; o da 409 alınca durur.
+    assert posts == 2
     # Kanarya okuması + 409 sonrası oturum tazeleme GET'i.
     assert len(page_gets) >= 2
 
@@ -245,7 +247,9 @@ def test_409_auto_retry_can_be_disabled():
         settings = make_settings(
             upstream_extra_headers=f"{STAMP_HEADER}={OLD_STAMP}",
             retry_max_attempts=1,
+            # İki otomatik kurtarma kademesi de kapalı: tek istek atılmalı.
             deployment_id_auto_retry=False,
+            deployment_stamp_strip_on_conflict=False,
         )
         client = UpstreamClient(settings)
         transport_client = _install_client(client, handler)
@@ -589,3 +593,151 @@ async def test_ping_includes_last_upstream_probe():
     assert "BAŞARISIZ" in text
     assert "upstream_refresh_required" in text
     reset_last_probe()
+
+
+# --------------------------------------------- 409 kurtarma: damgayı sıyırma
+def test_409_retries_without_deployment_headers_when_stamp_cannot_refresh():
+    posts: list[dict[str, str]] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            # Sayfa damgayı vermiyor: kanarya yeni değeri bulamaz.
+            return httpx.Response(200, text="<html>no stamp here</html>")
+        posts.append({"stamp": _stamp_of(request)})
+        if _stamp_of(request):
+            return httpx.Response(409, text=REFRESH_BODY)
+        return httpx.Response(200, content=b"0:ok")
+
+    async def run() -> list[bytes]:
+        settings = make_settings(upstream_extra_headers=f"{STAMP_HEADER}={OLD_STAMP}")
+        client = UpstreamClient(settings)
+        transport_client = _install_client(client, handler)
+        try:
+            async with client.stream_completion("chat-1", PAYLOAD) as stream:
+                return [chunk async for chunk in stream]
+        finally:
+            await transport_client.aclose()
+
+    assert asyncio.run(run()) == [b"0:ok"]
+    assert posts == [{"stamp": OLD_STAMP}, {"stamp": ""}], (
+        "damga tazelenemediğinde başlık çıkarılıp bir kez daha denenmeli"
+    )
+
+
+def test_409_strip_ladder_gives_up_after_second_conflict():
+    posts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        if request.method == "GET":
+            return httpx.Response(200, text="<html>no stamp here</html>")
+        posts += 1
+        return httpx.Response(409, text=REFRESH_BODY)
+
+    async def run() -> None:
+        settings = make_settings(
+            upstream_extra_headers=f"{STAMP_HEADER}={OLD_STAMP}",
+            retry_max_attempts=1,
+        )
+        client = UpstreamClient(settings)
+        transport_client = _install_client(client, handler)
+        try:
+            with pytest.raises(UpstreamRefreshRequired):
+                async with client.stream_completion("chat-1", PAYLOAD):
+                    pass  # pragma: no cover
+        finally:
+            await transport_client.aclose()
+
+    asyncio.run(run())
+    assert posts == 2, "tazeleme + sıyırma kademelerinden sonra durmalı"
+
+
+def test_409_strip_can_be_disabled():
+    posts = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal posts
+        if request.method == "GET":
+            return httpx.Response(200, text="<html>no stamp here</html>")
+        posts += 1
+        return httpx.Response(409, text=REFRESH_BODY)
+
+    async def run() -> None:
+        settings = make_settings(
+            upstream_extra_headers=f"{STAMP_HEADER}={OLD_STAMP}",
+            retry_max_attempts=1,
+            deployment_stamp_strip_on_conflict=False,
+        )
+        client = UpstreamClient(settings)
+        transport_client = _install_client(client, handler)
+        try:
+            with pytest.raises(UpstreamRefreshRequired):
+                async with client.stream_completion("chat-1", PAYLOAD):
+                    pass  # pragma: no cover
+        finally:
+            await transport_client.aclose()
+
+    asyncio.run(run())
+    assert posts == 1
+
+
+def test_strip_deployment_headers_helper():
+    stripped = UpstreamClient._strip_deployment_headers(
+        {"x-deployment-id": "dpl_x", "X-Arena-Web-Deployment": "dpl_x", "accept": "*/*"}
+    )
+    assert stripped == {"accept": "*/*"}
+    assert UpstreamClient._strip_deployment_headers({"accept": "*/*"}) is None
+
+
+# ------------------------------------------- damgayı mevcut yanıttan yakalama
+def test_ingest_takes_stamp_from_an_existing_page_response():
+    resolver = _resolver()
+    response = _page(NEW_STAMP)
+    assert resolver.ingest(response, "https://upstream.test") == NEW_STAMP
+    assert resolver.cached("https://upstream.test") == NEW_STAMP
+
+
+def test_ingest_falls_back_to_body_and_ignores_failed_pages():
+    resolver = _resolver()
+    body_only = httpx.Response(200, text=f'<script>"{NEW_STAMP}"</script>')
+    assert resolver.ingest(body_only, "https://upstream.test") == NEW_STAMP
+
+    resolver2 = _resolver()
+    assert resolver2.ingest(httpx.Response(403, text=NEW_STAMP), "https://u.test") is None
+    assert resolver2.cached("https://u.test") is None
+    assert resolver2.ingest(httpx.Response(200, text="nothing"), "https://u.test") is None
+
+
+def test_ingest_is_noop_when_canary_is_inactive():
+    resolver = DeploymentIdResolver(make_settings(upstream_extra_headers=""))
+    assert resolver.ingest(_page(NEW_STAMP), "https://upstream.test") is None
+    assert resolver.cached("https://upstream.test") is None
+
+
+def test_warmup_page_can_supply_the_stamp_without_extra_requests():
+    page_gets: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            page_gets.append(request.url.path)
+            # Ana sayfa damga vermez; sohbet sayfası verir.
+            if request.url.path == "/":
+                return httpx.Response(200, text="<html></html>")
+            return _page(NEW_STAMP)
+        return httpx.Response(409, text=REFRESH_BODY)
+
+    async def run() -> None:
+        settings = make_settings(upstream_extra_headers=f"{STAMP_HEADER}={OLD_STAMP}")
+        client = UpstreamClient(settings)
+        transport_client = _install_client(client, handler)
+        try:
+            with pytest.raises(UpstreamRefreshRequired):
+                async with client.stream_completion("chat-1", PAYLOAD):
+                    pass  # pragma: no cover
+            # 409 sonrası yapılan warmup GET'i damgayı yakalamış olmalı.
+            assert client.deployment.cached(settings.base_url) == NEW_STAMP
+        finally:
+            await transport_client.aclose()
+
+    asyncio.run(run())
+    assert len(page_gets) >= 2

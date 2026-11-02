@@ -412,8 +412,8 @@ dönerken upstream oturumu ölmüş olsa bile bu tek komutla görülür.
 
 `refresh_required`/`forced_update` (HTTP 409) artık çoğunlukla **kendiliğinden**
 geçer: wrapper sürüm damgasını (`x-deployment-id`, `x-arena-web-deployment`)
-upstream'in kendi sayfasından okuyup tazeler ve 409 alırsa isteği bir kez taze
-damgayla tekrar eder. Ayrıntılar ve kalan elle müdahale senaryosu:
+upstream'in kendi sayfasından okuyup tazeler, 409 alırsa isteği bir kez taze
+damgayla, olmadı eskimiş başlıkları **hiç göndermeden** tekrar eder. Ayrıntılar ve kalan elle müdahale senaryosu:
 [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 Dağıtım sırası, istek yaşam döngüsü, readiness hata kodları ve belirti→çözüm tablosu:
