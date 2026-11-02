@@ -132,6 +132,7 @@ ApiWrapper/
 │  │  ├─ client.py                # httpx.AsyncClient havuzu, retry, breaker
 │  │  ├─ headers.py               # tarayıcı taklidi başlık üretimi (UA rotasyonu)
 │  │  ├─ deployment.py            # sürüm damgası kanaryası (409 önlemi)
+│  │  ├─ curl_runtime.py          # UPSTREAM_CURL'i çalışırken uygulama
 │  │  ├─ stream_parser.py         # AI-SDK data-stream çözücü
 │  │  └─ exceptions.py
 │  ├─ services/

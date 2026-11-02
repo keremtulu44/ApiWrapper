@@ -140,6 +140,50 @@ alanın zorunlu hâle geldiği anlamına gelir.
 
 ---
 
+## 1b. `409` → `401 {"message":"User not found"}` — oturum gerçekten ölmüş
+
+**Belirti (canlı, 2026-11-02)**
+
+```
+{"status":409,"marker":"refresh_required","deployment_id":"dpl_...","source":"configured",
+ "event":"deployment_stamp_unchanged"}
+{"status":409,"marker":"refresh_required","event":"deployment_stamp_stripped"}
+{"status":401,"body":"{"message":"User not found"}","event":"upstream_http_error"}
+{"error":"Upstream request failed with HTTP 401.","status_code":502,
+ "code":"upstream_failure","event":"request_failed"}
+```
+
+**Ne anlama gelir**
+
+409 (`forced_update`) **ilk kapıdır**, gerçek arıza değildir. Damga başlıkları
+çıkarılınca istek yeni deployment'a ulaşıyor ama upstream **"bu kullanıcı yok"**
+diyor: yakalanan cookie/access_token o deployment'ta geçersiz. Yani 409 damga
+sorununu, 401 ise asıl sorunu söylüyor — **oturum ölmüş**.
+
+Bu senaryoda damga kanaryası işe yaramaz: ana sayfa oturum olmadan `dpl_`
+kimliğini yayınlamıyor (`source: configured`). Sıralama doğru çalışıyor:
+tazeleme → sıyırma → hata.
+
+**Yapılacak**
+
+1. Tarayıcıda uygulamaya **yeniden giriş yapın** (sert yenile + login).
+2. Yeni bir sohbet mesajı gönderin → **Copy as cURL**.
+3. Aşağıdaki iki yoldan biri:
+   * **Telegram:** `/curl <cURL>` → değişiklik **anında** uygulanır, deploy
+     beklemez (bellekte; kalıcı olması için Render secret'ını da güncelleyin).
+   * **Render:** `UPSTREAM_CURL` secret'ını güncelleyip Manual Deploy.
+4. Doğrula: bot'a bir mesaj atın ya da `/ping` → `✓ Son upstream kontrolü: ...`.
+
+**Logda ayırt etme**
+
+| Olay | Anlamı |
+|---|---|
+| `upstream_session_dead` | 409'dan sonra 401 "user not found": oturum ölmüş, yeni cURL şart |
+| `upstream_refresh_required` | Yalnızca damga sorunu, oturum sağlam görünüyor |
+| `deployment_stamp_refreshed` | Otomatik kurtarma çalıştı, elle müdahale gerekmez |
+
+---
+
 ## 2. `HTTP 401` — `upstream_unauthorized`
 
 Oturum cookie'si/token'ı ölmüş. `/v1/admin/auth?slot=N` ile hangi hesabın
