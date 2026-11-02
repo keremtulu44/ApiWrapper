@@ -233,3 +233,48 @@ async def test_cookie_command_reports_token_sync():
 
     assert "Çerez uygulandı" in sent[-1]["text"]
     assert "bearer token da güncellendi" in sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_yenile_failure_names_the_cookies_that_arrived():
+    """`/yenile` başarısızken "çerez var" demek yetmiyor: hangi adlar geldi?"""
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "not_captured",
+                "logged_in": False,
+                "cookie_found": True,
+                "deployment_found": True,
+                "cx_found": False,
+                "injected_cookies": 2,
+                "cookie_names": ["__cf_bm", "_dd_s"],
+                "session_cookie_found": False,
+                "login_redirect": False,
+                "fields": ["upstream_extra_headers"],
+                "reason": "gelen çerezlerde oturum taşıyan ad yok",
+                "next": "Oturum yakalanamadı: ... TÜM çerezleri /cookie ile gönderin.",
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/yenile"})
+
+    text = sent[-1]["text"]
+    assert "Oturum yakalanamadı" in text
+    assert "__cf_bm, _dd_s" in text
+    assert "Oturum çerezi" in text
+    assert "yüklenen çerez: 2" in text

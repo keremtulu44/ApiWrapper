@@ -305,6 +305,10 @@ def test_admin_capture_endpoint_applies_session_without_secrets_in_response():
     assert body["logged_in"] is True
     assert body["cookie_found"] is True
     assert body["deployment_found"] is True
+    # Teşhis alanları: "cookie var" demek yetmiyor, hangi çerezler geldiği önemli.
+    assert "arena-auth-prod-v1.0" in body["cookie_names"]
+    assert body["session_cookie_found"] is True
+    assert body["login_redirect"] is False
     assert "upstream_cookie" in body["fields"]
     assert "fresh-session" not in response.text, "çerez yanıta sızmamalı"
     assert settings.upstream_cookie.startswith("arena-auth-prod-v1.0=fresh-session")
@@ -527,3 +531,51 @@ async def test_telegram_cookie_command_posts_the_header():
     assert calls[0]["path"] == "/v1/admin/upstream/cookie"
     assert token not in sent[-1]["text"], "çerez yanıta yansımamalı"
     assert "Çerez uygulandı" in sent[-1]["text"]
+
+
+# ------------------------------------- teşhis: hangi çerezler geldi, oturum var mı
+def test_capture_lists_cookie_names_when_session_cookie_is_missing():
+    """Canlı şikâyet: "Cookie: var" diyor ama oturum çerezi hiç gelmemiş.
+
+    Kullanıcı yalnız birkaç çerez kopyaladığında mesajın ne olduğunu söylemesi
+    gerekiyor; "access_token yok" demek eksik çerez setini fark ettirmiyordu.
+    """
+    page = FakePage(url="https://upstream.test/", has_textarea=False)
+    context = FakeContext(
+        page,
+        [
+            {"name": "__cf_bm", "value": "cf-value-secret"},
+            {"name": "_dd_s", "value": "rum-value-secret"},
+        ],
+    )
+
+    result = _run(capture_session(context, make_settings(), wait_ms=0))
+
+    assert result.logged_in is False
+    assert result.cookie_names == ["__cf_bm", "_dd_s"]
+    assert result.session_cookie_found is False
+    assert "__cf_bm" in result.reason and "_dd_s" in result.reason
+    assert "tüm" in result.reason.lower()
+    # Yalnız adlar raporlanır; değerler hiçbir yere yazılmaz.
+    assert "cf-value-secret" not in result.reason
+    assert "rum-value-secret" not in " ".join(result.notes)
+
+
+def test_capture_says_no_cookie_at_all_when_jar_is_empty():
+    page = FakePage(url="https://upstream.test/", has_textarea=False)
+    result = _run(capture_session(FakeContext(page, []), make_settings(), wait_ms=0))
+
+    assert result.cookie_names == []
+    assert result.logged_in is False
+    assert "hiç çerez yüklenemedi" in result.reason
+
+
+def test_capture_flags_login_redirect_separately():
+    page = FakePage(url="https://upstream.test/login", has_textarea=False)
+    context = FakeContext(page, [{"name": "arena-auth-prod-v1.0", "value": "dead"}])
+
+    result = _run(capture_session(context, make_settings(), wait_ms=0))
+
+    assert result.login_redirect is True
+    assert result.session_cookie_found is True
+    assert "giriş ekranına yönlendi" in result.reason
