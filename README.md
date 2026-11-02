@@ -419,6 +419,13 @@ araç bunu açıkça söyler; o zaman elle cURL gerekir.
 Mobilde çerez/cURL üretmenin mümkün olup olmadığı ve adımları:
 **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)**.
 
+Erişim token'ı ~1 saatte öldüğü için wrapper onu **kendisi yeniler**: oturum
+çerezindeki `refresh_token` ile `grant_type=refresh_token` isteği atılır (token'ın
+bitmesine 10 dk kalınca, 60 sn'de bir denetlenir), yeni token hem bellekteki
+ayarlara hem oturum çerezine yazılır. Elle tetik: Telegram **`/token`** veya
+`POST /v1/admin/upstream/refresh`. Ayrıntı ve ayarlar:
+[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md) §5.
+
 Elle uygulamak için: Telegram `/cookie <ad=değer; ...>` (Cookie-Editor'ün
 *Header String* **veya** JSON çıktısı) ya da `/curl <cURL>`; API karşılığı
 `POST /v1/admin/upstream/cookie {"cookie": "..."}` ·

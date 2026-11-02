@@ -20,7 +20,10 @@ Amaç her arızada log okumaya sıfırdan başlamamak.
 | `POST /v1/admin/breaker/reset` | Devre kesiciyi kapat (arıza geçtiyse) |
 | `POST /v1/admin/recaptcha/invalidate` | reCAPTCHA token'ını zorla yenile |
 | Telegram `/ping` | Wrapper `/healthz` **+ son upstream kontrolünün saati/sonucu** |
-| Telegram `/tani` | Çerez adları, oturum adayı, token durumu **+ tek satır "ne yapmalı"** |
+| Telegram `/tani` | Çerez adları, oturum adayı, çerezdeki/kullanılan token, refresh token **+ tek satır "ne yapmalı"** |
+
+Çerezlerin hangisi ne kadar yaşar, hangisi elle tazelenmeli:
+**[`docs/COOKIE_LIFECYCLE.md`](COOKIE_LIFECYCLE.md)**.
 
 Loglarda olay adı (event) ile arayın: `upstream_request`, `upstream_http_error`,
 `upstream_refresh_required`, `upstream_quota_exceeded`, `recaptcha_rejected_retrying`,
