@@ -4,10 +4,16 @@ from __future__ import annotations
 
 import threading
 from collections import defaultdict
+from collections.abc import Mapping
 
 LATENCY_BUCKETS = (0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0, 60.0, 120.0, 300.0)
 
 LabelKey = tuple[tuple[str, str], ...]
+
+#: Metrik adı başına tutulabilecek en fazla etiket kombinasyonu.
+#: Sınırsız büyüme gerçek bir sızıntıdır: `/metrics` etiketi istek yolunu taşıyor
+#: ve rastgele yollar deneyen bir tarayıcı her yol için yeni bir seri bırakırdı.
+MAX_SERIES_PER_METRIC = 400
 
 
 def _labels_to_key(labels: dict[str, str] | None) -> LabelKey:
@@ -41,26 +47,48 @@ class MetricsRegistry:
         self._hist_count: dict[str, dict[LabelKey, int]] = defaultdict(dict)
         self._hist_buckets: dict[str, dict[LabelKey, list[int]]] = defaultdict(dict)
         self._help: dict[str, tuple[str, str]] = {}
+        #: Sınır aşıldığı için kaydedilmeyen yeni seri sayısı (gözlemlenebilirlik).
+        self._dropped_series = 0
 
     def describe(self, name: str, kind: str, help_text: str) -> None:
         with self._lock:
             self._help[name] = (kind, help_text)
 
+    def _accepts(self, series: Mapping[LabelKey, object], key: LabelKey) -> bool:
+        """Yeni etiket kombinasyonu seri sınırını aşıyor mu? (kilit altında çağrılır)"""
+        if key in series or len(series) < MAX_SERIES_PER_METRIC:
+            return True
+        self._dropped_series += 1
+        return False
+
+    def dropped_series(self) -> int:
+        """Sınır nedeniyle düşürülen yeni seri sayısı."""
+        with self._lock:
+            return self._dropped_series
+
     def inc(self, name: str, value: float = 1.0, labels: dict[str, str] | None = None) -> None:
         key = _labels_to_key(labels)
         with self._lock:
             series = self._counters[name]
+            if not self._accepts(series, key):
+                return
             series[key] = series.get(key, 0.0) + value
 
     def set_gauge(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
         key = _labels_to_key(labels)
         with self._lock:
-            self._gauges[name][key] = value
+            series = self._gauges[name]
+            if not self._accepts(series, key):
+                return
+            series[key] = value
 
     def observe(self, name: str, value: float, labels: dict[str, str] | None = None) -> None:
         key = _labels_to_key(labels)
         with self._lock:
-            buckets = self._hist_buckets[name].setdefault(key, [0] * len(LATENCY_BUCKETS))
+            series = self._hist_buckets[name]
+            if not self._accepts(series, key):
+                return
+            buckets = series.setdefault(key, [0] * len(LATENCY_BUCKETS))
             for idx, bound in enumerate(LATENCY_BUCKETS):
                 if value <= bound:
                     buckets[idx] += 1
@@ -97,6 +125,9 @@ class MetricsRegistry:
                     lines.append(f"{name}_sum{_render_labels(key)} "
                                  f"{_fmt(self._hist_sum[name].get(key, 0.0))}")
                     lines.append(f"{name}_count{_render_labels(key)} {total}")
+            lines.append("# HELP apiwrapper_metrics_series_dropped Düşürülen yeni metrik serisi.")
+            lines.append("# TYPE apiwrapper_metrics_series_dropped counter")
+            lines.append(f"apiwrapper_metrics_series_dropped {self._dropped_series}")
         return "\n".join(lines) + "\n"
 
     def _header(self, name: str, default_kind: str) -> list[str]:
@@ -110,6 +141,7 @@ class MetricsRegistry:
             self._hist_sum.clear()
             self._hist_count.clear()
             self._hist_buckets.clear()
+            self._dropped_series = 0
 
 
 def _fmt(value: float) -> str:

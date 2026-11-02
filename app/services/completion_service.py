@@ -383,7 +383,9 @@ class CompletionService:
                             )
                         except StopAsyncIteration:
                             break
-                        except TimeoutError as exc:
+                        # Python 3.10'da asyncio.TimeoutError, yerleşik TimeoutError
+                        # ile aynı sınıf değildir; ikisini de yakala.
+                        except (TimeoutError, asyncio.TimeoutError) as exc:
                             raise UpstreamTimeout(
                                 f"No data received from upstream for {idle}s."
                             ) from exc

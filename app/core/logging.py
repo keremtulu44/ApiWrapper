@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import sys
 from contextvars import ContextVar
 from typing import Any
@@ -31,6 +32,13 @@ SENSITIVE_KEYS = frozenset(
 
 _MASK = "***"
 
+#: Log satırlarına **değer** olarak düşen token'lar da maskelenir. Anahtar adına
+#: bakan maskeleme (`cookie=...`) yeterli değildi: upstream hata gövdesi ya da
+#: hata metni token'ı kendi içinde taşıyabiliyor (örn. `body="... invalid token
+#: eyJhbGci..."`), bu durumda anahtar `body` olduğu için maskeleme atlanıyordu.
+_JWT_RE = re.compile(r"ey[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}")
+_BEARER_RE = re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/-]{8,}=*")
+
 
 def mask_value(value: Any) -> str:
     """Gizli değerin yalnızca uzunluk ipucunu bırakır."""
@@ -42,11 +50,21 @@ def mask_value(value: Any) -> str:
     return f"{text[:3]}{_MASK}{text[-2:]}"
 
 
+def redact_secrets(text: str) -> str:
+    """Metnin içindeki JWT/Bearer token'ları maskeler (değer düzeyinde)."""
+    if not text:
+        return text
+    redacted = _JWT_RE.sub(lambda m: mask_value(m.group(0)), text)
+    return _BEARER_RE.sub(lambda m: "Bearer " + mask_value(m.group(0).split(None, 1)[1]), redacted)
+
+
 def _mask_mapping(data: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in data.items():
         if isinstance(key, str) and key.lower() in SENSITIVE_KEYS:
             out[key] = mask_value(value)
+        elif isinstance(value, str):
+            out[key] = redact_secrets(value)
         elif isinstance(value, dict):
             out[key] = _mask_mapping(value)
         elif isinstance(value, list):

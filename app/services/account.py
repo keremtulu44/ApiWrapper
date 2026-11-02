@@ -211,7 +211,39 @@ class AccountPool:
         return self._states.setdefault(slot, AccountState())
 
     def reload_credentials(self, settings: Settings) -> dict[str, list[str]]:
-        """Ayarlardan hesap kimliklerini yeniden okur ve yerinde uygular."""
+        """Ayarlardan hesap kimliklerini yeniden okur ve yerinde uygular.
+
+        Havuz boşken (süreç kimlik bilgisi olmadan açıldı) çalışma zamanında gelen
+        kimlik hiçbir yere yazılmıyordu: `/upstream/cookie` "applied" diyor, ama
+        istekler kimliksiz gidiyordu. Bu yüzden havuz burada kendini doldurur.
+        """
+        if not self.accounts:
+            seeded = load_accounts(settings)  # noqa: F821 - modül sonunda tanımlı
+            if not seeded:
+                return {}
+            self.accounts = seeded
+            for account in seeded:
+                self._states.setdefault(account.slot, AccountState())
+            logger.info(
+                "account_pool_seeded",
+                accounts=[account.label for account in seeded],
+                hint=(
+                    "Havuz çalışma zamanında dolduruldu; süreç kimlik bilgisi "
+                    "olmadan açılmıştı ve gelen kimlik daha önce yok sayılıyordu."
+                ),
+            )
+            return {
+                account.label: [
+                    field
+                    for field, present in (
+                        ("cookie", account.cookie.strip()),
+                        ("access_token", account.access_token.strip()),
+                    )
+                    if present
+                ]
+                for account in seeded
+            }
+
         changed: dict[str, list[str]] = {}
         for account in self.accounts:
             fresh = Account.from_env(settings, account.slot)

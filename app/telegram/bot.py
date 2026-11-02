@@ -286,9 +286,13 @@ class TelegramBot:
             )
             await self.send_text(chat_id, "Çerez uygulanamadı: " + detail)
             return
+        fields = payload.get("fields") if isinstance(payload, dict) else None
+        applied = [str(item) for item in fields] if isinstance(fields, list) else []
+        token_synced = "upstream_access_token" in applied
+        detail = " (bearer token da güncellendi)" if token_synced else ""
         await self.send_text(
             chat_id,
-            "✓ Çerez uygulandı. Şimdi bir mesaj atarak test edin.",
+            f"✓ Çerez uygulandı{detail}. Şimdi bir mesaj atarak test edin.",
         )
 
     async def capture_upstream_session(self, chat_id: int) -> None:
