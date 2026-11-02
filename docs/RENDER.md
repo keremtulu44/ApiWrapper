@@ -4,6 +4,9 @@ Bu belge sistemi dağıtımdan cevaba kadar sırayla yürütür. Amaç yalnızca
 açmak değil, **hangi aşamanın çalıştığını ve hatanın nerede başladığını** ayırt
 edebilmektir.
 
+> **Hangi dal?** Servis **`arena/c55e601b-apiwrapper`** dalını deploy eder. Tüm
+> merge'ler oraya yapılır; `main` dokunulmaz. Bkz. [`MERGE_TARGET.md`](MERGE_TARGET.md).
+
 ## 1. Dağıtım nasıl ilerler?
 
 1. Render, `render.yaml` içindeki tek Docker Web Service'i okur.
