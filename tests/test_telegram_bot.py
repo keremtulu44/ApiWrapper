@@ -413,6 +413,15 @@ def _auth_payload(**overrides: Any) -> dict[str, Any]:
         "cookie_names_present": ["arena-auth-prod-v1.0", "__cf_bm", "_dd_s"],
         "session_cookie_candidates": [{"cookie": "arena-auth-prod-v1.0"}],
         "token": {"found": True, "expired": False, "expires_in_seconds": 3600},
+        "cookie_token": {
+            "found": True,
+            "is_jwt": True,
+            "expired": False,
+            "expires_in_seconds": 3600,
+            "used_for_authorization": True,
+        },
+        "extract_from_cookie_enabled": True,
+        "refresh_token": {"found": False, "length": 0},
         "authorization_header_will_be_sent": True,
     }
     payload.update(overrides)
@@ -447,7 +456,8 @@ async def test_diagnose_reports_healthy_identity():
     text = await _run_diagnose(_auth_payload())
     assert "Çerez: 3 ad" in text
     assert "arena-auth-prod-v1.0" in text
-    assert "Token: var" in text
+    assert "Çerezde token: var" in text
+    assert "Kullanılan token: var" in text
     assert "sağlam" in text
 
 
@@ -459,6 +469,7 @@ async def test_diagnose_points_to_cookie_when_no_credentials():
             cookie_names_present=[],
             session_cookie_candidates=[],
             token={"found": False, "expired": False},
+            cookie_token={"found": False, "expired": False},
             authorization_header_will_be_sent=False,
         )
     )
@@ -469,8 +480,35 @@ async def test_diagnose_points_to_cookie_when_no_credentials():
 @pytest.mark.asyncio
 async def test_diagnose_explains_expired_token():
     text = await _run_diagnose(
-        _auth_payload(token={"found": True, "expired": True, "expires_in_seconds": -60})
+        _auth_payload(
+            token={"found": True, "expired": True, "expires_in_seconds": -60},
+            cookie_token={
+                "found": True,
+                "is_jwt": True,
+                "expired": True,
+                "expires_in_seconds": -60,
+            },
+        )
     )
     assert "süresi dolmuş" in text
     assert "/cookie" in text
-    assert "diriltmez" in text
+    assert "çözmez" in text
+
+
+@pytest.mark.asyncio
+async def test_diagnose_reports_refresh_token_when_access_token_expired():
+    """Süresi dolmuş erişim token'ı + duran refresh token ayrı anlatılmalı."""
+    text = await _run_diagnose(
+        _auth_payload(
+            token={"found": True, "expired": True, "expires_in_seconds": -60},
+            cookie_token={
+                "found": True,
+                "is_jwt": True,
+                "expired": True,
+                "expires_in_seconds": -60,
+            },
+            refresh_token={"found": True, "length": 42},
+        )
+    )
+    assert "Refresh token: var (42 karakter)" in text
+    assert "refresh token duruyor" in text

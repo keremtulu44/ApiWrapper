@@ -401,6 +401,13 @@ async def auth_diagnostics(
     )
     header_value = build_authorization(settings)
 
+    # Kullanılan token `UPSTREAM_AUTH_FROM_COOKIE` kapalıyken boş görünebilir;
+    # teşhis için çerezdeki token **her durumda** ayrıca okunur. Aksi hâlde
+    # "token yok" yanıtı, çerezde süresi dolmuş bir token varken yanıltıcı olur.
+    cookie_token = extract_access_token(
+        settings.upstream_cookie, cookie_names=settings.upstream_token_cookie_names
+    )
+    cookie_remaining = token_seconds_remaining(cookie_token) if cookie_token else None
     remaining = token_seconds_remaining(effective) if effective else None
     suffix = f"_{slot}" if slot is not None and slot > 1 else ""
     return {
@@ -418,6 +425,16 @@ async def auth_diagnostics(
             "found": bool(refresh_token),
             "masked": mask_value(refresh_token) if refresh_token else None,
             "length": len(refresh_token) if refresh_token else 0,
+        },
+        # Kullanılan token'dan bağımsız: çerezdeki oturum token'ı ne durumda?
+        "cookie_token": {
+            "found": bool(cookie_token),
+            "is_jwt": looks_like_jwt(cookie_token) if cookie_token else False,
+            "expires_in_seconds": (
+                int(cookie_remaining) if cookie_remaining is not None else None
+            ),
+            "expired": (cookie_remaining is not None and cookie_remaining <= 0),
+            "used_for_authorization": effective == cookie_token and bool(cookie_token),
         },
         "configured_cookie_names": settings.upstream_token_cookie_names,
         "cookie_names_present": sorted(cookies),

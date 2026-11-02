@@ -299,19 +299,35 @@ class TelegramBot:
         )
         token_raw = payload.get("token")
         token: dict[str, Any] = token_raw if isinstance(token_raw, dict) else {}
-        if token.get("found"):
-            remaining = token.get("expires_in_seconds")
-            if token.get("expired"):
-                lines.append("Token: **süresi dolmuş**")
-            elif isinstance(remaining, int):
-                lines.append(f"Token: var (≈{remaining // 60} dk kaldı)")
-            else:
-                lines.append("Token: var (süre bilgisi yok)")
+        cookie_token_raw = payload.get("cookie_token")
+        cookie_token: dict[str, Any] = (
+            cookie_token_raw if isinstance(cookie_token_raw, dict) else {}
+        )
+        # Çerezdeki token ile **kullanılan** token ayrı gösterilir: "token yok"
+        # cümlesi, çerezde süresi dolmuş token varken yanıltıcı oluyordu.
+        if cookie_token.get("found"):
+            lines.append("Çerezde token: " + TelegramBot._describe_token(cookie_token))
         else:
-            lines.append("Token: **yok** (ne çerezden ne UPSTREAM_ACCESS_TOKEN'dan)")
+            lines.append("Çerezde token: **yok** (değer JWT/JSON olarak okunamadı)")
+        if token.get("found"):
+            lines.append("Kullanılan token: " + TelegramBot._describe_token(token))
+        else:
+            lines.append("Kullanılan token: **yok**")
+        read_flag = payload.get("extract_from_cookie_enabled")
+        lines.append("Çerezden token okuma: " + ("açık" if read_flag else "**kapalı**"))
+        refresh = payload.get("refresh_token")
+        if isinstance(refresh, dict):
+            if refresh.get("found"):
+                lines.append(f"Refresh token: var ({refresh.get('length', 0)} karakter)")
+            else:
+                lines.append("Refresh token: **yok**")
         lines.append(
-            "Yetkilendirme başlığı gidecek: "
-            + ("evet" if payload.get("authorization_header_will_be_sent") else "**hayır**")
+            "Authorization başlığı: "
+            + (
+                "gidecek"
+                if payload.get("authorization_header_will_be_sent")
+                else "**gitmeyecek**"
+            )
         )
         probe = describe_probe(last_probe())
         lines.append(f"Son upstream: {probe}")
@@ -319,12 +335,39 @@ class TelegramBot:
         await self.send_text(chat_id, "\n".join(lines))
 
     @staticmethod
+    def _describe_token(token: dict[str, Any]) -> str:
+        """Token durumunu tek parça metne çevirir (değer asla yazılmaz)."""
+        if token.get("expired"):
+            return "**süresi dolmuş**" + (" (JWT)" if token.get("is_jwt") else "")
+        remaining = token.get("expires_in_seconds")
+        if isinstance(remaining, int):
+            return f"var (≈{remaining // 60} dk kaldı)"
+        return "var (süre bilgisi yok)"
+
+    @staticmethod
     def _diagnose_advice(payload: dict[str, Any], probe: str) -> str:
         """Teşhis çıktısından tek bir sonraki adım seçer."""
         token_raw = payload.get("token")
         token: dict[str, Any] = token_raw if isinstance(token_raw, dict) else {}
+        cookie_token_raw = payload.get("cookie_token")
+        cookie_token: dict[str, Any] = (
+            cookie_token_raw if isinstance(cookie_token_raw, dict) else {}
+        )
+        refresh_raw = payload.get("refresh_token")
+        refresh: dict[str, Any] = refresh_raw if isinstance(refresh_raw, dict) else {}
         count = int(payload.get("cookie_count") or 0)
         candidates = payload.get("session_cookie_candidates") or []
+        if cookie_token.get("expired") and refresh.get("found"):
+            return (
+                "Erişim token'ı süresi dolmuş ama **refresh token duruyor**: sunucu "
+                "oturumu kendisi yenileyebilir. Şimdilik tarayıcıda sayfayı açıp "
+                "taze çerezi /cookie ile gönderin."
+            )
+        if cookie_token.get("expired"):
+            return (
+                "Çerezdeki token süresi dolmuş, refresh token yok: tarayıcıda "
+                "yeniden giriş → /cookie <çerez>. /yenile bunu çözmez."
+            )
         if not count:
             return (
                 "Elde çerez yok. Giriş yapmış tarayıcıda Cookie-Editor → Export → "

@@ -1,0 +1,111 @@
+# Çerez ömrü: neyin süresi dolar, neyin dolmaz, ne sürekli alınmalı
+
+Bu belge `/tani` ve `/yenile` çıktısındaki çerezleri tek tek açıklar. Amaç
+"her seferinde çerez almak" döngüsünü kırmak: hangi değer **kendiliğinden**
+döner, hangisi **yalnız oturum ölünce** elle taşınır.
+
+## 0. Üç katman — karışan şey bu
+
+| Katman | Örnek | Ömrü | Kim tazeler |
+|---|---|---|---|
+| **1. Oturum (kimlik)** | `arena-auth-prod-v1`, `.0`, `.1`, `-code-verifier` | Günler–haftalar; sunucu **her an iptal edebilir** | Yalnız **giriş yapmış tarayıcı**; wrapper bunu üretemez |
+| **2. Türev değerler** | `dpl_...` sürüm damgası, `cx`, `referer` yolu | Saatler–günler (her deploy'da değişir) | **`/yenile`** otomatik yakalar |
+| **3. Geçici/telemetri** | `__cf_bm`, `_dd_s`, `_ga*`, `_vcrr_*` | 15 dk – 2 yıl | Site kendi yazar; **kimlik değeri yok** |
+
+**Sonuç:** Elle sürekli alınması gereken bir şey **yok**. Katman 1 yalnız oturum
+gerçekten öldüğünde, katman 2 zaten otomatik, katman 3 tamamen ilgisiz.
+
+## 1. /tani çıktısındaki çerezler — ne işe yarar
+
+Kerem'in 2026-11-02 çıktısından (14 çerez):
+
+| Çerez | Ne | Ömrü | Wrapper'a etkisi |
+|---|---|---|---|
+| `arena-auth-prod-v1` | Oturum çerez ailesinin anahtarı (v1 sürümü) | Oturum boyu | **Kritik.** Yoksa oturum yok |
+| `arena-auth-prod-v1.0`, `.1` | Aynı oturum çerez **parçaları** (4 KB sınırı için bölünmüş; `.0` + `.1` birleşince tek değer) | Ana çerezle aynı | **Kritik.** Parçalardan biri eksikse token okunamaz |
+| `arena-auth-prod-v1-code-verifier` | OAuth/PKCE giriş akışının geçici anahtarı | ~10 dk | **İlgisiz.** Giriş bitince işe yaramaz |
+| `__cf_bm` | Cloudflare bot yönetimi | ~30 dk, sürekli döner | İlgisiz (kimlik değil) |
+| `_dd_s` | Datadog RUM oturumu | 15 dk boşta / 4 saat | İlgisiz (telemetri) |
+| `_ga`, `_ga_<ID>` | Google Analytics | ~2 yıl | İlgisiz (telemetri) |
+| `_vcrr_*` | Vercel hız/izleme | Kısa | İlgisiz |
+| `+6` (görünmeyen) | Genelde dil/tema/deney bayrakları | Uzun | İlgisiz |
+
+Tek gerçek kimlik taşıyıcısı `arena-auth-prod-v1*` ailesidir. Telemetri
+çerezlerini taşımak zorunlu değil; zararı da yok.
+
+## 2. "Token yok" ne demek?
+
+Oturum çerezi iki biçimde olabilir:
+
+1. **Düz JWT** — içinden `exp` okunur, süre bilinir.
+2. **Şifreli/kodlanmış oturum (JWE, base64 JSON, parçalı)** — wrapper değeri
+   çözebilirse içindeki `access_token`'ı (JWT) ve `refresh_token`'ı çıkarır;
+   çözemezse "token yok" der. Bu bir arıza değil, **okuma sınırıdır**.
+
+`/tani` bu yüzden artık iki satır yazıyor:
+
+```
+Çerezde token: var ama süresi dolmuş (JWT)   ← çerezin içinde ne var
+Kullanılan token: yok                        ← istekte ne kullanılıyor
+Authorization başlığı: gitmeyecek
+```
+
+Üçünün aynı anda görülmesi şu demek: istek upstream'e **kimliksiz** gidiyor →
+401 beklenir. Çözüm, oturumu taşıyan çerezin tazelenmesi.
+
+## 3. `/yenile` neyi tazeler, neyi tazelemez
+
+| Tazeler | Tazelemez |
+|---|---|
+| `dpl_...` sürüm damgası | Oturum çerezini (parola/OTP yok) |
+| `cx` bayrağı | Süresi dolmuş `access_token`'ı |
+| `referer` yolu | Sunucuda iptal edilmiş oturumu |
+| Sayfanın yeni `Set-Cookie`'leri | 429 kotasını |
+
+`/yenile` "oturum yakalanamadı" derse üç nedenden biri: çerez hiç yüklenmedi,
+oturum adı yok, ya da token süresi dolmuş. Üçü de **tarayıcıdan çerez** ister.
+
+## 4. Ne sıklıkta elle müdahale gerekir
+
+| Durum | Sıklık | Yapılacak |
+|---|---|---|
+| Damga eskimesi (409) | Her upstream deploy'unda | `/yenile` |
+| Erişim token'ı süresi (≈1 saat, JWT ise) | Saatte bir | **Refresh token varsa otomatik olmalı** (aşağıya bak) |
+| Oturum iptali / çıkış (401 "User not found") | Nadir | `/cookie` ile taze çerez |
+| Telemetri/Cloudflare çerezleri | Sürekli | **Hiçbir şey** |
+
+## 5. Refresh token: kalıcı çözüm
+
+Oturum çerezinde `refresh_token` varsa, erişim token'ı **elle** değil
+`grant_type=refresh_token` ile yenilenebilir (Supabase/Auth.js ailesi bunu
+destekler). Bu akış eklenirse:
+
+* Erişim token'ı saatlik ölmez → 401 döngüsü biter,
+* Her yenilemede refresh token **döner** (rotation), yeni değer saklanmalı,
+* Yalnız refresh token da öldüğünde (haftalar) tarayıcıdan çerez gerekir.
+
+`/tani` çıktısında `Refresh token: var (N karakter)` görünüyorsa bu yol açıktır;
+`yok` ise elle çerez tek çözümdür.
+
+## 6. Kerem'in 2026-11-02 vakası — okuma
+
+```
+Çerez: 14 ad (arena-auth-prod-v1, .0, .1, code-verifier dahil)
+Token: yok          → çerezden token okunamadı
+Authorization: hayır → istek kimliksiz gidiyor
+/yenile → 401 + "cookie'deki access_token süresi dolmuş"
+```
+
+Çıkarım:
+
+1. Oturum çerezi **var** (adlar doğru) ama içindeki erişim token'ı **süresi
+   dolmuş**; wrapper'ın okuyabildiği değer bu.
+2. Çerezde token bulunamadığı için istek **Authorization başlığı olmadan**
+   gidiyor → upstream 401 veriyor. Yani sorun "çerez eksik" değil, "çerezdeki
+   kimlik bayat".
+3. `/yenile` bunu düzeltemez: sunucu tarayıcısı sizin oturumunuzla **giriş
+   yapamaz**, yalnız mevcut çerezle sayfayı açar.
+4. Tek yol: giriş yapmış tarayıcıdan **tüm** çerez seti (özellikle
+   `arena-auth-prod-v1`, `.0`, `.1`) → `/cookie`. Sonrasında `/tani`'de
+   `Çerezde token: var (≈N dk kaldı)` görülmeli.
+5. Kalıcı çıkış: çerez setinde `refresh_token` varsa §5'teki akış.
