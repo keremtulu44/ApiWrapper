@@ -45,6 +45,11 @@ benden izin al" dedi. Bu yüzden:
 | #4 | `arena/d1587a5b-apiwrapper` | `arena/c55e601b-apiwrapper` | `b2ba4d1` |
 | #5 | `arena/9fb06017-apiwrapper` | `arena/c55e601b-apiwrapper` | `80ac8a8` |
 | #6 | `arena/9fb06017-apiwrapper` | `arena/c55e601b-apiwrapper` | `df5e0e0` |
+| #7 | `arena/b0820d11-apiwrapper` | `arena/c55e601b-apiwrapper` | `d9ca3f2` |
+| #8 | `arena/d5eb0619-apiwrapper` | `arena/c55e601b-apiwrapper` | `6ec6d2f` |
+| #9 | `arena/72e4a3e6-apiwrapper` | `arena/c55e601b-apiwrapper` | `8912185` |
+| #10 | `arena/2dd37e06-apiwrapper` | `arena/c55e601b-apiwrapper` | `0f1a817` |
+| #11 | `arena/1320a4db-apiwrapper` | `arena/c55e601b-apiwrapper` | `b833d68` |
 
 Yeni bir merge yapıldığında bu tabloya bir satır ekleyin.
 
@@ -67,5 +72,5 @@ Doğrulama:
 
 ```bash
 git ls-remote --heads origin | grep -E "c55e601b|main"
-# c55e601b = son merge commit'i, main = değişmemiş olmalı
+# c55e601b = son merge commit'i; main yalnız kullanıcı açıkça isterse güncellenir
 ```

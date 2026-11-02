@@ -419,6 +419,9 @@ araç bunu açıkça söyler; o zaman elle cURL gerekir.
 Mobilde çerez/cURL üretmenin mümkün olup olmadığı ve adımları:
 **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)**.
 
+Neden sürekli çerez taşındığı, hangi değerin ne zaman tazelendiği ve kalan yol
+haritası tek sayfada: **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)**.
+
 Erişim token'ı ~1 saatte öldüğü için wrapper onu **kendisi yeniler**: oturum
 çerezindeki `refresh_token` ile `grant_type=refresh_token` isteği atılır (token'ın
 bitmesine 10 dk kalınca, 60 sn'de bir denetlenir), yeni token hem bellekteki
