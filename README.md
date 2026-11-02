@@ -12,6 +12,10 @@ OpenAI-compatible istemcilerle çalışır.
 Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** ·
 arıza/teşhis için: **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)**
 
+> **Merge hedefi:** tüm değişiklikler **`arena/c55e601b-apiwrapper`** dalına
+> merge edilir; Render bu dalı deploy eder, **`main` dokunulmaz**.
+> Ayrıntı ve geçmiş: **[`docs/MERGE_TARGET.md`](docs/MERGE_TARGET.md)**
+
 ---
 
 ## Özellikler
