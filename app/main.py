@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import secrets
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -133,12 +135,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await upstream.startup()
 
     recaptcha = create_recaptcha_provider(settings)
-    try:
-        await recaptcha.startup()
-    except Exception as exc:
-        # Captcha sağlayıcısı başlatılamazsa servis yine ayakta kalsın;
-        # hata ilk istekte anlamlı biçimde raporlanır.
-        logger.error("recaptcha_startup_failed", provider=recaptcha.name, error=str(exc))
+    if recaptcha.name != "browser":
+        try:
+            await recaptcha.startup()
+        except Exception as exc:
+            # Captcha sağlayıcısı başlatılamazsa servis yine ayakta kalsın;
+            # hata ilk istekte anlamlı biçimde raporlanır.
+            logger.error(
+                "recaptcha_startup_failed", provider=recaptcha.name, error=str(exc)
+            )
 
     sessions = SessionManager(settings, warmup=upstream.warmup)
     registry = _load_registry(settings)
@@ -225,9 +230,40 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Uygulamayı oluşturur (testler kendi Settings'ini geçebilir)."""
+    from_env = settings is None
     settings = settings or get_settings()
-    settings, upstream_curl_model_id = apply_upstream_curl(settings)
+    upstream_curl_model_id: str | None = None
+    if from_env:
+        try:
+            settings, upstream_curl_model_id = apply_upstream_curl(settings)
+        except ValueError as exc:
+            # Kullanıcı Render'da UPSTREAM_CURL içine yanlışlıkla yalnız çerez
+            # veya eksik bir komut yapıştırdıysa uvicorn açılışta çökmesin;
+            # çerez olarak uygulanabiliyorsa uygula, değilse uyarı logla.
+            raw_curl = (settings.upstream_curl or "").strip()
+            from app.upstream.session_capture import apply_cookie_to_settings
+
+            with contextlib.suppress(ValueError):
+                apply_cookie_to_settings(settings, raw_curl)
+            settings.upstream_curl = ""
+            logger.warning("upstream_curl_startup_fallback", detail=str(exc))
+    else:
+        settings, upstream_curl_model_id = apply_upstream_curl(settings)
+
     restore_runtime_state(settings)
+
+    if from_env and (
+        os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID")
+    ):
+        target = (settings.target_domain or "").strip().lower()
+        if target in {"", "localhost", "127.0.0.1"}:
+            settings.target_domain = "arena.ai"
+            if settings.upstream_referer_path == "/c/{chat_id}":
+                settings.upstream_referer_path = "/text/direct"
+        keys = [k.strip() for k in settings.api_keys if k.strip()]
+        if not keys or keys == ["sk-local-dev-key"]:
+            settings.api_keys = [f"sk-render-{secrets.token_urlsafe(24)}"]
+
     configure_logging(settings.log_level, settings.log_json)
 
     app = FastAPI(

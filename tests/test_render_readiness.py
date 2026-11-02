@@ -127,3 +127,24 @@ def test_telegram_worker_dockerfile_starts_bot_without_a_start_command():
     assert 'CMD ["python", "-m", "app.telegram.bot"]' in dockerfile
     assert "uvicorn" not in dockerfile
     assert "playwright install" not in dockerfile
+
+
+def test_render_env_boot_survives_empty_or_cookie_only_upstream_curl(monkeypatch):
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("RECAPTCHA_PROVIDER", "browser")
+    monkeypatch.setenv(
+        "RECAPTCHA_SITE_KEY", "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0"
+    )
+    monkeypatch.setenv("UPSTREAM_CURL", "arena-auth-prod-v1.0=test-cookie; __cf_bm=1")
+    from app.core.config import get_settings
+
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        with TestClient(app) as client:
+            ready = client.get("/readyz")
+        assert ready.status_code == 200, ready.text
+        assert "arena-auth-prod-v1.0" in app.state.settings.upstream_cookie
+    finally:
+        get_settings.cache_clear()
+
