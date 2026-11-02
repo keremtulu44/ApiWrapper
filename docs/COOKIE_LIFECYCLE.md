@@ -102,9 +102,10 @@ döngüsüyle yenilenir:
 |---|---|
 | Zamanlayıcı | 60 sn'de bir bakar; yalnız token'ın bitmesine **10 dk** kalınca istek atar |
 | İstek | `POST {iss}/auth/v1/token?grant_type=refresh_token` · gövde `{"refresh_token": "..."}` |
-| `apikey` | Upstream istiyorsa `UPSTREAM_REFRESH_API_KEY` (Supabase anon anahtarı) |
-| Başarı | Yeni `access_token` + dönen yeni `refresh_token` (rotation) **bellekte** ve **oturum çerezinde** güncellenir; parçalı çerez aynı sınırlarla yeniden bölünür |
-| Başarısızlık | Mevcut token **korunur**, tek satır Türkçe neden döner; çerez bozulmaz |
+| `apikey` | Upstream istiyorsa sitenin HTML/JS'inden **otomatik keşfedilir** (veya `UPSTREAM_REFRESH_API_KEY` / `/apikey`) |
+| Başarı | Yeni `access_token` + dönen yeni `refresh_token` (rotation) **bellekte**, **oturum çerezinde**, **`AccountPool` + `UpstreamClient` cookie jar'larında** ve **süreç dışı durum deposunda (`UPSTREAM_STATE_FILE`)** güncellenir |
+| Başarısızlık | Mevcut token **korunur**, tek satır Türkçe neden döner; süre ≤10 dk ise tek seferlik uyarı gönderilir |
+| Reaktif 401 | Sohbet isteği 401 alırsa istemciye hata dönmeden önce anında refresh denenir ve istek tekrarlanır |
 | Elle tetik | Telegram `/token` ya da `POST /v1/admin/upstream/refresh` |
 | Kapalıysa | `UPSTREAM_REFRESH_ENABLED=false` → eski davranış (elle çerez) |
 

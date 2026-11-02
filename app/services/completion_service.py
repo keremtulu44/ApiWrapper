@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import AsyncIterator
 
@@ -33,6 +34,7 @@ from app.services.account import Account, AccountPool
 from app.services.model_registry import ModelRegistry
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
+from app.upstream.auth import is_token_expired
 from app.upstream.client import UpstreamClient
 from app.upstream.exceptions import (
     CircuitOpen,
@@ -46,6 +48,11 @@ from app.upstream.exceptions import (
     UpstreamTimeout,
 )
 from app.upstream.quota import QuotaTextScanner, find_quota_marker, quota_error_message
+from app.upstream.refresh import (
+    cookie_access_token,
+    cookie_refresh_token,
+    refresh_upstream_token,
+)
 from app.upstream.stream_parser import parse_stream
 from app.utils.ids import new_completion_id, now_ts
 from app.utils.sse import sse_done, sse_event
@@ -334,10 +341,36 @@ class CompletionService:
         max_switches = max(0, self.settings.account_max_switches)
         switches = 0
         captcha_retried = False
+        auth_refresh_retried = False
+        proactive_refresh_tried = False
         emitted = 0
         account = self._pick_account()
 
         while True:
+            slot = account.slot if account is not None else 1
+            if (
+                not proactive_refresh_tried
+                and not auth_refresh_retried
+                and self.settings.upstream_refresh_enabled
+                and cookie_refresh_token(self.settings, slot=slot)
+            ):
+                proactive_refresh_tried = True
+                access_tok = cookie_access_token(self.settings, slot=slot)
+                if access_tok and is_token_expired(access_tok):
+                    with contextlib.suppress(Exception):
+                        outcome = await refresh_upstream_token(self.settings, slot=slot)
+                        if outcome.ok:
+                            from app.services.token_refresh import record_refresh
+
+                            auth_refresh_retried = True
+                            record_refresh(ok=True, detail=outcome.detail)
+                            self.accounts.reload_credentials(self.settings)
+                            await self.upstream.reset_account_clients()
+                            logger.info(
+                                "upstream_auth_refreshed_proactively",
+                                account=account.label if account else None,
+                                slot=slot,
+                            )
             # Kota taraması burada yapılır — çağıran tarafta değil. Aksi halde
             # istisna `except UpstreamQuotaExceeded` bloğunun *dışında* fırlar
             # ve hesap devri/cooldown/AIMD hiç devreye girmez (HTTP hata
@@ -428,9 +461,33 @@ class CompletionService:
                 account = replacement
                 continue
             except UpstreamAuthRejected:
-                # Oturum kimliği reddedildi (401). Kota yolundan farkı: hesabı
-                # cezalandırmıyoruz (token global olarak düşmüş olabilir), ama
-                # başka hesap varsa onu denemek toplam kesintiyi önler.
+                # 1. Kademe: Henüz istemciye tek parça gönderilmediyse ve
+                # hesabın refresh token'ı varsa, erişim token'ını anında yenileyip
+                # aynı hesapla bir kez tekrar dene (kullanıcı 401 görmez).
+                slot = account.slot if account is not None else 1
+                if (
+                    emitted == 0
+                    and not auth_refresh_retried
+                    and self.settings.upstream_refresh_enabled
+                    and cookie_refresh_token(self.settings, slot=slot)
+                ):
+                    auth_refresh_retried = True
+                    outcome = await refresh_upstream_token(self.settings, slot=slot)
+                    if outcome.ok:
+                        from app.services.token_refresh import record_refresh
+
+                        record_refresh(ok=True, detail=outcome.detail)
+                        self.accounts.reload_credentials(self.settings)
+                        await self.upstream.reset_account_clients()
+                        logger.info(
+                            "upstream_auth_refreshed_retrying",
+                            account=account_label,
+                            slot=slot,
+                        )
+                        continue
+
+                # 2. Kademe: Oturum kimliği yenilenemedi; başka hesap varsa
+                # onu denemek toplam kesintiyi önler.
                 retryable = emitted == 0 and switches < max_switches and account is not None
                 # Burada bilinçli olarak `self.accounts.pick` kullanılıyor, `_pick_account`
                 # değil: `_pick_account` havuz boşken UpstreamQuotaExceeded fırlatır ve bu,

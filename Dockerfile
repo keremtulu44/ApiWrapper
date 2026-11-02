@@ -5,7 +5,8 @@ ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
-    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers
+    PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers \
+    UPSTREAM_STATE_FILE=/app/.cache/upstream_state.json
 
 WORKDIR /app
 

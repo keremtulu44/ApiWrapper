@@ -33,9 +33,11 @@ from app.upstream.auth import (
     extract_refresh_token,
     is_token_expired,
     parse_cookie_header,
+    token_expiry,
     token_seconds_remaining,
 )
 from app.upstream.headers import DEPLOYMENT_HEADERS
+from app.upstream.state_store import save_runtime_state
 
 logger = get_logger(__name__)
 
@@ -77,6 +79,10 @@ class CaptureResult:
     session_cookie_found: bool = False
     #: Sayfa giriş ekranına yönlendi mi (oturum çerezle birlikte ölmüş)?
     login_redirect: bool = False
+    #: Yakalanan çerezdeki token mevcut ayarlardakinden daha mı taze?
+    fresher_token_found: bool = False
+    #: Ağ isteklerinden veya sayfadan yakalanan Supabase `apikey` (anon anahtar).
+    refresh_api_key: str | None = None
 
     @property
     def has_cookie(self) -> bool:
@@ -228,6 +234,8 @@ async def capture_session(
             observed.setdefault("cx", str(lowered["cx"]))
         if lowered.get("referer"):
             observed.setdefault("referer", str(lowered["referer"]))
+        if lowered.get("apikey"):
+            observed.setdefault("refresh_api_key", str(lowered["apikey"]))
         url = str(getattr(request, "url", ""))
         if any(hint in url for hint in (*_STREAM_HINTS, settings.upstream_stream_path)):
             observed["stream_request"] = "1"
@@ -281,6 +289,10 @@ async def capture_session(
         session_cookie = _looks_logged_in(cookies)
         result.session_cookie_found = session_cookie
         result.login_redirect = login_redirect
+        result.fresher_token_found = _has_fresher_token(
+            settings, result.cookies, login_redirect=login_redirect
+        )
+        result.refresh_api_key = observed.get("refresh_api_key")
         if login_redirect:
             result.logged_in = False
         elif token:
@@ -567,7 +579,48 @@ def apply_cookie_to_settings(settings: Settings, raw: str) -> list[str]:
     if token and settings.upstream_access_token != token:
         settings.upstream_access_token = token
         changed.append("upstream_access_token")
+    refresh = extract_refresh_token(normalized)
+    if refresh and settings.upstream_refresh_token != refresh:
+        settings.upstream_refresh_token = refresh
+    if changed:
+        save_runtime_state(settings, source="cookie_import")
     return changed
+
+
+def _has_fresher_token(
+    settings: Settings, captured_cookie: str, *, login_redirect: bool = False
+) -> bool:
+    """Yakalanan çerez mevcut ayarlardakinden daha iyi/taze bir token taşıyor mu?"""
+    if login_redirect or not captured_cookie.strip():
+        return False
+    captured_token = extract_access_token(
+        captured_cookie, cookie_names=settings.upstream_token_cookie_names
+    )
+    captured_refresh = extract_refresh_token(
+        captured_cookie, cookie_names=settings.upstream_token_cookie_names
+    )
+    current_token = extract_access_token(
+        settings.upstream_cookie or "",
+        cookie_names=settings.upstream_token_cookie_names,
+    ) or (settings.upstream_access_token or "").strip()
+    current_refresh = extract_refresh_token(
+        settings.upstream_cookie or "",
+        cookie_names=settings.upstream_token_cookie_names,
+    ) or (settings.upstream_refresh_token or "").strip()
+
+    if captured_token and not is_token_expired(captured_token):
+        if not current_token or is_token_expired(current_token):
+            return True
+        cap_exp = token_expiry(captured_token)
+        cur_exp = token_expiry(current_token)
+        if cap_exp is not None and cur_exp is not None and cap_exp > cur_exp:
+            return True
+
+    return bool(
+        captured_refresh
+        and not current_refresh
+        and (not captured_token or not is_token_expired(captured_token))
+    )
 
 
 def apply_capture_to_settings(
@@ -575,15 +628,19 @@ def apply_capture_to_settings(
 ) -> list[str]:
     """Yakalanan oturumu çalışan ayarlara uygular (değerler loglanmaz).
 
-    **Oturum yakalanamadıysa cookie değiştirilmez**: anonim çerez setinin
-    çalışan oturumun üzerine yazması, sorunu büyütmekten başka işe yaramaz.
-    Sürüm damgası ve referer yolu ise sayfadan bağımsız olarak doğru bilgidir;
-    onlar yine uygulanır.
+    **Oturum yakalanamadıysa ve daha taze bir token üretilmediyse cookie
+    değiştirilmez**: anonim çerez setinin çalışan oturumun üzerine yazması,
+    sorunu büyütmekten başka işe yaramaz. Ancak sayfa daha taze bir token
+    (`fresher_token_found`) ürettiyse o da uygulanır. Sürüm damgası ve referer
+    yolu ise sayfadan bağımsız olarak doğru bilgidir; onlar yine uygulanır.
     """
     changed: list[str] = []
+    fresher = result.fresher_token_found or _has_fresher_token(
+        settings, result.cookies, login_redirect=result.login_redirect
+    )
     if (
         result.has_cookie
-        and (result.logged_in or force)
+        and (result.logged_in or force or fresher)
         and result.cookies != settings.upstream_cookie
     ):
         settings.upstream_cookie = result.cookies
@@ -593,6 +650,9 @@ def apply_capture_to_settings(
         if token and settings.upstream_access_token != token:
             settings.upstream_access_token = token
             changed.append("upstream_access_token")
+        refresh = extract_refresh_token(result.cookies)
+        if refresh and settings.upstream_refresh_token != refresh:
+            settings.upstream_refresh_token = refresh
     if result.deployment_headers:
         headers = settings.parsed_extra_headers()
         updated = False
@@ -616,4 +676,12 @@ def apply_capture_to_settings(
     if result.referer_path and settings.upstream_referer_path != result.referer_path:
         settings.upstream_referer_path = result.referer_path
         changed.append("upstream_referer_path")
+    if (
+        result.refresh_api_key
+        and settings.upstream_refresh_api_key != result.refresh_api_key
+    ):
+        settings.upstream_refresh_api_key = result.refresh_api_key
+        changed.append("upstream_refresh_api_key")
+    if changed:
+        save_runtime_state(settings, source="session_capture")
     return changed

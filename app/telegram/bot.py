@@ -14,6 +14,7 @@ bu modda wrapper'a hiçbir istek gönderilmez.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 from typing import Any
 
@@ -34,7 +35,7 @@ _HELP = (
     "/yenile (sunucu "
     "tarayıcısıyla oturumu tazele), /cookie <çerez> ya da /curl <cURL>, /help.\n"
     "/cookie! <çerez> = kontrolü atlayıp zorla uygula, /token = erişim token'ını "
-    "yenile.\n"
+    "yenile, /apikey [anahtar] = yenileme anon anahtarını keşfet/ayarla.\n"
     "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
 )
 
@@ -239,6 +240,9 @@ class TelegramBot:
         if command in {"/token", "/tokeni", "/refresh-token", "/yenitoken"}:
             await self.refresh_token(chat_id)
             return
+        if command in {"/apikey", "/anonkey"}:
+            await self.set_refresh_apikey(chat_id, text)
+            return
         if command in {"/tani", "/tanı", "/durum", "/status", "/diagnose"}:
             await self.diagnose(chat_id)
             return
@@ -314,6 +318,41 @@ class TelegramBot:
             + str(payload.get("detail") or f"HTTP {response.status_code}"),
         )
 
+    async def set_refresh_apikey(self, chat_id: int, text: str) -> None:
+        """`/apikey [anahtar]`: Supabase yenileme anon anahtarını ayarlar veya keşfeder."""
+        parts = text.split(maxsplit=1)
+        body = parts[1].strip() if len(parts) > 1 else ""
+        try:
+            response = await self.wrapper.post(
+                "/v1/admin/upstream/apikey", json={"apikey": body}
+            )
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; apikey işlemi yapılamadı.")
+            return
+        if not isinstance(payload, dict) or response.status_code != 200:
+            await self.send_text(chat_id, f"Beklenmeyen yanıt (HTTP {response.status_code}).")
+            return
+        status = payload.get("status")
+        if status == "applied":
+            await self.send_text(
+                chat_id,
+                f"✓ Yenileme `apikey` kaydedildi ({payload.get('length', 0)} karakter). "
+                "Şimdi /token ile test edebilirsiniz.",
+            )
+            return
+        if status == "discovered":
+            await self.send_text(
+                chat_id,
+                f"✓ Yenileme `apikey` siteden otomatik keşfedildi "
+                f"({payload.get('length', 0)} karakter). Şimdi /token ile test edebilirsiniz.",
+            )
+            return
+        await self.send_text(
+            chat_id,
+            "⚠ " + str(payload.get("detail") or "Anon anahtar bulunamadı."),
+        )
+
     async def diagnose(self, chat_id: int) -> None:
         """`/tani`: telefonda tek mesajda "neyim eksik, ne yapayım".
 
@@ -379,10 +418,25 @@ class TelegramBot:
         auto_raw = payload.get("auto_refresh")
         auto: dict[str, Any] = auto_raw if isinstance(auto_raw, dict) else {}
         if auto:
+            persistence: list[str] = []
+            if auto.get("state_file_configured"):
+                persistence.append("disk")
+            if auto.get("render_sync_configured"):
+                persistence.append("Render-env")
+            persist_suffix = (
+                f" · kalıcılık: {'+'.join(persistence)}"
+                if persistence
+                else ""
+            )
             lines.append(
                 "Otomatik yenileme: "
                 + ("açık" if auto.get("enabled") else "**kapalı**")
-                + ("" if auto.get("has_api_key") else " · apikey yok")
+                + (
+                    " · apikey hazır"
+                    if auto.get("has_api_key")
+                    else " · apikey otomatik keşfedilecek"
+                )
+                + persist_suffix
             )
         lines.append(
             "Authorization başlığı: "
@@ -423,8 +477,8 @@ class TelegramBot:
         if cookie_token.get("expired") and refresh.get("found"):
             return (
                 "Erişim token'ı süresi dolmuş ama **refresh token duruyor**: sunucu "
-                "oturumu kendisi yenileyebilir. Şimdilik tarayıcıda sayfayı açıp "
-                "taze çerezi /cookie ile gönderin."
+                "oturumu kendisi yenileyebilir (/token ile şimdi tetikleyin; "
+                "olmazsa taze çerezi /cookie ile gönderin)."
             )
         if cookie_token.get("expired"):
             return (
@@ -805,6 +859,12 @@ class TelegramBot:
         response = await self.telegram.post(
             f"{self.telegram_api_url}/getUpdates", json=payload
         )
+        if response.status_code == 409 and "webhook" in (response.text or "").lower():
+            with contextlib.suppress(Exception):
+                await self.telegram.post(
+                    f"{self.telegram_api_url}/deleteWebhook",
+                    json={"drop_pending_updates": False},
+                )
         if response.status_code >= 400:
             logger.warning("telegram_poll_rejected", status_code=response.status_code)
             raise RuntimeError("Telegram getUpdates rejected")
