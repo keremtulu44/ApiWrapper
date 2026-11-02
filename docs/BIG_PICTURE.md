@@ -24,16 +24,30 @@ Sürekli değişenlerin çoğu katman 3'tür; onları taşımak boşunadır.
 
 ## 3. Yeni mantık: "ölünce tazele" değil, "ölmesine izin verme"
 
-1. **Token'ı wrapper kendi yeniler.** `app/services/token_refresh.py` 60 sn'de bir
-   bakar; bitmesine 10 dk kalınca `app/upstream/refresh.py` ile
-   `grant_type=refresh_token` isteği atar, yeni token'ı belleğe **ve** oturum
-   çerezine yazar (parçalı çerez aynı sınırlarla yeniden bölünür).
-2. **Türevleri `/yenile` tazeler.** Sunucudaki Chromium sayfayı açar, yeni
-   `dpl_…`/`cx`/`referer` değerlerini yakalar; 409 sınıfı sorunlar böyle çözülür.
-3. **Kimlik yalnız gerçekten öldüğünde elle girer.** Oturum iptal edildiyse ya da
-   süreç yeniden başlayıp eski refresh token geçersiz kaldıysa.
-4. **Teşhis tahmin yerine:** `/tani` "neyim eksik" der (çerezde token var mı,
-   süresi ne, refresh token var mı, otomatik yenileme açık mı).
+1. **Token'ı wrapper kendi yeniler ve aktif istemcilere anında yayar.**
+   `app/services/token_refresh.py` 60 sn'de bir bakar; bitmesine 10 dk kalınca
+   `app/upstream/refresh.py` ile `grant_type=refresh_token` isteği atar, yeni
+   token'ı belleğe, parçalı oturum çerezine, `AccountPool` yuvalarına **ve**
+   `UpstreamClient` cookie jar'larına yazar.
+2. **İstek anında (reaktif) 401 kurtarma.** Arka plan döngüsü çalışmadan önce
+   bir istek 401 alırsa, `CompletionService` hata dönmek yerine anında refresh
+   token ile yeni token alıp aynı isteği kesintisiz tekrarlar.
+3. **`apikey` otomatik keşfedilir.** Upstream yenileme ucu Supabase `apikey`
+   (anon anahtarı) isterse, sitenin HTML/JS'inden `"role": "anon"` JWT'si veya
+   tarayıcı yakalamasındaki `apikey` başlığı otomatik bulunur (`/apikey` ile
+   elle de tetiklenebilir).
+4. **Süreç dışı kalıcılık (`app/upstream/state_store.py`).** Dönen refresh
+   token ve türev değerler yerel durum dosyasına (`UPSTREAM_STATE_FILE`) atomik
+   yazılır ve opsiyonel olarak Render servis env değişkenlerine
+   (`RENDER_API_KEY` + `RENDER_SERVICE_ID`) senkronize edilir. Restart sonrası
+   `.env` değişmemişse dönmüş taze oturum geri yüklenir; `.env`'e daha yeni bir
+   cURL konduysa yeni cURL tercih edilir.
+5. **Türevleri kanarya ve `/yenile` tazeler.** Sürüm damgası (`dpl_…`)
+   sayfadan otomatik okunur; `/yenile` ayrıca daha taze bir token üretildiyse
+   (`logged_in` tam tetiklenmese bile) onu da uygular.
+6. **Teşhis ve tek seferlik uyarı:** `/tani` "neyim eksik" der; token bitmesine
+   ≤10 dk kalıp otomatik yenilenemediyse aynı token için **yalnızca bir kez**
+   Telegram uyarısı gönderilir (spam yok).
 
 ## 4. Hedef son durum
 
@@ -55,6 +69,7 @@ taşıyan herhangi bir istek yeterli.
 | `/ping` | Servis + son upstream kontrolü | istendiğinde |
 | `/tani` | Kimlik teşhisi + tek satır "ne yapmalı" | bir şey bozulunca |
 | `/token` | Token'ı **şimdi** yenile (otomatik olanı elle tetikler) | test için |
+| `/apikey` | Yenileme `apikey` değerini siteden otomatik keşfet veya `/apikey <anahtar>` ile ayarla | gerekirse |
 | `/yenile` | Türev değerleri tazele (409 çözümü) | upstream deploy'unda |
 | `/cookie` | Kimlik ver · parçalı yapıştırma: `/cookie <parça>` … `/cookie bitir`, `/cookie iptal`, `/cookie!` zorla | haftalar |
 | `/curl` | Kimlik ver (PC'de *Copy as cURL*) | nadiren |
@@ -69,14 +84,28 @@ taşıyan herhangi bir istek yeterli.
   taze çerez gerekir.
 - Upstream `apikey` isterse tek ayar yeterli: `UPSTREAM_REFRESH_API_KEY`.
 
-## 7. Kalan yol haritası
+## 7. Tamamlanan yol haritası (otomatik sürdürülebilirlik)
 
-1. **Refresh token'ı süreç dışında sakla** (Render secret güncellemesi ya da
-   küçük bir KV) → restart sonrası bile kendini toparlar. *En değerli adım.*
-2. `apikey`'i otomatik keşfet (sitenin HTML/JS'inden anon anahtar) → ayar gerekmez.
-3. `/yenile`: sayfa daha iyi bir token ürettiyse onu da uygula
-   (`apply_capture_to_settings` şu an yalnız `logged_in` ise çerezi yazar).
-4. Token bitmesine 10 dk kala **tek** uyarı (spam değil).
+1. ✅ **Refresh token süreç dışında saklanıyor (`app/upstream/state_store.py`):**
+   `UPSTREAM_STATE_FILE` (yerel atomik dosya) ve opsiyonel `RENDER_API_KEY` +
+   `RENDER_SERVICE_ID` (Render env senkronizasyonu) ile restart sonrası dönmüş
+   refresh token korunur; kullanıcı `.env`'e daha yeni bir cURL koyarsa yeni
+   tohum tercih edilir.
+2. ✅ **`apikey` otomatik keşfediliyor (`discover_refresh_api_key`):**
+   Upstream `apikey` istediğinde sitenin HTML ve Next.js script'lerinden public
+   anon anahtar otomatik çekilir; `/yenile` sırasında ağ isteklerinden de
+   yakalanır.
+3. ✅ **`/yenile` daha taze token'ı da uyguluyor (`_has_fresher_token`):**
+   `apply_capture_to_settings` yalnız `logged_in` değil, yakalanan çerezde daha
+   ileri `exp` süreli bir `access_token` veya yeni `refresh_token` varsa onu da
+   uygular.
+4. ✅ **Token bitmesine 10 dk kala tek uyarı (`maybe_warn_expiring_token`):**
+   Otomatik yenileme yapılamazsa ve süre ≤10 dk'ya inerse token başına yalnızca
+   bir kez uyarı gönderilir.
+5. ✅ **Canlı istemci senkronizasyonu ve reaktif 401 kurtarma:**
+   Token yenilendiğinde `AccountPool` ve `UpstreamClient` cookie jar'ları anında
+   tazelenir; istek sırasında 401 alınırsa hata dönmeden önce anında refresh
+   denenip istek tekrarlanır.
 
 ## 8. Komut/akış özeti (bir cümle)
 

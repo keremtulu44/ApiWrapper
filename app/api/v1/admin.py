@@ -160,6 +160,9 @@ async def update_upstream_cookie(
     upstream.breaker.reset()
     await sessions.clear()
     recaptcha.invalidate()
+    from app.upstream.state_store import sync_render_env
+
+    await sync_render_env(settings)
     logger.info(
         "upstream_cookie_applied",
         fields=changed,
@@ -188,6 +191,9 @@ class UpstreamCurlPayload(BaseModel):
 async def refresh_upstream_credentials(
     request: Request,
     settings: Settings = Depends(get_settings_dep),
+    upstream: UpstreamClient = Depends(get_upstream),
+    accounts: AccountPool = Depends(get_accounts),
+    sessions: SessionManager = Depends(get_sessions),
 ) -> dict[str, Any]:
     """`refresh_token` ile erişim token'ını yeniler (deploy gerekmez).
 
@@ -208,13 +214,70 @@ async def refresh_upstream_credentials(
             "endpoint_path": outcome.endpoint_path,
             "refresh_state": state,
         }
+    account_changes = accounts.reload_credentials(settings)
+    dropped_clients = await upstream.reset_account_clients()
+    upstream.breaker.reset()
+    await sessions.clear()
     request.app.state.recaptcha.invalidate()
     return {
         "status": "refreshed",
         "expires_in": outcome.expires_in,
         "endpoint_path": outcome.endpoint_path,
-        "note": "Yeni token bellekte; kalıcı olması için Render'daki çerezi de güncelleyin.",
+        "accounts_updated": account_changes,
+        "clients_reset": dropped_clients,
+        "notes": outcome.notes,
+        "note": "Yeni token bellekte ve aktif istemcilerde güncellendi.",
         "refresh_state": state,
+    }
+
+
+class UpstreamApiKeyPayload(BaseModel):
+    """Supabase/GoTrue yenileme `apikey` (anon anahtar) gövdesi. Boşsa otomatik keşfedilir."""
+
+    apikey: str = Field(default="", max_length=4096)
+
+
+@router.post("/upstream/apikey", summary="Set or auto-discover upstream refresh apikey")
+async def update_upstream_apikey(
+    payload: UpstreamApiKeyPayload,
+    settings: Settings = Depends(get_settings_dep),
+) -> dict[str, Any]:
+    """Token yenileme için gereken `apikey` (Supabase anon anahtarı) değerini ayarlar
+    veya boş gönderilirse sitenin HTML/JS'inden otomatik keşfeder.
+    """
+    from app.upstream.refresh import discover_refresh_api_key
+    from app.upstream.state_store import save_runtime_state, sync_render_env
+
+    provided = (payload.apikey or "").strip()
+    if provided:
+        settings.upstream_refresh_api_key = provided
+        save_runtime_state(settings, source="apikey_manual")
+        await sync_render_env(settings)
+        return {
+            "status": "applied",
+            "source": "manual",
+            "has_api_key": True,
+            "length": len(provided),
+        }
+
+    discovered = await discover_refresh_api_key(settings)
+    if discovered:
+        save_runtime_state(settings, source="apikey_discovered")
+        await sync_render_env(settings)
+        return {
+            "status": "discovered",
+            "source": "auto",
+            "has_api_key": True,
+            "length": len(discovered),
+        }
+    return {
+        "status": "not_found",
+        "source": None,
+        "has_api_key": bool((settings.upstream_refresh_api_key or "").strip()),
+        "detail": (
+            "Sitenin ana sayfasından anon anahtar otomatik keşfedilemedi. "
+            "Anahtarı biliyorsanız /apikey <anahtar> ile doğrudan verebilirsiniz."
+        ),
     }
 
 
@@ -252,6 +315,9 @@ async def update_upstream_curl(
     upstream.breaker.reset()
     await sessions.clear()
     request.app.state.recaptcha.invalidate()
+    from app.upstream.state_store import sync_render_env
+
+    await sync_render_env(settings)
 
     logger.info(
         "upstream_curl_applied",
@@ -303,12 +369,16 @@ async def capture_upstream_session(
         ) from exc
 
     changed = apply_capture_to_settings(settings, result)
-    if "upstream_cookie" in changed:
+    if changed:
         accounts.reload_credentials(settings)
         await upstream.reset_account_clients()
         upstream.breaker.reset()
-        await sessions.clear()
-        recaptcha.invalidate()
+        if "upstream_cookie" in changed:
+            await sessions.clear()
+            recaptcha.invalidate()
+        from app.upstream.state_store import sync_render_env
+
+        await sync_render_env(settings)
 
     logger.info(
         "upstream_capture",
@@ -432,8 +502,13 @@ async def auth_diagnostics(
     effective = settings.upstream_access_token.strip() or token
     refresh_token = extract_refresh_token(
         settings.upstream_cookie, cookie_names=settings.upstream_token_cookie_names
+    ) or (
+        settings.upstream_refresh_token.strip()
+        if slot is None or slot <= 1
+        else ""
     )
     header_value = build_authorization(settings)
+    from app.services.token_refresh import refresh_state
 
     # Kullanılan token `UPSTREAM_AUTH_FROM_COOKIE` kapalıyken boş görünebilir;
     # teşhis için çerezdeki token **her durumda** ayrıca okunur. Aksi hâlde
@@ -465,6 +540,12 @@ async def auth_diagnostics(
             "leeway_seconds": settings.upstream_refresh_leeway_seconds,
             "has_api_key": bool((settings.upstream_refresh_api_key or "").strip()),
             "configured_url": bool((settings.upstream_refresh_url or "").strip()),
+            "state_file_configured": bool((settings.upstream_state_file or "").strip()),
+            "render_sync_configured": bool(
+                (settings.render_api_key or "").strip()
+                and (settings.render_service_id or "").strip()
+            ),
+            "state": refresh_state(),
         },
         # Kullanılan token'dan bağımsız: çerezdeki oturum token'ı ne durumda?
         "cookie_token": {

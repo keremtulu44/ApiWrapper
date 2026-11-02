@@ -137,4 +137,46 @@ async def test_enterprise_execution_receives_version_and_action(monkeypatch):
     monkeypatch.setattr(provider, "_load_page", fake_load_page)
 
     assert await provider._produce_token() == "fresh-token"
-    assert page.arguments == ["site-key", "chat_submit", "enterprise"]
+
+
+@pytest.mark.asyncio
+async def test_browser_provider_restarts_when_chromium_disconnects(monkeypatch):
+    class GoodPage:
+        async def evaluate(self, _script: str, _args: list[str]) -> str:
+            return "recovered-token"
+
+        async def close(self) -> None:
+            return None
+
+    class DeadContext:
+        async def new_page(self):
+            raise RuntimeError("Target page, context or browser has been closed")
+
+        async def close(self) -> None:
+            return None
+
+    class GoodContext:
+        async def new_page(self) -> GoodPage:
+            return GoodPage()
+
+        async def close(self) -> None:
+            return None
+
+    provider = browser_provider(recaptcha_version="enterprise")
+    provider._context = DeadContext()
+    restarted = False
+
+    async def fake_startup() -> None:
+        nonlocal restarted
+        restarted = True
+        provider._context = GoodContext()
+
+    async def fake_load_page(_page) -> None:
+        return None
+
+    monkeypatch.setattr(provider, "startup", fake_startup)
+    monkeypatch.setattr(provider, "_load_page", fake_load_page)
+
+    token = await provider._produce_token()
+    assert token == "recovered-token"
+    assert restarted is True

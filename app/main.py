@@ -32,6 +32,7 @@ from app.services.token_refresh import run_token_refresher
 from app.telegram.bot import TelegramSettings, run_from_settings
 from app.upstream.client import UpstreamClient
 from app.upstream.curl_runtime import apply_upstream_curl
+from app.upstream.state_store import restore_runtime_state
 
 logger = get_logger(__name__)
 
@@ -95,13 +96,21 @@ def _embedded_telegram_settings(settings: Settings) -> TelegramSettings | None:
 
 
 async def _run_embedded_telegram(settings: TelegramSettings) -> None:
-    try:
-        await run_from_settings(settings)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        # httpx hata metni Telegram token'lı URL taşıyabilir; yalnız türü logla.
-        logger.error("telegram_bot_stopped_unexpectedly", error_type=type(exc).__name__)
+    while True:
+        try:
+            await run_from_settings(settings)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # httpx hata metni Telegram token'lı URL taşıyabilir; yalnız türü logla
+            # ve kısa bir beklemeden sonra botu yeniden başlat (Render'da kalıcı
+            # olarak susmasını önler).
+            logger.error(
+                "telegram_bot_restarting_after_error",
+                error_type=type(exc).__name__,
+            )
+            await asyncio.sleep(5)
 
 
 @contextlib.asynccontextmanager
@@ -159,11 +168,19 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             _run_embedded_telegram(telegram_settings), name="telegram-bot"
         )
 
+    alerter = build_alerter(settings)
+
     refresh_task: asyncio.Task[None] | None = None
     if settings.upstream_refresh_enabled:
-        # Erişim token'ı ~1 saatte ölüyor: süresi yaklaşınca kendiliğinden yenile.
+        # Erişim token'ı ~1 saatte ölüyor: süresi yaklaşınca kendiliğinden yenile
+        # ve yeni token/çerezi AccountPool + UpstreamClient jar'larına aktar.
         refresh_task = asyncio.create_task(
-            run_token_refresher(settings),
+            run_token_refresher(
+                settings,
+                accounts=accounts,
+                upstream=upstream,
+                alerter=alerter,
+            ),
             name="upstream-token-refresh",
         )
 
@@ -171,7 +188,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.upstream_keepalive_interval_seconds > 0:
         # Aynı görev hem canlılık denemesi hem teşhis/bildirim kaynağıdır.
         keepalive_task = asyncio.create_task(
-            run_upstream_keepalive(settings, alerter=build_alerter(settings)),
+            run_upstream_keepalive(settings, alerter=alerter),
             name="upstream-keepalive",
         )
 
@@ -210,6 +227,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     """Uygulamayı oluşturur (testler kendi Settings'ini geçebilir)."""
     settings = settings or get_settings()
     settings, upstream_curl_model_id = apply_upstream_curl(settings)
+    restore_runtime_state(settings)
     configure_logging(settings.log_level, settings.log_json)
 
     app = FastAPI(

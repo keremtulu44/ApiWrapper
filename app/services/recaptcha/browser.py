@@ -115,13 +115,26 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
             raise RecaptchaError(f"Browser startup failed: {exc}") from exc
         logger.info("recaptcha_browser_started")
 
+    def _is_alive(self) -> bool:
+        """Tarayıcı bağlamı ve varsa Chromium alt süreci hâlâ bağlı mı?"""
+        if self._context is None:
+            return False
+        if self._browser is not None and hasattr(self._browser, "is_connected"):
+            try:
+                return bool(self._browser.is_connected())
+            except Exception:
+                return False
+        return True
+
     async def browser_context(self) -> Any:
         """Yakalama (oturum tazeleme) için mevcut tarayıcı bağlamını döndürür.
 
         Aynı Chromium kullanılır: Render'da ikinci bir tarayıcı belleğe sığmaz.
+        Chromium alt süreci çöktüyse otomatik yeniden başlatılır.
         """
         async with self._lock:
-            if self._context is None:
+            if not self._is_alive():
+                await self.shutdown()
                 await self.startup()
             return self._context
 
@@ -138,11 +151,20 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
 
     async def _produce_token(self) -> str:
         async with self._lock:
-            if self._context is None:
+            if not self._is_alive():
+                await self.shutdown()
                 await self.startup()
             assert self._context is not None
 
-            page = await self._context.new_page()
+            try:
+                page = await self._context.new_page()
+            except Exception:
+                # Render'da uzun süreli çalışmada Chromium renderer/browser
+                # kapanmış olabilir: temiz yeniden başlatıp bir kez daha dene.
+                await self.shutdown()
+                await self.startup()
+                assert self._context is not None
+                page = await self._context.new_page()
             try:
                 await self._load_page(page)
                 token = await asyncio.wait_for(

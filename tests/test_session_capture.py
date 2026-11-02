@@ -722,3 +722,27 @@ def test_inspect_never_echoes_cookie_values():
     assert "refresh_token" not in serialized.replace("refresh_token_found", "")
     assert "l6lb6efhioff" not in serialized
     assert _jwt() not in serialized
+
+
+def test_apply_capture_applies_fresher_token_even_when_logged_in_is_false():
+    expired = _jwt(expired=True)
+    fresh = _jwt(expired=False)
+    settings = make_settings(
+        upstream_cookie=f"arena-auth-prod-v1.0={expired}",
+        upstream_access_token=expired,
+    )
+    result = CaptureResult(
+        cookies=f"arena-auth-prod-v1.0={fresh}",
+        logged_in=False,
+        login_redirect=False,
+        refresh_api_key="discovered-anon-key",
+    )
+
+    changed = apply_capture_to_settings(settings, result)
+
+    assert "upstream_cookie" in changed
+    assert "upstream_access_token" in changed
+    assert "upstream_refresh_api_key" in changed
+    assert settings.upstream_access_token == fresh
+    assert settings.upstream_refresh_api_key == "discovered-anon-key"
+

@@ -44,6 +44,7 @@ from app.upstream.curl_import import (  # noqa: E402
     load_body,
     parse_curl,
 )
+from app.upstream.session_capture import inspect_cookie  # noqa: E402
 
 __all__ = [
     "CAPTCHA_FIELDS",
@@ -460,6 +461,33 @@ def main() -> int:
                 f"  (models.yaml dokunulmadı; model kimlikleri hesap başına değil. "
                 f"Bu cURL'deki modelAId={model_id})"
             )
+
+    if env.get("UPSTREAM_COOKIE"):
+        report = inspect_cookie(env["UPSTREAM_COOKIE"])
+        print("\n=== Sürdürülebilirlik & Otomatik Yenileme ===")
+        families = report.get("chunked_families")
+        if isinstance(families, dict) and families:
+            shown = ", ".join(f"{k} ({v} parça)" for k, v in families.items())
+            print(f"  Parçalı oturum çerezi : {shown}")
+        if report.get("access_token_found"):
+            rem = report.get("access_token_expires_in_seconds")
+            if isinstance(rem, int) and rem > 0:
+                print(f"  Erişim token'ı        : bulundu (≈{rem // 60} dk geçerli)")
+            elif report.get("access_token_expired"):
+                print("  Erişim token'ı        : bulundu ama SÜRESİ DOLMUŞ")
+            else:
+                print("  Erişim token'ı        : bulundu")
+        if report.get("refresh_token_found"):
+            print(
+                "  Refresh token         : ✓ VAR (wrapper her saat kendi kendine "
+                "yenileyecek)"
+            )
+        else:
+            print(
+                "  Refresh token         : ⚠ YOK (oturum ~1 saat sonra sona erebilir)"
+            )
+        for problem in report.get("problems") or []:
+            print(f"  ! {problem}")
 
     if warnings:
         print("\n=== Uyarılar ===")
