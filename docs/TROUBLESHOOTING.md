@@ -22,6 +22,9 @@ Amaç her arızada log okumaya sıfırdan başlamamak.
 | Telegram `/ping` | Wrapper `/healthz` **+ son upstream kontrolünün saati/sonucu** |
 | Telegram `/tani` | Çerez adları, oturum adayı, çerezdeki/kullanılan token, refresh token **+ tek satır "ne yapmalı"** |
 
+Genel zihinsel model (hangi katman kendiliğinden tazelenir):
+**[`docs/BIG_PICTURE.md`](BIG_PICTURE.md)**.
+
 Çerezlerin hangisi ne kadar yaşar, hangisi elle tazelenmeli:
 **[`docs/COOKIE_LIFECYCLE.md`](COOKIE_LIFECYCLE.md)**.
 
