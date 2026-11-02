@@ -10,7 +10,8 @@ OpenAI-compatible istemcilerle çalışır.
 ```
 
 Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** ·
-arıza/teşhis için: **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)**
+arıza/teşhis için: **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** ·
+son uçtan uca denetim kaydı: **[`docs/AUDIT_2026_11.md`](docs/AUDIT_2026_11.md)**
 
 > **Merge hedefi:** tüm değişiklikler **`arena/c55e601b-apiwrapper`** dalına
 > merge edilir; Render bu dalı deploy eder, **`main` dokunulmaz**.

@@ -198,9 +198,27 @@ loglarda görünür.
 Oturum cookie'si/token'ı ölmüş. `/v1/admin/auth?slot=N` ile hangi hesabın
 düştüğüne bakın (`expires_in_seconds: -1` = süresi dolmuş).
 
+* `UPSTREAM_ACCESS_TOKEN` doluysa `Authorization` başlığı **çerezden önce** tercih
+  edilir. Bu yüzden `/cookie` uygulandığında çerezdeki token aynı anda
+  `upstream_access_token` alanına da yazılır; yanıtta
+  `fields: ["upstream_cookie","upstream_access_token"]` görürsünüz. Yalnızca
+  `upstream_cookie` görüyorsanız çerezde token yok (çerez adıyla oturum
+  taşınıyor) ve elle verilmiş token korunur.
 * Çok hesaplı kurulumda istek otomatik olarak **sonraki hesaba devredilir**
-  (`account_switched ... reason=auth_rejected`); tek hesapta cURL tazelemek gerekir.
+  (`account_switched ... reason=auth_rejected`); tek hesapta kimlik tazelemek gerekir.
 * Token sabit süreliyse (genelde ~1 saat) `UPSTREAM_CURL`'ü yenilemek tek çözümdür.
+
+### 401 mi 429 mu? (karıştırılan iki arıza)
+
+| Gördüğünüz | Gerçek sebep | Yapılacak |
+|---|---|---|
+| `502 upstream_unauthorized` | Oturum öldü (401 / `user not found`) | Kimliği tazeleyin: `/cookie`, `/curl` veya `/yenile` |
+| `429 upstream_quota_reached` + `retry_after` | Hesap gerçekten kilitli, upstream bunu **metinle** söyledi | Bekleyin; `Retry-After` süresi dolmadan denemeyin |
+| `429` + `"All upstream accounts are temporarily locked ... Earliest retry in 0s"` | **Eski sürüm hatası**: ölü oturum kota gibi raporlanıyordu | Güncel sürümde bu mesaj 401 aldığınızda görünmez; görüyorsanız önce kimliği tazeleyin |
+
+> 2026-11 sürümünde düzeltildi: tek hesaplı kurulumda 401 alındığında hesap havuzu
+> boş kaldığı için orijinal hata `UpstreamQuotaExceeded` ile eziliyor ve istemci
+> "kota doldu" görüyordu. Artık 401 her zaman `upstream_unauthorized` döner.
 
 ---
 
