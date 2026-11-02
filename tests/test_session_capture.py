@@ -503,6 +503,17 @@ async def test_telegram_cookie_command_posts_the_header():
         calls.append(
             {"path": request.url.path, "json": json.loads(request.content)}
         )
+        if "dry_run" in request.url.query.decode():
+            return httpx.Response(
+                200,
+                json={
+                    "status": "inspected",
+                    "safe_to_apply": True,
+                    "cookie_names": ["arena-auth-prod-v1.1"],
+                    "session_cookie_found": True,
+                    "access_token_found": True,
+                },
+            )
         return httpx.Response(200, json={"status": "applied", "fields": ["upstream_cookie"]})
 
     async with (
@@ -579,3 +590,87 @@ def test_capture_flags_login_redirect_separately():
     assert result.login_redirect is True
     assert result.session_cookie_found is True
     assert "giriş ekranına yönlendi" in result.reason
+
+
+# ------------------------------- telefon: eklentinin JSON dışa aktarımı
+def test_cookie_export_json_is_accepted():
+    """Cookie-Editor "Export → JSON" çıktısı doğrudan uygulanabilmeli."""
+    import json as jsonlib
+
+    from app.upstream.session_capture import apply_cookie_to_settings, cookie_text_from_export
+
+    exported = jsonlib.dumps(
+        [
+            {"name": "arena-auth-prod-v1.0", "value": "abc.def.ghi", "domain": "upstream.test"},
+            {"name": "__cf_bm", "value": "bm", "domain": "upstream.test"},
+        ]
+    )
+    assert cookie_text_from_export(exported) == "arena-auth-prod-v1.0=abc.def.ghi; __cf_bm=bm"
+
+    settings = make_settings()
+    changed = apply_cookie_to_settings(settings, exported)
+    assert "upstream_cookie" in changed
+    assert settings.upstream_cookie == "arena-auth-prod-v1.0=abc.def.ghi; __cf_bm=bm"
+
+
+def test_broken_json_falls_back_to_header_parsing():
+    from app.upstream.session_capture import cookie_text_from_export
+
+    # JSON gibi başlayıp bozulmuş metin: başlık satırı gibi ele alınır.
+    assert cookie_text_from_export("[bozuk") == "[bozuk"
+    # Normal başlık satırı değişmeden geçer.
+    assert cookie_text_from_export("Cookie: a=1; b=2") == "Cookie: a=1; b=2"
+
+
+# ------------------------------- uygulamadan önce doğrulama (dry run)
+def test_admin_cookie_dry_run_reports_names_without_applying():
+    import base64
+    import json as jsonlib
+    import time as timelib
+
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    def seg(payload: dict) -> str:
+        return base64.urlsafe_b64encode(jsonlib.dumps(payload).encode()).decode().rstrip("=")
+
+    token = f"{seg({'alg': 'HS256'})}.{seg({'exp': int(timelib.time()) + 600})}.sig"
+    settings = make_settings(upstream_cookie=OLD_COOKIE)
+
+    with TestClient(create_app(settings)) as client:
+        client.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        response = client.post(
+            "/v1/admin/upstream/cookie?dry_run=true",
+            json={"cookie": f'[{{"name":"arena-auth-prod-v1.0","value":"{token}"}}]'},
+        )
+        body = response.json()
+
+    assert response.status_code == 200
+    assert body["status"] == "inspected" and body["applied"] is False
+    assert body["session_cookie_found"] is True
+    assert body["access_token_found"] is True
+    assert body["safe_to_apply"] is True
+    assert token not in response.text, "token yanıta sızmamalı"
+    # Uygulanmadı: çalışan çerez değişmedi.
+    assert settings.upstream_cookie == OLD_COOKIE
+
+
+def test_admin_cookie_dry_run_flags_an_anonymous_set():
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    settings = make_settings(upstream_cookie=OLD_COOKIE)
+    with TestClient(create_app(settings)) as client:
+        client.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        body = client.post(
+            "/v1/admin/upstream/cookie?dry_run=true",
+            json={"cookie": "__cf_bm=bm; _dd_s=rum"},
+        ).json()
+
+    assert body["session_cookie_found"] is False
+    assert body["safe_to_apply"] is False
+    assert "__cf_bm" in body["cookie_names"]
+    assert "TÜM çerezleri" in body["next"]
+    assert settings.upstream_cookie == OLD_COOKIE

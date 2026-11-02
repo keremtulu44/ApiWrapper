@@ -377,14 +377,74 @@ async def capture_with_provider(provider: Any, settings: Settings) -> CaptureRes
         await playwright.stop()
 
 
+def cookie_text_from_export(raw: str) -> str:
+    """Çerez dışa aktarımını (JSON veya başlık satırı) `ad=değer; ...` hâline çevirir.
+
+    Mobilde iki biçimle karşılaşılıyor:
+
+    * `ad=değer; ad2=değer2` — tarayıcı başlığı veya eklentinin "Header String"i
+    * `[{"name": "ad", "value": "değer", ...}, ...]` — Cookie-Editor "Export → JSON"
+
+    JSON biçimi satır kaydırmaları ve tırnaklar yüzünden kopyalanırken bozulabiliyor;
+    ikisini de kabul etmek telefonda tek deneme şansını boşa harcamamak için.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return ""
+    if text.startswith("["):
+        import json
+
+        try:
+            parsed = json.loads(text)
+        except json.JSONDecodeError:
+            # Bozuk JSON: başlık satırı gibi değerlendirilsin (aşağıda reddedilir).
+            return text
+        if isinstance(parsed, list):
+            items = [item for item in parsed if isinstance(item, dict)]
+            return cookie_header_from(items)
+    return text
+
+
+def inspect_cookie(raw: str) -> dict[str, object]:
+    """Çerez metnini **uygulamadan** inceler: hangi adlar var, oturum çerezi var mı?
+
+    Telefonda çerez göndermeden önce doğrulama imkânı: yanlış/eksik seti
+    uygulamak, çalışan oturumun üzerine yazma riski taşır. Bu fonksiyon hiçbir
+    şeyi değiştirmez ve yalnızca **adları** (değer değil) döndürür.
+    """
+    text = cookie_text_from_export(raw).strip().strip("'\"")
+    if text.lower().startswith("cookie:"):
+        text = text.split(":", 1)[1].strip()
+    cookies = parse_cookie_header(text)
+    normalized = cookie_header_from(
+        [{"name": name, "value": value} for name, value in cookies.items()]
+    )
+    token = extract_access_token(normalized) if normalized else None
+    session_names = [
+        name
+        for name in cookies
+        if any(hint in name.lower() for hint in _SESSION_COOKIE_HINTS)
+    ]
+    return {
+        "cookie_count": len(cookies),
+        "cookie_names": list(cookies)[:20],
+        "session_cookie_names": session_names[:10],
+        "session_cookie_found": bool(session_names),
+        "access_token_found": bool(token),
+        "access_token_expired": is_token_expired(token) if token else None,
+        # Oturum taşımayan bir set uygulanırsa çalışan oturum ezilebilir.
+        "safe_to_apply": bool(session_names) or bool(token),
+    }
+
+
 def apply_cookie_to_settings(settings: Settings, raw: str) -> list[str]:
     """Ham `Cookie` başlığını doğrulayıp çalışan ayarlara uygular.
 
     Mobilde cURL üretmek zor olduğu için kısa yol: yalnızca çerez satırı
     gönderilir. Oturum çerezi gibi görünmeyen metin reddedilir ki yanlışlıkla
-    çalışan oturum silinmesin.
+    çalışan oturum silinmesin. Eklentinin JSON dışa aktarımı da kabul edilir.
     """
-    text = (raw or "").strip().strip("'\"")
+    text = cookie_text_from_export(raw).strip().strip("'\"")
     if text.lower().startswith("cookie:"):
         text = text.split(":", 1)[1].strip()
     cookies = parse_cookie_header(text)

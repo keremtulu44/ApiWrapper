@@ -32,6 +32,7 @@ _HELP = (
     "Bir metin gönderin; wrapper /v1/chat/completions üzerinden yanıt üretir.\n"
     "Komutlar: /ping (wrapper + son upstream kontrolü), /yenile (sunucu "
     "tarayıcısıyla oturumu tazele), /cookie <çerez> ya da /curl <cURL>, /help.\n"
+    "/cookie! <çerez> = kontrolü atlayıp zorla uygula.\n"
     "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
 )
 
@@ -224,6 +225,9 @@ class TelegramBot:
         if command in {"/cookie", "/cerez"}:
             await self.send_cookie(chat_id, text)
             return
+        if command in {"/cookie!", "/cerez!", "/cookie-force", "/cerezforce"}:
+            await self.send_cookie(chat_id, text, force=True)
+            return
         if text.startswith("/"):
             await self.send_text(chat_id, "Bilinmeyen komut. /help yazın.")
             return
@@ -251,8 +255,13 @@ class TelegramBot:
         lines.append(describe_probe(last_probe()))
         await self.send_text(chat_id, "\n".join(lines))
 
-    async def send_cookie(self, chat_id: int, text: str) -> None:
-        """Yalnızca çerez satırıyla oturumu tazeler (mobilde en kolay yol)."""
+    async def send_cookie(self, chat_id: int, text: str, *, force: bool = False) -> None:
+        """Yalnızca çerez satırıyla oturumu tazeler (mobilde en kolay yol).
+
+        `force=False` iken çerez önce **uygulanmadan** incelenir: oturum çerezi
+        içermeyen bir set (ör. yalnız `__cf_bm`) çalışan oturumun üzerine
+        yazmasın. Zorlamak için `/cookie! <çerez>`.
+        """
         parts = text.split(maxsplit=1)
         body = parts[1].strip() if len(parts) > 1 else ""
         if not body:
@@ -263,6 +272,11 @@ class TelegramBot:
                 "kopyalayıp yapıştırın; cURL gerekmez.",
             )
             return
+        if not force:
+            prefix = await self._cookie_precheck(chat_id, body)
+            if prefix is None:
+                return
+
         try:
             response = await self.wrapper.post(
                 "/v1/admin/upstream/cookie", json={"cookie": body}
@@ -294,6 +308,46 @@ class TelegramBot:
             chat_id,
             f"✓ Çerez uygulandı{detail}. Şimdi bir mesaj atarak test edin.",
         )
+
+    async def _cookie_precheck(self, chat_id: int, body: str) -> str | None:
+        """Çerezi uygulamadan incele; uygunsuzsa uyarıp `None` döndürür.
+
+        Dönen değer `""` ise akış devam eder (uygulanabilir). Ağ hatasında
+        engellemeyiz: karar veremiyorsak kullanıcıyı kilitlemek yanlış olur.
+        """
+        try:
+            response = await self.wrapper.post(
+                "/v1/admin/upstream/cookie?dry_run=true", json={"cookie": body}
+            )
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            return ""
+
+        if response.status_code != 200 or not isinstance(payload, dict):
+            return ""
+
+        names = payload.get("cookie_names") or []
+        shown = ", ".join(str(name) for name in names[:8]) or "(yok)"
+        if payload.get("safe_to_apply"):
+            if payload.get("access_token_found") and payload.get("access_token_expired"):
+                await self.send_text(
+                    chat_id,
+                    "⚠ Çerezdeki token'ın süresi dolmuş görünüyor; yine de "
+                    "uygulanıyor. 401 alırsan tarayıcıda yeniden giriş yapıp "
+                    "taze çerez gönder.",
+                )
+            return ""
+
+        await self.send_text(
+            chat_id,
+            "⛔ Bu çerez uygulanmadı: içinde oturum taşıyan çerez yok "
+            f"(gelenler: {shown}).\n"
+            "Bu hâliyle uygulanırsa **çalışan oturumun üzerine yazılabilir**.\n"
+            "Giriş yapmış tarayıcıdan TÜM çerezleri aktarın (auth/session/token "
+            "adlı çerez mutlaka gelmeli).\n"
+            "Yine de zorlamak isterseniz: /cookie! <çerez>",
+        )
+        return None
 
     async def capture_upstream_session(self, chat_id: int) -> None:
         """Sunucudaki Chromium ile taze oturum yakalar (telefonda DevTools gerekmez)."""
@@ -365,7 +419,11 @@ class TelegramBot:
                 chat_id,
                 "Kullanım: /curl <cURL>\n"
                 "Tarayıcıda Network → create-evaluation isteği → Copy as cURL, "
-                "ardından komutun yanına yapıştırın.",
+                "ardından komutun yanına yapıştırın.\n"
+                "İstek listede görünmüyorsa: sayfayı yenileyip **ilk** mesajı "
+                "gönderin (sonraki mesajlar açık akıştan gider, yeni istek "
+                "oluşmaz) ya da Cookie-Editor → Export → Header String → "
+                "/cookie <çerez>.",
             )
             return
         if "curl" not in body.lower():
@@ -427,6 +485,10 @@ class TelegramBot:
             "Değişiklik bellekte; kalıcı olması için Render'daki UPSTREAM_CURL'ü de "
             "güncelleyin."
         )
+        warnings = payload.get("warnings") or []
+        if isinstance(warnings, list):
+            for item in warnings[:3]:
+                lines.append(f"⚠ {item}")
         lines.append("Şimdi bir mesaj atarak test edin.")
         await self.send_text(chat_id, "\n".join(lines))
 

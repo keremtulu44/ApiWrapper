@@ -38,6 +38,7 @@ from app.upstream.session_capture import (
     apply_capture_to_settings,
     apply_cookie_to_settings,
     capture_with_provider,
+    inspect_cookie,
 )
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(api_key_dependency)])
@@ -113,6 +114,7 @@ class UpstreamCookiePayload(BaseModel):
 @router.post("/upstream/cookie", summary="Swap upstream cookies without a cURL")
 async def update_upstream_cookie(
     payload: UpstreamCookiePayload,
+    request: Request,
     settings: Settings = Depends(get_settings_dep),
     upstream: UpstreamClient = Depends(get_upstream),
     accounts: AccountPool = Depends(get_accounts),
@@ -121,12 +123,33 @@ async def update_upstream_cookie(
 ) -> dict[str, Any]:
     """Yalnızca çerez setini uygular — telefonda cURL üretmek zor olduğunda.
 
-    Çerez başlığı tek satırdır ve tarayıcı eklentisi/oturum dışa aktarma aracıyla
-    kopyalanabilir. Ham değer yanıta ve loglara yazılmaz.
+    Çerez başlığı tek satırdır ve tarayıcı eklentisi/dışa aktarma aracıyla
+    kopyalanabilir; eklentinin JSON dışa aktarımı da kabul edilir. Ham değer
+    yanıta ve loglara yazılmaz.
+
+    `?dry_run=true` ile **uygulamadan** inceleme yapılır: hangi çerez adları
+    geldi, oturum çerezi var mı, token süresi dolmuş mu. Telefonda yanlış seti
+    uygulayıp çalışan oturumu ezmeyi önler.
     """
     from app.core.logging import get_logger
 
     logger = get_logger(__name__)
+
+    if request.query_params.get("dry_run", "").lower() in {"1", "true", "yes"}:
+        inspection = inspect_cookie(payload.cookie)
+        return {
+            "status": "inspected",
+            "dry_run": True,
+            "applied": False,
+            **inspection,
+            "next": (
+                "Çerez uygulanabilir: /upstream/cookie (dry_run olmadan) ile gönderin."
+                if inspection["safe_to_apply"]
+                else "Bu sette oturum çerezi yok; giriş yapmış tarayıcıdan TÜM "
+                "çerezleri aktarın. Bu hâliyle uygulanırsa çalışan oturum ezilebilir."
+            ),
+        }
+
     try:
         changed = apply_cookie_to_settings(settings, payload.cookie)
     except ValueError as exc:
@@ -156,6 +179,9 @@ class UpstreamCurlPayload(BaseModel):
     """Taze cURL metni (ham değer hiçbir yere loglanmaz/yanıtta dönmez)."""
 
     curl: str = Field(min_length=20, max_length=30000)
+    #: Yol sohbet akış ucu gibi görünmüyorsa varsayılan olarak canlı akış yolu
+    #: korunur; yolu da değiştirmek için bu bayrağı gönderin.
+    allow_path_change: bool = False
 
 
 @router.post("/upstream/curl", summary="Swap upstream credentials from a fresh cURL")
@@ -181,7 +207,9 @@ async def update_upstream_curl(
 
     logger = get_logger(__name__)
     try:
-        result = apply_curl_to_settings(settings, payload.curl)
+        result = apply_curl_to_settings(
+            settings, payload.curl, allow_path_change=payload.allow_path_change
+        )
     except ValueError as exc:
         raise InvalidRequestError(str(exc), param="curl") from exc
 
@@ -197,12 +225,14 @@ async def update_upstream_curl(
         accounts=sorted(account_changes),
         dropped_clients=dropped_clients,
     )
+    warnings = result.get("warnings") or []
     return {
         "status": "applied",
         "fields": result["fields"],
         "accounts_updated": account_changes,
         "clients_reset": dropped_clients,
         "upstream_model": result["model_id"],
+        "warnings": warnings,
         "note": (
             "Değişiklik bellekte uygulandı; kalıcı olması için Render'daki "
             "UPSTREAM_CURL secret'ını da aynı cURL ile güncelleyin."

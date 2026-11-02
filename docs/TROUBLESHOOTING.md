@@ -193,6 +193,27 @@ loglarda görünür.
 
 ---
 
+## 1c. Geliştirici araçlarında `create-evaluation` **görünmüyor**
+
+Şikâyet: "Network sekmesinde mesaj attım ama `create-evaluation` isteği yok."
+
+| Sebep | Nasıl anlaşılır | Çözüm |
+|---|---|---|
+| **Akış zaten açık** — ilk mesajdan sonra sohbet tek bir açık SSE bağlantısı üzerinden yürür, yeni HTTP isteği doğmaz | İlk mesajda istek vardı, sonrakilerde yok | Sayfayı **tam yenile** (F5) → **ilk** mesajı gönder |
+| Filtre kutusunda eski metin / `Fetch/XHR` dışı tür seçili | Ağ listesi neredeyse boş | Filtre kutusunu temizle, **All** seç; EventSource ise **Other** altında çıkar |
+| Yanlış sekme/frame | — | "Preserve log" açık olsun; iframe/Service Worker varsa "Group by frame" kapat |
+| İstek engellendi | Kırmızı `ERR_BLOCKED_BY_CLIENT` | Reklam engelleyiciyi bu site için kapat |
+| Uç nokta farklı adlandırılmış | `post-to-evaluation`, `evaluation`, `stream` arayın | Arama kutusuna `evaluation` yazın |
+| Mobil tarayıcı | Network paneli yok | `/yenile` ya da Cookie-Editor → `/cookie` |
+
+**Kısayol:** `create-evaluation` şart değil. Wrapper'ın asıl ihtiyacı `Cookie`
+başlığıdır:
+
+* **En hızlı:** Cookie-Editor → Export → *Header String* → `/cookie <satır>`
+* cURL'de `cookie` varsa çalışır; yol sohbet ucu değilse wrapper **canlı akış
+  yolunu korur** ve yanıtta `⚠` uyarı döner (`allow_path_change: true` ile
+  bilinçli olarak değiştirilebilir). Yani yanlış isteğin cURL'ü servisi bozmaz.
+
 ## 2. `HTTP 401` — `upstream_unauthorized`
 
 Oturum cookie'si/token'ı ölmüş. `/v1/admin/auth?slot=N` ile hangi hesabın

@@ -419,11 +419,18 @@ araç bunu açıkça söyler; o zaman elle cURL gerekir.
 Mobilde çerez/cURL üretmenin mümkün olup olmadığı ve adımları:
 **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)**.
 
-Elle uygulamak için: Telegram `/cookie <ad=değer; ...>` veya `/curl <cURL>`; API
-karşılığı `POST /v1/admin/upstream/cookie {"cookie": "..."}` ·
+Elle uygulamak için: Telegram `/cookie <ad=değer; ...>` (Cookie-Editor'ün
+*Header String* **veya** JSON çıktısı) ya da `/curl <cURL>`; API karşılığı
+`POST /v1/admin/upstream/cookie {"cookie": "..."}` ·
 `POST /v1/admin/upstream/curl {"curl": "..."}`. Değişiklik bellekte uygulanır
 (hesap cookie jar'ları kapatılır, oturum önbelleği temizlenir); kalıcı olması
 için Render'daki `UPSTREAM_CURL` da güncellenmelidir.
+
+`/cookie` artık **önce inceler** (`POST /v1/admin/upstream/cookie?dry_run=true`):
+gelen çerez adları, `session_cookie_found`, `access_token_found/expired` ve
+`safe_to_apply` döner; hiçbir değer yanıta yazılmaz ve canlı ayar değişmez.
+Oturum çerezi içermeyen bir set bot tarafından **uygulanmaz** (çalışan oturumu
+ezmesin); bilinçli olarak zorlamak için `/cookie! <çerez>`.
 
 Telegram `/ping` yalnızca `/healthz` demez; **son upstream kontrolünün** ne zaman
 ve hangi sonuçla çalıştığını da yazar (`✓ ... başarılı (HTTP 200)` /

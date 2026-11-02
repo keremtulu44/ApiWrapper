@@ -53,6 +53,40 @@ def test_apply_curl_to_settings_updates_fields_in_place_and_forgets_raw_curl():
     assert SECRET_COOKIE not in json.dumps(result["fields"])
 
 
+def page_curl(cookie: str = SECRET_COOKIE) -> str:
+    """Belge/ana sayfa isteğinin cURL'ü: çerez var, yol sohbet ucu değil."""
+    return f"curl 'https://upstream.test/' -H 'cookie: {cookie}'"
+
+
+def test_non_stream_curl_keeps_the_live_stream_path():
+    """Yanlış istek kopyalanırsa (ör. belge isteği) canlı akış yolu ezilmemeli.
+
+    Telefonda `create-evaluation` görünmeyip yanlış isteğin cURL'ü
+    yapıştırıldığında servis 404'e düşüyordu; çerez uygulanır, yol korunur.
+    """
+    settings = make_settings(
+        upstream_cookie="old=1",
+        upstream_stream_path="/nextjs-api/stream/create-evaluation",
+    )
+    result = apply_curl_to_settings(settings, page_curl())
+
+    assert settings.upstream_stream_path == "/nextjs-api/stream/create-evaluation"
+    assert "upstream_stream_path" not in result["fields"]
+    assert result["warnings"], "kullanıcı uyarılmalı"
+    assert settings.upstream_cookie == SECRET_COOKIE, "çerez yine de tazelenir"
+
+
+def test_non_stream_curl_can_change_path_only_when_allowed():
+    settings = make_settings(
+        upstream_cookie="old=1",
+        upstream_stream_path="/nextjs-api/stream/create-evaluation",
+    )
+    result = apply_curl_to_settings(settings, page_curl(), allow_path_change=True)
+
+    assert settings.upstream_stream_path == "/"
+    assert not result["warnings"]
+
+
 def test_apply_curl_refuses_requests_without_credentials():
     settings = make_settings(upstream_cookie="old=1")
     anonymous = "curl 'https://upstream.test/nextjs-api/stream/create-evaluation' --data-raw '{}'"
@@ -104,6 +138,29 @@ def test_admin_endpoint_applies_fresh_curl_without_redeploy():
         # Canlı ayarlar gerçekten değişti (servis nesnesi aynı).
         assert app.state.settings.upstream_cookie == SECRET_COOKIE
         assert app.state.accounts.accounts[0].cookie == SECRET_COOKIE
+
+
+def test_admin_endpoint_warns_but_keeps_path_for_page_curl():
+    settings = make_settings(
+        upstream_cookie="old=1",
+        upstream_stream_path="/nextjs-api/stream/create-evaluation",
+    )
+    app = create_app(settings)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/admin/upstream/curl",
+            json={"curl": page_curl()},
+            headers={"Authorization": f"Bearer {TEST_API_KEY}"},
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["warnings"]
+        assert "upstream_stream_path" not in body["fields"]
+        assert app.state.settings.upstream_stream_path == (
+            "/nextjs-api/stream/create-evaluation"
+        )
+        assert app.state.settings.upstream_cookie == SECRET_COOKIE
+        assert SECRET_COOKIE not in response.text
 
 
 def test_admin_endpoint_rejects_garbage_curl():
