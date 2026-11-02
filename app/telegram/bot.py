@@ -419,7 +419,11 @@ class TelegramBot:
                 chat_id,
                 "Kullanım: /curl <cURL>\n"
                 "Tarayıcıda Network → create-evaluation isteği → Copy as cURL, "
-                "ardından komutun yanına yapıştırın.",
+                "ardından komutun yanına yapıştırın.\n"
+                "İstek listede görünmüyorsa: sayfayı yenileyip **ilk** mesajı "
+                "gönderin (sonraki mesajlar açık akıştan gider, yeni istek "
+                "oluşmaz) ya da Cookie-Editor → Export → Header String → "
+                "/cookie <çerez>.",
             )
             return
         if "curl" not in body.lower():
@@ -481,6 +485,10 @@ class TelegramBot:
             "Değişiklik bellekte; kalıcı olması için Render'daki UPSTREAM_CURL'ü de "
             "güncelleyin."
         )
+        warnings = payload.get("warnings") or []
+        if isinstance(warnings, list):
+            for item in warnings[:3]:
+                lines.append(f"⚠ {item}")
         lines.append("Şimdi bir mesaj atarak test edin.")
         await self.send_text(chat_id, "\n".join(lines))
 

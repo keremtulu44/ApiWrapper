@@ -131,6 +131,13 @@ Safari'de HttpOnly çerezleri dışa aktarmanın pratik bir yolu yok. Seçenekle
 cURL'de hem `cookie` hem `authorization` başlığı varsa ikisi de uygulanır ve
 sonraki istekler tam kimlikle gider.
 
+**Yanlış istek kopyalarsanız** (ör. ana sayfanın kendisi) wrapper çerez/token'ı
+uygular ama **canlı akış yolunu korur** ve yanıtta uyarı döner; servis 404'e
+düşmez.
+
+`create-evaluation` listede yok mu? → [`docs/TROUBLESHOOTING.md`](TROUBLESHOOTING.md)
+bölüm **1c**.
+
 ### 3.5 İleri seviye: Termux + mitmproxy
 
 Telefonda `mitmproxy` çalıştırıp trafiği izlemek teknik olarak mümkündür ama sertifika

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from urllib.parse import urlsplit
+
 from app.core.config import MAX_ACCOUNT_SLOTS, Settings
 from app.core.logging import get_logger
-from app.upstream.curl_import import build_settings, parse_curl
+from app.upstream.curl_import import build_settings, looks_like_stream_path, parse_curl
 
 logger = get_logger(__name__)
 
@@ -45,19 +47,54 @@ def _runtime_fields() -> tuple[str, ...]:
     return tuple(dict.fromkeys(fields))
 
 
-def apply_curl_to_settings(settings: Settings, raw: str) -> dict[str, object]:
+def _curl_path(raw: str) -> str:
+    """cURL'ün URL yolunu döndürür; ayrıştırılamazsa boş metin."""
+    try:
+        parsed = parse_curl(raw)
+    except ValueError:
+        return ""
+    url = parsed.get("url") or ""
+    return urlsplit(url).path if url else ""
+
+
+def apply_curl_to_settings(
+    settings: Settings, raw: str, *, allow_path_change: bool = False
+) -> dict[str, object]:
     """Yeni bir cURL'ü **çalışan** ayarlara uygular (yeniden deploy gerekmez).
 
     Oturum düştüğünde tek yapılacak iş taze bir cURL'dir; her seferinde Render'da
     secret güncelleyip redeploy etmek yerine bu fonksiyon alanları yerinde
     değiştirir. Ham cURL hiçbir yere yazılmaz/loglanmaz; yalnızca hangi alanların
     değiştiği döner.
+
+    ``allow_path_change=False`` (varsayılan) iken, cURL'ün yolu sohbet akış
+    ucuna benzemiyorsa (telefonda yanlış istek — ör. belge isteği ``/`` —
+    kopyalanmışsa) **canlı akış yolu korunur**: çerez/token uygulanır, servis
+    yolu bozulmaz. Bilinçli değişiklik için ``allow_path_change=True``.
     """
     text = (raw or "").strip()
     if not text:
         raise ValueError("Boş cURL gönderildi.")
     candidate = settings.model_copy(update={"upstream_curl": text})
     updated, model_id = apply_upstream_curl(candidate)
+
+    warnings: list[str] = []
+    incoming_path = _curl_path(text)
+    if (
+        not allow_path_change
+        and incoming_path
+        and not looks_like_stream_path(incoming_path)
+        and settings.upstream_stream_path
+        and updated.upstream_stream_path != settings.upstream_stream_path
+    ):
+        warnings.append(
+            "Bu cURL sohbet akış isteği gibi görünmüyor (yol: "
+            f"{incoming_path}). Canlı akış yolu korundu "
+            f"({settings.upstream_stream_path}); yalnızca çerez/token uygulandı."
+        )
+        updated = updated.model_copy(
+            update={"upstream_stream_path": settings.upstream_stream_path}
+        )
 
     changed: list[str] = []
     for field in _runtime_fields():
@@ -67,8 +104,8 @@ def apply_curl_to_settings(settings: Settings, raw: str) -> dict[str, object]:
             changed.append(field)
     # Ham cURL bellekte tutulmaz: yalnızca çıkarılan alanlar yaşar.
     settings.upstream_curl = ""
-    logger.info("upstream_curl_hot_swapped", fields=changed)
-    return {"fields": changed, "model_id": model_id}
+    logger.info("upstream_curl_hot_swapped", fields=changed, warnings=len(warnings))
+    return {"fields": changed, "model_id": model_id, "warnings": warnings}
 
 
 def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:

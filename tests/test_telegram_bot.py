@@ -365,3 +365,43 @@ async def test_cookie_bang_forces_the_swap():
 
     assert applied_calls == 1
     assert "Çerez uygulandı" in sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_curl_command_shows_warnings_from_wrapper():
+    """Yanlış isteğin cURL'ü yapıştırıldığında kullanıcı uyarıyı görmeli."""
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "applied",
+                "fields": ["upstream_cookie"],
+                "accounts_updated": {},
+                "clients_reset": 0,
+                "warnings": [
+                    "Bu cURL sohbet akış isteği gibi görünmüyor (yol: /). "
+                    "Canlı akış yolu korundu."
+                ],
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message(
+            {"chat": {"id": 42}, "text": "/curl curl 'https://upstream.test/' -H 'cookie: a=b'"}
+        )
+
+    assert "⚠" in sent[-1]["text"]
+    assert "Canlı akış yolu korundu" in sent[-1]["text"]

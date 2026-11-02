@@ -268,7 +268,7 @@ def build_settings(
             "('create-evaluation' veya 'post-to-evaluation') sağ tıklayıp cURL'ü "
             "yeniden kopyalayın."
         )
-    elif split and not _looks_like_stream_path(split.path):
+    elif split and not looks_like_stream_path(split.path):
         warnings.append(
             f"URL yolu beklenen sohbet akış ucunu içermiyor: "
             f"{split.path or '/'}. Yanlış isteğin cURL'ü kopyalanmış olabilir "
@@ -405,13 +405,17 @@ def build_settings(
     return env, warnings, model_id
 
 
-def _looks_like_stream_path(path: str) -> bool:
+def looks_like_stream_path(path: str) -> bool:
     """cURL'ün sohbet akış ucundan alınmış olma ihtimalini sezgisel kontrol eder."""
     lowered = (path or "").lower()
     if any(hint in lowered for hint in _STREAM_PATH_HINTS):
         return True
     parts = [part for part in lowered.split("/") if part]
     return "stream" in parts
+
+
+#: Eski iç ad; dış çağrılar için `looks_like_stream_path` kullanın.
+_looks_like_stream_path = looks_like_stream_path
 
 
 def _stream_path_template(path: str, body: dict[str, Any]) -> str:

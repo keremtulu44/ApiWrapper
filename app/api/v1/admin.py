@@ -179,6 +179,9 @@ class UpstreamCurlPayload(BaseModel):
     """Taze cURL metni (ham değer hiçbir yere loglanmaz/yanıtta dönmez)."""
 
     curl: str = Field(min_length=20, max_length=30000)
+    #: Yol sohbet akış ucu gibi görünmüyorsa varsayılan olarak canlı akış yolu
+    #: korunur; yolu da değiştirmek için bu bayrağı gönderin.
+    allow_path_change: bool = False
 
 
 @router.post("/upstream/curl", summary="Swap upstream credentials from a fresh cURL")
@@ -204,7 +207,9 @@ async def update_upstream_curl(
 
     logger = get_logger(__name__)
     try:
-        result = apply_curl_to_settings(settings, payload.curl)
+        result = apply_curl_to_settings(
+            settings, payload.curl, allow_path_change=payload.allow_path_change
+        )
     except ValueError as exc:
         raise InvalidRequestError(str(exc), param="curl") from exc
 
@@ -220,12 +225,14 @@ async def update_upstream_curl(
         accounts=sorted(account_changes),
         dropped_clients=dropped_clients,
     )
+    warnings = result.get("warnings") or []
     return {
         "status": "applied",
         "fields": result["fields"],
         "accounts_updated": account_changes,
         "clients_reset": dropped_clients,
         "upstream_model": result["model_id"],
+        "warnings": warnings,
         "note": (
             "Değişiklik bellekte uygulandı; kalıcı olması için Render'daki "
             "UPSTREAM_CURL secret'ını da aynı cURL ile güncelleyin."
