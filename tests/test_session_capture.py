@@ -448,7 +448,9 @@ def test_apply_cookie_to_settings_accepts_a_raw_cookie_header():
         settings, "cookie: arena-auth-prod-v1.1=" + _jwt() + "; __cf_bm=bm"
     )
 
-    assert changed == ["upstream_cookie"]
+    # Çerezdeki token `UPSTREAM_ACCESS_TOKEN` alanına da yazılır: aksi halde
+    # header'daki eski token çerezden önce tercih edilir ve taze oturum yok sayılır.
+    assert changed == ["upstream_cookie", "upstream_access_token"]
     assert settings.upstream_cookie.endswith("__cf_bm=bm")
     assert "arena-auth-prod-v1.1=" in settings.upstream_cookie
 

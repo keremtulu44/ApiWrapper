@@ -383,7 +383,9 @@ class CompletionService:
                             )
                         except StopAsyncIteration:
                             break
-                        except TimeoutError as exc:
+                        # Python 3.10'da asyncio.TimeoutError, yerleşik TimeoutError
+                        # ile aynı sınıf değildir; ikisini de yakala.
+                        except (TimeoutError, asyncio.TimeoutError) as exc:
                             raise UpstreamTimeout(
                                 f"No data received from upstream for {idle}s."
                             ) from exc
@@ -430,8 +432,12 @@ class CompletionService:
                 # cezalandırmıyoruz (token global olarak düşmüş olabilir), ama
                 # başka hesap varsa onu denemek toplam kesintiyi önler.
                 retryable = emitted == 0 and switches < max_switches and account is not None
+                # Burada bilinçli olarak `self.accounts.pick` kullanılıyor, `_pick_account`
+                # değil: `_pick_account` havuz boşken UpstreamQuotaExceeded fırlatır ve bu,
+                # tam da bu blokta orijinal 401'i ezip istemciye "kota doldu" (429) olarak
+                # görünmesine yol açıyordu. Oturum ölüyse cevap "unauthorized" olmalı.
                 replacement = (
-                    self._pick_account(exclude_slot=account.slot)
+                    self.accounts.pick(exclude_slot=account.slot)
                     if retryable and account is not None
                     else None
                 )
@@ -542,7 +548,26 @@ class CompletionService:
         return response
 
     # ------------------------------------------------------------- stream
-    async def stream_completion(
+    def stream_completion(
+        self,
+        request: ChatCompletionRequest,
+        is_disconnected=None,
+        client_identity: str | None = None,
+    ) -> AsyncIterator[str]:
+        """SSE gövdesi. Model çözümü burada, yanıt başlamadan yapılır.
+
+        `_stream_completion` bir async generator olduğu için içindeki `yield`lara kadar
+        hiçbir satırı çalışmaz. Model çözümü generator'ın içinde kalsaydı, HTTP 200 ve
+        başlıklar gönderildikten sonra `ModelNotFoundError` fırlar; istemci boş/kesik bir
+        akış görür ve sunucu "response already started" hatası loglardı. Bu yüzden model
+        burada, döndürmeden önce çözülür ve hata normal 404 yolundan çıkar.
+        """
+        self.registry.resolve(request.model)
+        return self._stream_completion(
+            request, is_disconnected=is_disconnected, client_identity=client_identity
+        )
+
+    async def _stream_completion(
         self,
         request: ChatCompletionRequest,
         is_disconnected=None,

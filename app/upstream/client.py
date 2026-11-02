@@ -166,8 +166,12 @@ class UpstreamClient:
         # Başlangıç cookie'si hesabın kendi jar'ına yazılır. İsteklere ayrıca ham
         # Cookie başlığı eklemek httpx jar birleştirmesini bastırır ve warm-up /
         # refresh sonrası gelen Set-Cookie değerlerinin kullanılmasını engeller.
+        # Çerez alanı yalnızca ana makine adıyla yazılmalı: httpx alanı porta dahil
+        # edilmiş hâliyle eşleştirmez, bu yüzden `TARGET_DOMAIN=host:8080` gibi bir
+        # değerde çerez sessizce hiç gönderilmezdi.
+        cookie_host = settings.target_domain.split(":", 1)[0]
         for name, value in parse_cookie_header(settings.upstream_cookie).items():
-            client.cookies.set(name, value, domain=settings.target_domain, path="/")
+            client.cookies.set(name, value, domain=cookie_host, path="/")
         return client
 
     async def shutdown(self) -> None:

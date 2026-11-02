@@ -192,3 +192,44 @@ def test_long_text_is_bounded():
     shortened = split_telegram_text("x" * 20000, limit=3500, max_chars=12000)
     assert sum(len(part) for part in shortened) <= 12000
     assert "yanıt kısaltıldı" in shortened[-1]
+
+
+@pytest.mark.asyncio
+async def test_cookie_command_reports_token_sync():
+    """/cookie yanıtı, bearer token da güncellendiyse bunu söylemeli.
+
+    Telefonda tek geri bildirim bu mesaj: kullanıcı "çerez uygulandı" görüp
+    yine 401 alırsa nedenini bilemez. Token eşitlemesi yeni davranış olduğu için
+    görünür olmalı.
+    """
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "applied",
+                "fields": ["upstream_cookie", "upstream_access_token"],
+                "accounts_updated": {"hesap-1": ["cookie"]},
+                "clients_reset": 1,
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message(
+            {"chat": {"id": 42}, "text": "/cookie arena-auth-prod-v1.0=deger"}
+        )
+
+    assert "Çerez uygulandı" in sent[-1]["text"]
+    assert "bearer token da güncellendi" in sent[-1]["text"]

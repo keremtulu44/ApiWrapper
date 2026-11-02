@@ -380,6 +380,13 @@ def apply_cookie_to_settings(settings: Settings, raw: str) -> list[str]:
     if settings.upstream_cookie != normalized:
         settings.upstream_cookie = normalized
         changed.append("upstream_cookie")
+    # Bearer token'ı da hizala: `UPSTREAM_ACCESS_TOKEN` doluysa
+    # `build_authorization` onu çerezden **önce** tercih eder. Bu yüzden yalnızca
+    # çerez güncellendiğinde eski token header'da gönderilmeye devam ediyor ve
+    # taze oturum yok sayılıyordu (telefondan /cookie akışının sessiz hatası).
+    if token and settings.upstream_access_token != token:
+        settings.upstream_access_token = token
+        changed.append("upstream_access_token")
     return changed
 
 
@@ -401,6 +408,11 @@ def apply_capture_to_settings(
     ):
         settings.upstream_cookie = result.cookies
         changed.append("upstream_cookie")
+        # Çerezdeki token header'dan önce tercih edilmesin diye onu da eşitle.
+        token = extract_access_token(result.cookies)
+        if token and settings.upstream_access_token != token:
+            settings.upstream_access_token = token
+            changed.append("upstream_access_token")
     if result.deployment_headers:
         headers = settings.parsed_extra_headers()
         updated = False

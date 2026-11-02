@@ -22,6 +22,39 @@ logger = get_logger(__name__)
 
 Handler = Callable[[Request], Awaitable[Response]]
 
+#: Metrik/log etiketi olarak kullanılacak **bilinen** yollar. Bilinmeyen yollar
+#: tek bir `other` kovasında toplanır: aksi halde rastgele URL deneyen bir bot
+#: her yol için yeni bir metrik serisi bırakır (bellek sızıntısı + devasa /metrics).
+_KNOWN_PATHS = frozenset(
+    {
+        "/",
+        "/health",
+        "/healthz",
+        "/readyz",
+        "/metrics",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/v1/models",
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/models",
+        "/chat/completions",
+        "/completions",
+    }
+)
+_KNOWN_PREFIXES = ("/v1/admin/", "/v1/models/")
+
+
+def metric_path(path: str) -> str:
+    """İsteği metrik etiketi için normalize eder (kardinalite koruması)."""
+    if path in _KNOWN_PATHS:
+        return path
+    for prefix in _KNOWN_PREFIXES:
+        if path.startswith(prefix):
+            return prefix.rstrip("/") + "/*"
+    return "other"
+
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
     """Gelen `X-Request-ID` başlığını yayar veya yenisini üretir."""
@@ -56,11 +89,13 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             raise
 
         duration = time.monotonic() - started
+        # Etiket olarak normalize yol kullanılır (bilinmeyenler `other`).
+        label_path = metric_path(path)
         metrics.inc(
             "apiwrapper_requests_total",
-            labels={"path": path, "status": str(response.status_code)},
+            labels={"path": label_path, "status": str(response.status_code)},
         )
-        metrics.observe("apiwrapper_request_duration_seconds", duration, {"path": path})
+        metrics.observe("apiwrapper_request_duration_seconds", duration, {"path": label_path})
         if path not in ("/health", "/healthz", "/readyz", "/metrics"):
             logger.info(
                 "request",

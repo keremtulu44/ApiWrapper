@@ -156,7 +156,7 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                     ),
                     timeout=self.settings.recaptcha_browser_timeout,
                 )
-            except TimeoutError as exc:
+            except (TimeoutError, asyncio.TimeoutError) as exc:
                 raise RecaptchaError("Timed out while generating a reCAPTCHA token.") from exc
             except Exception as exc:
                 raise RecaptchaError(f"Browser captcha generation failed: {exc}") from exc
