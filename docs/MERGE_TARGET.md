@@ -29,6 +29,8 @@ servis bu dalı takip eder; `main` yalnızca kullanıcı açıkça isterse günc
 | #1 | `arena/6c654978-apiwrapper` | `arena/c55e601b-apiwrapper` | `cef7ea9` |
 | #2 | `arena/320534c1-apiwrapper` | `arena/c55e601b-apiwrapper` | `4b03c74` |
 | #3 | `arena/b47e14e8-apiwrapper` | `arena/c55e601b-apiwrapper` | `ff83b12` |
+| #4 | `arena/d1587a5b-apiwrapper` | `arena/c55e601b-apiwrapper` | `b2ba4d1` |
+| #5 | `arena/9fb06017-apiwrapper` | `arena/c55e601b-apiwrapper` | `80ac8a8` |
 
 Yeni bir merge yapıldığında bu tabloya bir satır ekleyin.
 
