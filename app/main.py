@@ -28,6 +28,7 @@ from app.services.keepalive import run_upstream_keepalive
 from app.services.model_registry import ModelEntry, ModelRegistry
 from app.services.recaptcha import create_recaptcha_provider
 from app.services.session_manager import SessionManager
+from app.services.token_refresh import run_token_refresher
 from app.telegram.bot import TelegramSettings, run_from_settings
 from app.upstream.client import UpstreamClient
 from app.upstream.curl_runtime import apply_upstream_curl
@@ -158,6 +159,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             _run_embedded_telegram(telegram_settings), name="telegram-bot"
         )
 
+    refresh_task: asyncio.Task[None] | None = None
+    if settings.upstream_refresh_enabled:
+        # Erişim token'ı ~1 saatte ölüyor: süresi yaklaşınca kendiliğinden yenile.
+        refresh_task = asyncio.create_task(
+            run_token_refresher(settings),
+            name="upstream-token-refresh",
+        )
+
     keepalive_task: asyncio.Task[None] | None = None
     if settings.upstream_keepalive_interval_seconds > 0:
         # Aynı görev hem canlılık denemesi hem teşhis/bildirim kaynağıdır.
@@ -177,6 +186,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if refresh_task is not None:
+            refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await refresh_task
         if keepalive_task is not None:
             keepalive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

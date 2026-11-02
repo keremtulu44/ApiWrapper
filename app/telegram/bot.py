@@ -33,7 +33,8 @@ _HELP = (
     "Komutlar: /ping (wrapper + son upstream kontrolü), /tani (kimlik teşhisi), "
     "/yenile (sunucu "
     "tarayıcısıyla oturumu tazele), /cookie <çerez> ya da /curl <cURL>, /help.\n"
-    "/cookie! <çerez> = kontrolü atlayıp zorla uygula.\n"
+    "/cookie! <çerez> = kontrolü atlayıp zorla uygula, /token = erişim token'ını "
+    "yenile.\n"
     "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
 )
 
@@ -235,6 +236,9 @@ class TelegramBot:
         if command == "/ping":
             await self.ping(chat_id)
             return
+        if command in {"/token", "/tokeni", "/refresh-token", "/yenitoken"}:
+            await self.refresh_token(chat_id)
+            return
         if command in {"/tani", "/tanı", "/durum", "/status", "/diagnose"}:
             await self.diagnose(chat_id)
             return
@@ -276,6 +280,39 @@ class TelegramBot:
         # Süreç ayakta olsa da upstream oturumu ölmüş olabilir.
         lines.append(describe_probe(last_probe()))
         await self.send_text(chat_id, "\n".join(lines))
+
+    async def refresh_token(self, chat_id: int) -> None:
+        """`/token`: erişim token'ını refresh token ile **elle** yeniler.
+
+        Arka plan döngüsü aynı işi kendiliğinden yapar; bu komut "şimdi dene"
+        düğmesidir (token değerleri hiçbir mesaja yazılmaz).
+        """
+        try:
+            response = await self.wrapper.post("/v1/admin/upstream/refresh", json={})
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; yenileme denenemedi.")
+            return
+        if not isinstance(payload, dict):
+            await self.send_text(chat_id, f"Beklenmeyen yanıt (HTTP {response.status_code}).")
+            return
+        if payload.get("status") == "refreshed":
+            expires = payload.get("expires_in")
+            detail = (
+                f"≈{int(expires) // 60} dk geçerli"
+                if isinstance(expires, int)
+                else "süre bilgisi yok"
+            )
+            await self.send_text(
+                chat_id,
+                f"✓ Token yenilendi ({detail}). Bir mesaj atarak test edin.",
+            )
+            return
+        await self.send_text(
+            chat_id,
+            "⚠ Token yenilenemedi: "
+            + str(payload.get("detail") or f"HTTP {response.status_code}"),
+        )
 
     async def diagnose(self, chat_id: int) -> None:
         """`/tani`: telefonda tek mesajda "neyim eksik, ne yapayım".
@@ -339,6 +376,14 @@ class TelegramBot:
                 lines.append(f"Refresh token: var ({refresh.get('length', 0)} karakter)")
             else:
                 lines.append("Refresh token: **yok**")
+        auto_raw = payload.get("auto_refresh")
+        auto: dict[str, Any] = auto_raw if isinstance(auto_raw, dict) else {}
+        if auto:
+            lines.append(
+                "Otomatik yenileme: "
+                + ("açık" if auto.get("enabled") else "**kapalı**")
+                + ("" if auto.get("has_api_key") else " · apikey yok")
+            )
         lines.append(
             "Authorization başlığı: "
             + (

@@ -93,6 +93,30 @@ döner ve `Authorization` başlığı ya hiç gitmez ya bayat gider. Önemli son
 * Parçalardan biri eksik/bozuk kopyalanırsa base64 çözülmez ve wrapper "token
   yok" der; bu yüzden `inspect_cookie` artık `problems` listesi döndürür.
 
+## 5. Refresh token: kalıcı çözüm (uygulandı)
+
+Oturum çerezinde `refresh_token` varsa erişim token'ı **elle** değil, arka plan
+döngüsüyle yenilenir:
+
+| Parça | Davranış |
+|---|---|
+| Zamanlayıcı | 60 sn'de bir bakar; yalnız token'ın bitmesine **10 dk** kalınca istek atar |
+| İstek | `POST {iss}/auth/v1/token?grant_type=refresh_token` · gövde `{"refresh_token": "..."}` |
+| `apikey` | Upstream istiyorsa `UPSTREAM_REFRESH_API_KEY` (Supabase anon anahtarı) |
+| Başarı | Yeni `access_token` + dönen yeni `refresh_token` (rotation) **bellekte** ve **oturum çerezinde** güncellenir; parçalı çerez aynı sınırlarla yeniden bölünür |
+| Başarısızlık | Mevcut token **korunur**, tek satır Türkçe neden döner; çerez bozulmaz |
+| Elle tetik | Telegram `/token` ya da `POST /v1/admin/upstream/refresh` |
+| Kapalıysa | `UPSTREAM_REFRESH_ENABLED=false` → eski davranış (elle çerez) |
+
+Ayarlar: `UPSTREAM_REFRESH_ENABLED`, `UPSTREAM_REFRESH_LEEWAY_SECONDS` (600),
+`UPSTREAM_REFRESH_CHECK_INTERVAL_SECONDS` (60), `UPSTREAM_REFRESH_URL` (boşsa
+çerezdeki JWT `iss` alanından türetilir), `UPSTREAM_REFRESH_API_KEY`,
+`UPSTREAM_REFRESH_TOKEN`.
+
+**Not:** yeni token'lar bellekte tutulur; süreç yeniden başlarsa Render'daki
+`UPSTREAM_CURL`/çerez ile başlar ve ilk denetimde kendini yine yeniler. Kalıcı
+olması için Render'daki çerezi de ara ara güncellemek iyi olur.
+
 ## 5. Refresh token: kalıcı çözüm
 
 Oturum çerezinde `refresh_token` varsa, erişim token'ı **elle** değil

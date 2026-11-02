@@ -214,6 +214,22 @@ class Settings(BaseSettings):
     #: İki token arasında izin verilen en uzun sessizlik.
     stream_idle_timeout: float = 120.0
 
+    # ------------------------------------------------ token yenileme (refresh)
+    #: Refresh token ile erişim token'ı yenileme. `refresh_token` çerezden
+    #: okunabildiği sürece çalışır; token ~1 saatte öldüğü için varsayılan açık.
+    upstream_refresh_enabled: bool = True
+    #: Token'ın bitmesine bu kadar saniye kalınca yenile (vars. 10 dk).
+    upstream_refresh_leeway_seconds: int = 600
+    #: Arka plan denetim aralığı (saniye). Yalnız süre dolunca istek atılır.
+    upstream_refresh_check_interval_seconds: float = 60.0
+    #: Boş bırakılırsa uç nokta çerezdeki JWT `iss` alanından türetilir.
+    upstream_refresh_url: str = ""
+    #: Upstream `apikey` istiyorsa (ör. Supabase anon anahtarı) buraya.
+    upstream_refresh_api_key: str = ""
+    #: Refresh token (çerezden okunamıyorsa). Yenilemede dönen yeni değer
+    #: bellekte buraya yazılır.
+    upstream_refresh_token: str = ""
+
     # ------------------------------------------------------------- keepalive
     #: 0 = kapalı. Örn. 10800 üç saatte bir sentetik non-stream completion.
     #: Süreç ayaktayken çalışır; upstream oturumunu yenileme garantisi değildir.

@@ -645,3 +645,62 @@ async def test_cookie_finish_and_cancel_commands():
 
         await bot.handle_message({"chat": {"id": 42}, "text": "/cookie bitir"})
         assert "Bekleyen parça yok" in sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_token_command_reports_refresh_success():
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/admin/upstream/refresh"
+        return httpx.Response(
+            200, json={"status": "refreshed", "expires_in": 3600}
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/token"})
+
+    assert "Token yenilendi" in sent[-1]["text"]
+    assert "60 dk" in sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_token_command_explains_failure():
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "failed",
+                "detail": "Refresh token geçersiz/süresi dolmuş görünüyor; taze çerez gerekir.",
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/token"})
+
+    assert "yenilenemedi" in sent[-1]["text"]
+    assert "taze çerez" in sent[-1]["text"]
