@@ -106,6 +106,19 @@ class FakeContext:
         return self._cookies
 
 
+def _jwt(*, expired: bool = False) -> str:
+    """Testler için biçimsel olarak geçerli bir JWT (imza önemsiz)."""
+    import base64
+    import time
+
+    def seg(data: dict[str, Any]) -> str:
+        raw = json.dumps(data, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    exp = int(time.time()) + (-3600 if expired else 3600)
+    return f"{seg({'alg': 'HS256', 'typ': 'JWT'})}.{seg({'sub': 'u1', 'exp': exp})}.sig"
+
+
 def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
@@ -215,7 +228,9 @@ def test_apply_capture_keeps_existing_stamp_when_capture_has_none():
         upstream_cookie=OLD_COOKIE,
         upstream_extra_headers=f"x-deployment-id={STAMP}",
     )
-    changed = apply_capture_to_settings(settings, CaptureResult(cookies=FRESH_COOKIE))
+    changed = apply_capture_to_settings(
+        settings, CaptureResult(cookies=FRESH_COOKIE, logged_in=True)
+    )
 
     assert settings.upstream_cookie == FRESH_COOKIE
     assert settings.parsed_extra_headers()["x-deployment-id"] == STAMP
@@ -359,3 +374,154 @@ async def test_telegram_yenile_reports_capture_result():
     assert "yakalanıyor" in sent[0]["text"]
     assert "Oturum yakalandı" in sent[-1]["text"]
     assert "upstream_cookie" in sent[-1]["text"]
+
+
+# ------------------------------------- yakalama hatası çalışan oturumu bozmamalı
+def test_anonymous_capture_does_not_overwrite_the_working_cookie():
+    # Canlı hata: oturum yakalanamadı ama anonim çerez seti mevcut oturumun
+    # üzerine yazıldı. Artık yalnızca gerçek oturum uygulanır.
+    settings = make_settings(upstream_cookie=OLD_COOKIE)
+    result = CaptureResult(
+        cookies="__cf_bm=anonim",
+        deployment_id=STAMP,
+        deployment_headers={"x-deployment-id": STAMP},
+        logged_in=False,
+        reason="sayfa giriş ekranına yönlendi (/login).",
+    )
+
+    changed = apply_capture_to_settings(settings, result)
+
+    assert settings.upstream_cookie == OLD_COOKIE, "çalışan çerez korunmalı"
+    assert "upstream_cookie" not in changed
+    assert settings.parsed_extra_headers()["x-deployment-id"] == STAMP
+
+
+def test_capture_injects_the_existing_cookie_before_navigation():
+    page = FakePage(url="https://upstream.test/text/direct")
+    context = FakeContext(page, [{"name": "arena-auth-prod-v1.0", "value": "x"}])
+    added: list[list[dict[str, Any]]] = []
+
+    async def add_cookies(cookies: list[dict[str, Any]]) -> None:
+        added.append(cookies)
+
+    context.add_cookies = add_cookies  # type: ignore[attr-defined]
+    settings = make_settings(upstream_cookie="arena-auth-prod-v1.0=abc; other=1")
+
+    result = _run(capture_session(context, settings, wait_ms=0))
+
+    assert result.injected_cookies == 2
+    assert {c["name"] for c in added[0]} == {"arena-auth-prod-v1.0", "other"}
+    assert all(c["domain"] == "upstream.test" for c in added[0])
+
+
+def test_capture_detects_a_working_session_from_the_access_token():
+    jwt = _jwt()
+    page = FakePage(url="https://upstream.test/text/direct")
+    context = FakeContext(page, [{"name": "arena-auth-prod-v1.1", "value": jwt}])
+
+    result = _run(capture_session(context, make_settings(), wait_ms=0))
+
+    assert result.access_token_found is True
+    assert result.access_token_expired is False
+    assert result.logged_in is True
+
+
+def test_capture_explains_an_expired_token():
+    page = FakePage(url="https://upstream.test/text/direct")
+    context = FakeContext(
+        page, [{"name": "arena-auth-prod-v1.1", "value": _jwt(expired=True)}]
+    )
+
+    result = _run(capture_session(context, make_settings(), wait_ms=0))
+
+    assert result.logged_in is False
+    assert result.access_token_expired is True
+    assert "süresi dolmuş" in result.reason
+
+
+# --------------------------------------------------------------- çerez ucu
+def test_apply_cookie_to_settings_accepts_a_raw_cookie_header():
+    from app.upstream.session_capture import apply_cookie_to_settings
+
+    settings = make_settings(upstream_cookie=OLD_COOKIE)
+    changed = apply_cookie_to_settings(
+        settings, "cookie: arena-auth-prod-v1.1=" + _jwt() + "; __cf_bm=bm"
+    )
+
+    assert changed == ["upstream_cookie"]
+    assert settings.upstream_cookie.endswith("__cf_bm=bm")
+    assert "arena-auth-prod-v1.1=" in settings.upstream_cookie
+
+
+def test_apply_cookie_rejects_a_non_session_string():
+    from app.upstream.session_capture import apply_cookie_to_settings
+
+    settings = make_settings(upstream_cookie=OLD_COOKIE)
+    with pytest.raises(ValueError):
+        apply_cookie_to_settings(settings, "tracking=1; theme=dark")
+    assert settings.upstream_cookie == OLD_COOKIE
+
+
+def test_admin_cookie_endpoint_applies_and_hides_the_value():
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    settings = make_settings(upstream_cookie=OLD_COOKIE)
+    app = create_app(settings)
+    token = _jwt()
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/admin/upstream/cookie",
+            json={"cookie": f"arena-auth-prod-v1.1={token}"},
+            headers={"Authorization": f"Bearer {TEST_API_KEY}"},
+        )
+        assert response.status_code == 200, response.text
+        assert token not in response.text
+        assert app.state.settings.upstream_cookie == f"arena-auth-prod-v1.1={token}"
+        assert app.state.accounts.accounts[0].cookie.startswith("arena-auth-prod-v1.1=")
+
+
+@pytest.mark.asyncio
+async def test_telegram_cookie_command_posts_the_header():
+    from app.telegram.bot import TelegramBot, TelegramSettings
+
+    sent: list[dict[str, Any]] = []
+    calls: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        calls.append(
+            {"path": request.url.path, "json": json.loads(request.content)}
+        )
+        return httpx.Response(200, json={"status": "applied", "fields": ["upstream_cookie"]})
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(
+            TelegramSettings(
+                _env_file=None,
+                telegram_bot_token="test-bot-token",
+                wrapper_api_key="test-wrapper-key",
+                wrapper_base_url="https://wrapper.test",
+                telegram_allowed_chat_ids="42",
+            ),
+            telegram,
+            wrapper,
+        )
+        token = _jwt()
+        await bot.handle_message(
+            {"chat": {"id": 42}, "text": f"/cookie arena-auth-prod-v1.1={token}"}
+        )
+
+    assert calls[0]["path"] == "/v1/admin/upstream/cookie"
+    assert token not in sent[-1]["text"], "çerez yanıta yansımamalı"
+    assert "Çerez uygulandı" in sent[-1]["text"]

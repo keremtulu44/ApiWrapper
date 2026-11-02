@@ -415,7 +415,11 @@ cookie + `dpl_...` sürüm damgası + `cx` + referer yolunu yakalar ve çalışa
 ayarlara uygular (`POST /v1/admin/upstream/capture`). Oturum tamamen düşmüşse
 araç bunu açıkça söyler; o zaman elle cURL gerekir.
 
-Elle cURL uygulamak için: Telegram `/curl <cURL>` ya da
+Mobilde çerez/cURL üretmenin mümkün olup olmadığı ve adımları:
+**[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)**.
+
+Elle uygulamak için: Telegram `/cookie <ad=değer; ...>` veya `/curl <cURL>`; API
+karşılığı `POST /v1/admin/upstream/cookie {"cookie": "..."}` ·
 `POST /v1/admin/upstream/curl {"curl": "..."}`. Değişiklik bellekte uygulanır
 (hesap cookie jar'ları kapatılır, oturum önbelleği temizlenir); kalıcı olması
 için Render'daki `UPSTREAM_CURL` da güncellenmelidir.

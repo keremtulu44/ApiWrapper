@@ -34,7 +34,11 @@ from app.upstream.breaker import BreakerState
 from app.upstream.client import UpstreamClient
 from app.upstream.curl_runtime import apply_curl_to_settings
 from app.upstream.headers import build_authorization
-from app.upstream.session_capture import apply_capture_to_settings, capture_with_provider
+from app.upstream.session_capture import (
+    apply_capture_to_settings,
+    apply_cookie_to_settings,
+    capture_with_provider,
+)
 
 router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(api_key_dependency)])
 
@@ -98,6 +102,54 @@ async def invalidate_recaptcha(
 async def reset_breaker(upstream: UpstreamClient = Depends(get_upstream)) -> dict[str, Any]:
     upstream.breaker.reset()
     return {"status": "closed"}
+
+
+class UpstreamCookiePayload(BaseModel):
+    """Ham `Cookie` başlığı (mobilde cURL'den çok daha kolay elde edilir)."""
+
+    cookie: str = Field(min_length=10, max_length=30000)
+
+
+@router.post("/upstream/cookie", summary="Swap upstream cookies without a cURL")
+async def update_upstream_cookie(
+    payload: UpstreamCookiePayload,
+    settings: Settings = Depends(get_settings_dep),
+    upstream: UpstreamClient = Depends(get_upstream),
+    accounts: AccountPool = Depends(get_accounts),
+    sessions: SessionManager = Depends(get_sessions),
+    recaptcha: RecaptchaProvider = Depends(get_recaptcha),
+) -> dict[str, Any]:
+    """Yalnızca çerez setini uygular — telefonda cURL üretmek zor olduğunda.
+
+    Çerez başlığı tek satırdır ve tarayıcı eklentisi/oturum dışa aktarma aracıyla
+    kopyalanabilir. Ham değer yanıta ve loglara yazılmaz.
+    """
+    from app.core.logging import get_logger
+
+    logger = get_logger(__name__)
+    try:
+        changed = apply_cookie_to_settings(settings, payload.cookie)
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc), param="cookie") from exc
+
+    account_changes = accounts.reload_credentials(settings)
+    dropped_clients = await upstream.reset_account_clients()
+    upstream.breaker.reset()
+    await sessions.clear()
+    recaptcha.invalidate()
+    logger.info(
+        "upstream_cookie_applied",
+        fields=changed,
+        accounts=sorted(account_changes),
+        dropped_clients=dropped_clients,
+    )
+    return {
+        "status": "applied",
+        "fields": changed,
+        "accounts_updated": account_changes,
+        "clients_reset": dropped_clients,
+        "next": "Bir mesaj atarak test edin.",
+    }
 
 
 class UpstreamCurlPayload(BaseModel):
@@ -187,7 +239,7 @@ async def capture_upstream_session(
         ) from exc
 
     changed = apply_capture_to_settings(settings, result)
-    if result.has_cookie:
+    if "upstream_cookie" in changed:
         accounts.reload_credentials(settings)
         await upstream.reset_account_clients()
         upstream.breaker.reset()
@@ -203,23 +255,32 @@ async def capture_upstream_session(
         triggered=result.triggered_request,
         changed=changed,
     )
+    applied_cookie = "upstream_cookie" in changed
+    if applied_cookie:
+        next_step = "Bir mesaj atarak test edin."
+    elif result.reason:
+        next_step = (
+            f"Oturum yakalanamadı: {result.reason} Telefonda giriş yapıp "
+            "çerezleri /cookie ile gönderin (cURL de olur: /curl)."
+        )
+    else:
+        next_step = "Değişiklik yok; bir mesaj atarak test edin."
     return {
-        "status": "captured" if changed else "unchanged",
+        "status": "captured" if applied_cookie else "not_captured",
         "logged_in": result.logged_in,
         "cookie_found": result.has_cookie,
+        "cookie_applied": applied_cookie,
         "deployment_found": bool(result.deployment_id),
         "cx_found": bool(result.cx),
         "triggered_request": result.triggered_request,
+        "injected_cookies": result.injected_cookies,
+        "access_token_found": result.access_token_found,
+        "access_token_expired": result.access_token_expired,
+        "final_path": result.final_path,
+        "reason": result.reason,
         "fields": changed,
         "notes": result.notes,
-        "next": (
-            "Bir mesaj atarak test edin."
-            if changed
-            else (
-                "Yeni oturum yakalanamadı: tarayıcıda oturum açık değil. "
-                "Telefonda giriş yapıp cURL'ü /curl ile gönderin."
-            )
-        ),
+        "next": next_step,
     }
 
 

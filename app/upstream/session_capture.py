@@ -25,6 +25,7 @@ from typing import Any
 
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.upstream.auth import extract_access_token, is_token_expired, parse_cookie_header
 from app.upstream.headers import DEPLOYMENT_HEADERS
 
 logger = get_logger(__name__)
@@ -52,6 +53,13 @@ class CaptureResult:
     logged_in: bool = False
     triggered_request: bool = False
     final_url: str = ""
+    final_path: str = ""
+    #: Mevcut cookie bağlama yüklendi mi (0 = yüklenemedi).
+    injected_cookies: int = 0
+    access_token_found: bool = False
+    access_token_expired: bool | None = None
+    #: Oturum yakalanamadıysa nedeni (Türkçe, gizli değer içermez).
+    reason: str = ""
     notes: list[str] = field(default_factory=list)
 
     @property
@@ -68,6 +76,61 @@ def cookie_header_from(items: list[dict[str, Any]]) -> str:
         if name:
             parts.append(f"{name}={value}")
     return "; ".join(parts)
+
+
+def _path_of(url: str) -> str:
+    """URL'den yol kısmını döndürür (domain loglanmasın diye)."""
+    if not url:
+        return ""
+    without_scheme = url.split("://", 1)[-1]
+    path = without_scheme.split("/", 1)[-1] if "/" in without_scheme else ""
+    return "/" + path.split("?", 1)[0].split("#", 1)[0].lstrip("/")
+
+
+def _explain_not_logged_in(result: CaptureResult, login_redirect: bool) -> str:
+    """Yakalanamama nedenini tek cümlede, eyleme dönük biçimde yazar."""
+    if login_redirect:
+        return f"sayfa giriş ekranına yönlendi ({result.final_path or '/'})."
+    if result.access_token_found and result.access_token_expired:
+        return "cookie'deki access_token süresi dolmuş; site oturumu yenilemedi."
+    if not result.access_token_found:
+        return (
+            "cookie'de access_token yok: bağlama yüklenen oturum geçersiz ya da "
+            "sayfa oturumu hiç açmamış."
+        )
+    return "sayfa oturum açmadı (gerçek sohbet isteği görülmedi)."
+
+
+async def _inject_cookies(context: Any, settings: Settings) -> int:
+    """Mevcut `UPSTREAM_COOKIE` çerezlerini tarayıcı bağlamına yükler.
+
+    Bu adım olmadan sunucu tarayıcısı anonim açılır: her istek giriş ekranına
+    düşer ve yakalama "oturum yok" der. Dönüş: yüklenen çerez sayısı.
+    """
+    cookies = parse_cookie_header(settings.upstream_cookie)
+    if not cookies:
+        return 0
+    domain = (settings.target_domain or "").split(":", 1)[0].strip()
+    if not domain:
+        return 0
+    payload = [
+        {
+            "name": name,
+            "value": value,
+            "domain": domain,
+            "path": "/",
+            "secure": settings.upstream_scheme == "https",
+        }
+        for name, value in cookies.items()
+    ]
+    adder = getattr(context, "add_cookies", None)
+    if adder is None:
+        return 0
+    try:
+        await adder(payload)
+    except Exception:  # pragma: no cover - tarayıcı reddederse yakalama devam eder
+        return 0
+    return len(payload)
 
 
 def _looks_logged_in(cookies: list[dict[str, Any]]) -> bool:
@@ -140,6 +203,10 @@ async def capture_session(
         with contextlib.suppress(Exception):  # sahte sayfalarda `on` olmayabilir
             page.on("request", on_request)
 
+        # Eldeki oturumu bağlama yükle. Bu olmadan tarayıcı anonim açılır ve
+        # her site giriş ekranına düşer (eski sürümdeki hata buydu).
+        result.injected_cookies = await _inject_cookies(context, settings)
+
         url = settings.base_url
         try:
             await page.goto(url, wait_until="domcontentloaded", timeout=navigation_timeout_ms)
@@ -168,9 +235,23 @@ async def capture_session(
         except Exception:  # pragma: no cover - savunmacı
             cookies = []
         result.cookies = cookie_header_from(cookies)
-        result.logged_in = _looks_logged_in(cookies) and not any(
-            hint in result.final_url.lower() for hint in _LOGIN_HINTS
-        )
+        result.final_path = _path_of(result.final_url)
+        token = extract_access_token(result.cookies)
+        result.access_token_found = bool(token)
+        if token:
+            result.access_token_expired = is_token_expired(token)
+        login_redirect = any(hint in result.final_path.lower() for hint in _LOGIN_HINTS)
+        session_cookie = _looks_logged_in(cookies)
+        if login_redirect:
+            result.logged_in = False
+        elif token:
+            # Token varsa tek ölçüt odur: süresi dolmuş token "oturum açık"
+            # sayılmamalı, yoksa bayat çerez çalışan oturumun üzerine yazılır.
+            result.logged_in = not result.access_token_expired
+        else:
+            result.logged_in = session_cookie or "stream_request" in observed
+        if not result.logged_in:
+            result.reason = _explain_not_logged_in(result, login_redirect)
         result.deployment_id = observed.get("deployment_id")
         if result.deployment_id and not result.deployment_headers:
             # Tek bir başlık adı görüldüyse onu kullan; isim bilinmiyorsa
@@ -182,9 +263,7 @@ async def capture_session(
         referer = observed.get("referer")
         result.referer_path = _referer_path(referer, settings) if referer else None
         if not result.logged_in:
-            result.notes.append(
-                "oturum çerezi bulunamadı ya da sayfa giriş ekranına düştü"
-            )
+            result.notes.append(result.reason)
         if "stream_request" in observed:
             result.notes.append("gerçek sohbet isteği yakalandı")
         return result
@@ -268,10 +347,58 @@ async def capture_with_provider(provider: Any, settings: Settings) -> CaptureRes
         await playwright.stop()
 
 
-def apply_capture_to_settings(settings: Settings, result: CaptureResult) -> list[str]:
-    """Yakalanan oturumu çalışan ayarlara uygular (değerler loglanmaz)."""
+def apply_cookie_to_settings(settings: Settings, raw: str) -> list[str]:
+    """Ham `Cookie` başlığını doğrulayıp çalışan ayarlara uygular.
+
+    Mobilde cURL üretmek zor olduğu için kısa yol: yalnızca çerez satırı
+    gönderilir. Oturum çerezi gibi görünmeyen metin reddedilir ki yanlışlıkla
+    çalışan oturum silinmesin.
+    """
+    text = (raw or "").strip().strip("'\"")
+    if text.lower().startswith("cookie:"):
+        text = text.split(":", 1)[1].strip()
+    cookies = parse_cookie_header(text)
+    if not cookies:
+        raise ValueError(
+            "Çerez başlığı ayrıştırılamadı. Biçim: 'ad=değer; ad2=değer2'."
+        )
+    normalized = cookie_header_from(
+        [{"name": name, "value": value} for name, value in cookies.items()]
+    )
+    token = extract_access_token(normalized)
+    has_session_name = any(
+        hint in name.lower()
+        for name in cookies
+        for hint in _SESSION_COOKIE_HINTS
+    )
+    if not token and not has_session_name:
+        raise ValueError(
+            "Bu metin bir oturum çerezi gibi görünmüyor (access_token ya da "
+            "'auth/session/token' adlı çerez yok)."
+        )
     changed: list[str] = []
-    if result.has_cookie and result.cookies != settings.upstream_cookie:
+    if settings.upstream_cookie != normalized:
+        settings.upstream_cookie = normalized
+        changed.append("upstream_cookie")
+    return changed
+
+
+def apply_capture_to_settings(
+    settings: Settings, result: CaptureResult, *, force: bool = False
+) -> list[str]:
+    """Yakalanan oturumu çalışan ayarlara uygular (değerler loglanmaz).
+
+    **Oturum yakalanamadıysa cookie değiştirilmez**: anonim çerez setinin
+    çalışan oturumun üzerine yazması, sorunu büyütmekten başka işe yaramaz.
+    Sürüm damgası ve referer yolu ise sayfadan bağımsız olarak doğru bilgidir;
+    onlar yine uygulanır.
+    """
+    changed: list[str] = []
+    if (
+        result.has_cookie
+        and (result.logged_in or force)
+        and result.cookies != settings.upstream_cookie
+    ):
         settings.upstream_cookie = result.cookies
         changed.append("upstream_cookie")
     if result.deployment_headers:
