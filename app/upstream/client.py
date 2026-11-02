@@ -216,6 +216,11 @@ class UpstreamClient:
         self._account_clients.clear()
         for client in clients:
             await client.aclose()
+        if self._client is not None:
+            self._client.cookies.clear()
+            cookie_host = self.settings.target_domain.split(":", 1)[0]
+            for name, value in parse_cookie_header(self.settings.upstream_cookie).items():
+                self._client.cookies.set(name, value, domain=cookie_host, path="/")
         self.deployment.reset()
         return len(clients)
 
@@ -276,6 +281,69 @@ class UpstreamClient:
         return bool(settings.upstream_cookie.strip()) and not parse_cookie_header(
             settings.upstream_cookie
         )
+
+    def _ingest_set_cookie(
+        self,
+        response: httpx.Response,
+        client: httpx.AsyncClient,
+        account: Account | None,
+    ) -> None:
+        """Sunucudan gelen `Set-Cookie` başlıklarını ayarlara ve durum deposuna yansıtır."""
+        if not response.headers.get("set-cookie"):
+            return
+        slot = account.slot if account is not None else 1
+        cookie_attr = "upstream_cookie" if slot <= 1 else f"upstream_cookie_{slot}"
+        old_cookie = (
+            account.cookie
+            if account is not None
+            else str(getattr(self.settings, cookie_attr, "") or "")
+        ).strip()
+        if not old_cookie:
+            return
+        jar_cookies = {c.name: c.value for c in client.cookies.jar if c.value}
+        if not jar_cookies:
+            return
+        merged = parse_cookie_header(old_cookie)
+        merged.update(jar_cookies)
+        new_cookie = "; ".join(f"{k}={v}" for k, v in merged.items())
+        if new_cookie == old_cookie:
+            return
+
+        if account is not None:
+            account.cookie = new_cookie
+        setattr(self.settings, cookie_attr, new_cookie)
+
+        from app.upstream.auth import extract_access_token, extract_refresh_token
+        from app.upstream.state_store import save_runtime_state
+
+        cookie_names = (
+            account.token_cookie_names
+            if account is not None
+            else self.settings.upstream_token_cookie_names
+        )
+        old_access = extract_access_token(old_cookie, cookie_names=cookie_names)
+        new_access = extract_access_token(new_cookie, cookie_names=cookie_names)
+        if new_access and new_access != old_access:
+            if (
+                account is not None
+                and account.access_token
+                and account.access_token == old_access
+            ):
+                account.access_token = new_access
+            access_attr = (
+                "upstream_access_token"
+                if slot <= 1
+                else f"upstream_access_token_{slot}"
+            )
+            current_access = str(getattr(self.settings, access_attr, "") or "")
+            if current_access and current_access == old_access:
+                setattr(self.settings, access_attr, new_access)
+
+        if slot <= 1:
+            new_refresh = extract_refresh_token(new_cookie, cookie_names=cookie_names)
+            if new_refresh and new_refresh != self.settings.upstream_refresh_token:
+                self.settings.upstream_refresh_token = new_refresh
+            save_runtime_state(self.settings, source="upstream_set_cookie")
 
     async def _retry_with_fresh_stamp(
         self,
@@ -364,6 +432,7 @@ class UpstreamClient:
                 ),
                 timeout=httpx.Timeout(request_settings.connect_timeout + 10.0),
             )
+            self._ingest_set_cookie(response, self._client_for(account), account)
             # Aynı yanıtı damga için de değerlendir (ek istek yok).
             self.deployment.ingest(response, request_settings.base_url)
             logger.debug(
@@ -578,16 +647,14 @@ class UpstreamClient:
                     if status < 400:
                         await self.breaker.record_success()
                         if response.headers.get("set-cookie"):
-                            # Oturumun sunucu tarafında uzatıldığını görünür kıl:
-                            # jar bellekte tutulduğu için restart eski cookie'ye döner.
+                            self._ingest_set_cookie(response, client, account)
                             logger.info(
                                 "upstream_set_cookie",
                                 status=status,
                                 count=len(response.headers.get_list("set-cookie")),
                                 hint=(
-                                    "Upstream oturum çerezini tazeledi; bu çerez yalnızca "
-                                    "bellekte tutulur, servis yeniden başlarsa "
-                                    "UPSTREAM_COOKIE değerine döner."
+                                    "Upstream oturum çerezini tazeledi; yeni değer "
+                                    "belleğe ve durum deposuna kaydedildi."
                                 ),
                             )
                         try:
@@ -765,7 +832,9 @@ class UpstreamClient:
                             marker=refresh_marker,
                         )
 
-                    if self._is_auth_body(status, error_body) and not self._is_captcha_body(
+                    if (
+                        self._is_auth_body(status, error_body) or session_dead
+                    ) and not self._is_captcha_body(
                         status, error_body
                     ):
                         raise UpstreamAuthRejected(

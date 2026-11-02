@@ -50,6 +50,9 @@ benden izin al" dedi. Bu yüzden:
 | #9 | `arena/72e4a3e6-apiwrapper` | `arena/c55e601b-apiwrapper` | `8912185` |
 | #10 | `arena/2dd37e06-apiwrapper` | `arena/c55e601b-apiwrapper` | `0f1a817` |
 | #11 | `arena/1320a4db-apiwrapper` | `arena/c55e601b-apiwrapper` | `b833d68` |
+| #12 | `arena/ca07f3d8-apiwrapper` | `arena/c55e601b-apiwrapper` | `93a37c2` |
+| #14 | `arena/14b44d27-apiwrapper` | `arena/c55e601b-apiwrapper` | `1402b49` |
+| #15 | `arena/ecf279c9-apiwrapper` | `arena/c55e601b-apiwrapper` | *(bu PR)* |
 
 Yeni bir merge yapıldığında bu tabloya bir satır ekleyin.
 

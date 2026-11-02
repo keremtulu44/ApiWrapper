@@ -18,11 +18,14 @@ Tasarım kuralları:
 * Hiçbir token/log/yanıt gövdesi yazılmaz; yalnız durum ve süre döner.
 * Yenileme başarısız olursa **mevcut token korunur** (çalışanı bozmadan dene).
 * `refresh_token` her yenilemede döner (rotation); yeni değer hem bellekteki
-  ayarlara hem de oturum çerezine yazılır.
+  ayarlara, hem oturum çerezine hem de süreç dışı durum deposuna yazılır.
+* Upstream `apikey` isterse ve ayarlarda yoksa, sitenin HTML/JS'inden public
+  anon anahtar otomatik keşfedilip istek tekrarlanır.
 """
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
 import json
@@ -33,15 +36,20 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from app.core.config import Settings
+from app.core.config import MAX_ACCOUNT_SLOTS, Settings
 from app.core.logging import get_logger
 from app.upstream.auth import (
+    DEFAULT_COOKIE_HINTS,
+    NEVER_TOKEN_COOKIES,
     decode_jwt_claims,
     extract_access_token,
     extract_refresh_token,
+    looks_like_jwt,
     parse_cookie_header,
     token_seconds_remaining,
 )
+from app.upstream.headers import build_page_headers
+from app.upstream.state_store import save_runtime_state, sync_render_env
 
 logger = get_logger(__name__)
 
@@ -53,6 +61,24 @@ _CHUNK_SUFFIX_RE = re.compile(r"^(?P<base>.+?)\.(?P<index>\d+)$")
 
 #: Oturum çerezi gibi görünen adlarda aranan izler.
 _SESSION_HINTS = ("auth", "session", "token", "sb-")
+
+#: Sayfa/JS içinde geçen JWT adayları (`role: "anon"` kontrolü için).
+_JWT_SCAN_RE = re.compile(
+    r"\beyJ[A-Za-z0-9_-]{4,}\.eyJ[A-Za-z0-9_-]{4,}\.[A-Za-z0-9_-]{4,}\b"
+)
+
+#: Sayfa/JS içinde açıkça adlandırılmış Supabase anon/publishable anahtarları.
+_EXPLICIT_ANON_KEY_RE = re.compile(
+    r"(?:NEXT_PUBLIC_SUPABASE_ANON_KEY|SUPABASE_ANON_KEY|supabaseAnonKey|anonKey)"
+    r"""\s*[:=]\s*["'](?P<key>[A-Za-z0-9._-]{20,})["']"""
+)
+_PUBLISHABLE_KEY_RE = re.compile(r"\bsb_publishable_[A-Za-z0-9_-]{16,}\b")
+
+#: HTML içindeki Next.js chunk script yolları.
+_NEXT_SCRIPT_RE = re.compile(r"""src=["'](?P<path>/_next/static/[^"']+\.js)["']""")
+
+#: Tek bir çerez parçasının güvenli azami uzunluğu (tarayıcı 4096 bayt sınırı).
+_MAX_COOKIE_CHUNK_LEN = 3900
 
 
 @dataclass(slots=True)
@@ -70,6 +96,29 @@ class RefreshOutcome:
     #: Token uç noktası (alan adı loglanmasın diye yalnız yol).
     endpoint_path: str = ""
     notes: list[str] = field(default_factory=list)
+
+
+def _slot_suffix(slot: int) -> str:
+    return "" if slot <= 1 else f"_{slot}"
+
+
+def _slot_cookie(settings: Settings, slot: int = 1) -> str:
+    attr = "upstream_cookie" if slot <= 1 else f"upstream_cookie_{slot}"
+    return str(getattr(settings, attr, "") or "")
+
+
+def _slot_access_token(settings: Settings, slot: int = 1) -> str:
+    attr = "upstream_access_token" if slot <= 1 else f"upstream_access_token_{slot}"
+    return str(getattr(settings, attr, "") or "").strip()
+
+
+def _slot_cookie_names(settings: Settings, slot: int = 1) -> list[str]:
+    attr = (
+        "upstream_token_cookie_names"
+        if slot <= 1
+        else f"upstream_token_cookie_names_{slot}"
+    )
+    return list(getattr(settings, attr, None) or [])
 
 
 def _strip_base64_prefix(value: str) -> str:
@@ -124,7 +173,108 @@ def _session_entries(cookies: dict[str, str]) -> list[tuple[str, dict[str, Any]]
     return entries
 
 
-def derive_refresh_url(settings: Settings) -> str:
+def extract_anon_key_from_text(text: str) -> str | None:
+    """HTML veya JS metninden Supabase public `anon` anahtarını ayıklar.
+
+    Öncelik sırası:
+    1. JWT biçiminde olup payload'ında `"role": "anon"` taşıyan token (sıfır yanlış pozitif).
+    2. `NEXT_PUBLIC_SUPABASE_ANON_KEY` / `supabaseAnonKey` / `anonKey` ataması.
+    3. `sb_publishable_...` biçimindeki yeni nesil Supabase publishable anahtarı.
+    """
+    if not text:
+        return None
+    sample = text[:500_000]
+    for match in _JWT_SCAN_RE.finditer(sample):
+        candidate = match.group(0)
+        claims = decode_jwt_claims(candidate)
+        role = str(claims.get("role") or "").strip().lower()
+        if role == "anon":
+            return candidate
+
+    explicit = _EXPLICIT_ANON_KEY_RE.search(sample)
+    if explicit:
+        key = explicit.group("key").strip()
+        if key:
+            return key
+
+    publishable = _PUBLISHABLE_KEY_RE.search(sample)
+    if publishable:
+        return publishable.group(0).strip()
+
+    return None
+
+
+async def discover_refresh_api_key(
+    settings: Settings,
+    client: httpx.AsyncClient | None = None,
+) -> str:
+    """Hedef sayfanın HTML/JS'inden Supabase `apikey` değerini otomatik keşfeder.
+
+    Bulunursa `settings.upstream_refresh_api_key` içine de yazılır; böylece
+    sonraki yenilemelerde tekrar sayfa okunmaz.
+    """
+    existing = (settings.upstream_refresh_api_key or "").strip()
+    if existing:
+        return existing
+
+    domain = (settings.target_domain or "").strip().lower()
+    if not domain or domain in {"localhost", "127.0.0.1"}:
+        return ""
+
+    owns_client = client is None
+    http = client or httpx.AsyncClient(timeout=10.0)
+    headers = build_page_headers(settings, include_cookie=False)
+    try:
+        try:
+            response = await http.get(
+                f"{settings.base_url}/",
+                headers=headers,
+                timeout=10.0,
+                follow_redirects=True,
+            )
+        except httpx.HTTPError:
+            return ""
+
+        if not (200 <= response.status_code < 400):
+            return ""
+
+        html = response.text or ""
+        found = extract_anon_key_from_text(html)
+        if not found:
+            # Next.js uygulamalarında env değişkenleri `_next/static/chunks/*.js`
+            # içine gömülür; ilk birkaç betiği kontrol et.
+            script_paths: list[str] = []
+            for match in _NEXT_SCRIPT_RE.finditer(html[:200_000]):
+                script_path = match.group("path")
+                if script_path not in script_paths:
+                    script_paths.append(script_path)
+                if len(script_paths) >= 4:
+                    break
+            for script_path in script_paths:
+                try:
+                    js_resp = await http.get(
+                        f"{settings.base_url}{script_path}",
+                        headers=headers,
+                        timeout=8.0,
+                    )
+                except httpx.HTTPError:
+                    continue
+                if 200 <= js_resp.status_code < 400:
+                    found = extract_anon_key_from_text(js_resp.text or "")
+                    if found:
+                        break
+    finally:
+        if owns_client:
+            await http.aclose()
+
+    if found:
+        settings.upstream_refresh_api_key = found
+        logger.info("upstream_refresh_api_key_discovered")
+        return found
+    return ""
+
+
+def derive_refresh_url(settings: Settings, *, slot: int = 1) -> str:
     """Yenileme uç noktasını belirler.
 
     Sıra: açık ayar → çerezdeki JWT'nin `iss` alanı → `base_url` + `/auth/v1`.
@@ -133,10 +283,9 @@ def derive_refresh_url(settings: Settings) -> str:
     configured = (settings.upstream_refresh_url or "").strip()
     if configured:
         return configured
-    cookie = settings.upstream_cookie or ""
-    token = extract_access_token(
-        cookie, cookie_names=settings.upstream_token_cookie_names
-    )
+    cookie = _slot_cookie(settings, slot)
+    cookie_names = _slot_cookie_names(settings, slot)
+    token = extract_access_token(cookie, cookie_names=cookie_names)
     issuer = str(decode_jwt_claims(token).get("iss") or "") if token else ""
     if issuer:
         base = issuer if issuer.rstrip("/").endswith("/auth/v1") else issuer.rstrip("/")
@@ -157,18 +306,34 @@ def derive_refresh_url(settings: Settings) -> str:
     return ""
 
 
-def cookie_refresh_token(settings: Settings) -> str:
+def cookie_refresh_token(settings: Settings, *, slot: int = 1) -> str:
     """Çerezden (yoksa ayarlardan) refresh token'ı döndürür."""
     from_cookie = extract_refresh_token(
-        settings.upstream_cookie or "",
-        cookie_names=settings.upstream_token_cookie_names,
+        _slot_cookie(settings, slot),
+        cookie_names=_slot_cookie_names(settings, slot),
     )
-    return from_cookie or (settings.upstream_refresh_token or "").strip()
+    if slot <= 1:
+        return from_cookie or (settings.upstream_refresh_token or "").strip()
+    return from_cookie or ""
 
 
-def needs_refresh(settings: Settings, *, leeway_seconds: int | None = None) -> bool:
+def cookie_access_token(settings: Settings, *, slot: int = 1) -> str:
+    """Çerezden (yoksa ayarlardan) access token'ı döndürür."""
+    from_cookie = extract_access_token(
+        _slot_cookie(settings, slot),
+        cookie_names=_slot_cookie_names(settings, slot),
+    )
+    return (from_cookie or _slot_access_token(settings, slot)).strip()
+
+
+def needs_refresh(
+    settings: Settings,
+    *,
+    leeway_seconds: int | None = None,
+    slot: int = 1,
+) -> bool:
     """Token (varsa) yakında dolacak mı? Refresh token yoksa her zaman False."""
-    if not cookie_refresh_token(settings):
+    if not cookie_refresh_token(settings, slot=slot):
         return False
     leeway = (
         settings.upstream_refresh_leeway_seconds
@@ -176,9 +341,9 @@ def needs_refresh(settings: Settings, *, leeway_seconds: int | None = None) -> b
         else leeway_seconds
     )
     token = extract_access_token(
-        settings.upstream_cookie or "",
-        cookie_names=settings.upstream_token_cookie_names,
-    ) or (settings.upstream_access_token or "").strip()
+        _slot_cookie(settings, slot),
+        cookie_names=_slot_cookie_names(settings, slot),
+    ) or _slot_access_token(settings, slot)
     if not token:
         # Token hiç okunamıyorsa yine de denemeye değer: oturum bozuk olabilir.
         return True
@@ -188,18 +353,91 @@ def needs_refresh(settings: Settings, *, leeway_seconds: int | None = None) -> b
     return remaining <= leeway
 
 
+def _is_missing_apikey(status: int, payload: dict[str, Any]) -> bool:
+    if status not in (400, 401):
+        return False
+    message = str(
+        payload.get("error_description")
+        or payload.get("msg")
+        or payload.get("message")
+        or payload.get("error")
+        or ""
+    ).lower()
+    return "api key" in message or "apikey" in message
+
+
+def _parse_json_dict(response: httpx.Response) -> dict[str, Any]:
+    try:
+        parsed = response.json()
+        return parsed if isinstance(parsed, dict) else {}
+    except ValueError:
+        return {}
+
+
+#: Yuva başına eşzamanlı token yenileme kilidi: aynı anda birden fazla 401
+#: kurtarması veya arka plan döngüsü + `/token` çakıştığında aynı tek-kullanımlık
+#: `refresh_token` ile paralel istek atılıp oturumun iptal edilmesini önler.
+_REFRESH_LOCKS: dict[tuple[int, int], asyncio.Lock] = {}
+
+
+def _get_refresh_lock(slot: int) -> asyncio.Lock:
+    try:
+        loop_id = id(asyncio.get_running_loop())
+    except RuntimeError:
+        loop_id = 0
+    key = (loop_id, slot)
+    lock = _REFRESH_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _REFRESH_LOCKS[key] = lock
+    return lock
+
+
 async def refresh_upstream_token(
     settings: Settings,
     client: httpx.AsyncClient | None = None,
+    *,
+    slot: int = 1,
 ) -> RefreshOutcome:
     """Refresh token ile yeni erişim token'ı alır ve **ayarlara uygular**.
 
     Başarısızlıkta mevcut token'a dokunulmaz; hata Türkçe ve gizli değer
-    içermeyen bir cümleyle döner.
+    içermeyen bir cümleyle döner. Eşzamanlı çağrılar `asyncio.Lock` ile sıraya
+    alınır; kilit beklenirken başka bir görev token'ı zaten yenilediyse ikinci
+    kez `/auth/v1/token` çağrılmaz.
     """
-    endpoint = derive_refresh_url(settings)
+    token_before = cookie_access_token(settings, slot=slot)
+    refresh_before = cookie_refresh_token(settings, slot=slot)
+
+    async with _get_refresh_lock(slot):
+        token_inside = cookie_access_token(settings, slot=slot)
+        refresh_inside = cookie_refresh_token(settings, slot=slot)
+        if (
+            (token_before and token_inside and token_inside != token_before)
+            or (refresh_before and refresh_inside and refresh_inside != refresh_before)
+        ):
+            rem = token_seconds_remaining(token_inside) if token_inside else None
+            return RefreshOutcome(
+                ok=True,
+                detail="Token eşzamanlı görev tarafından yenilendi (çerez güncellendi).",
+                status_code=200,
+                access_token=token_inside or "",
+                refresh_token=refresh_inside,
+                expires_in=int(rem) if rem is not None and rem > 0 else 3600,
+                notes=["deduplicated_concurrent_refresh"],
+            )
+        return await _refresh_upstream_token_locked(settings, client, slot=slot)
+
+
+async def _refresh_upstream_token_locked(
+    settings: Settings,
+    client: httpx.AsyncClient | None = None,
+    *,
+    slot: int = 1,
+) -> RefreshOutcome:
+    endpoint = derive_refresh_url(settings, slot=slot)
     path = urlsplit(endpoint).path if endpoint else ""
-    refresh_token = cookie_refresh_token(settings)
+    refresh_token = cookie_refresh_token(settings, slot=slot)
     if not refresh_token:
         return RefreshOutcome(
             ok=False,
@@ -226,68 +464,102 @@ async def refresh_upstream_token(
         headers["apikey"] = api_key
         headers["Authorization"] = f"Bearer {api_key}"
 
+    notes: list[str] = []
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=_REFRESH_TIMEOUT)
     try:
-        response = await http.post(
-            endpoint,
-            json={"refresh_token": refresh_token},
-            headers=headers,
-            timeout=_REFRESH_TIMEOUT,
-        )
-    except httpx.HTTPError as exc:
-        logger.warning("upstream_token_refresh_failed", error_type=type(exc).__name__)
-        return RefreshOutcome(
-            ok=False,
-            detail=f"Yenileme isteği başarısız ({type(exc).__name__}).",
+        try:
+            response = await http.post(
+                endpoint,
+                json={"refresh_token": refresh_token},
+                headers=headers,
+                timeout=_REFRESH_TIMEOUT,
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("upstream_token_refresh_failed", error_type=type(exc).__name__)
+            return RefreshOutcome(
+                ok=False,
+                detail=f"Yenileme isteği başarısız ({type(exc).__name__}).",
+                endpoint_path=path,
+            )
+
+        payload = _parse_json_dict(response)
+
+        # Upstream `apikey` istediyse ve henüz yapılandırılmamışsa sayfadan
+        # otomatik keşfetmeyi dene ve isteği bir kez tekrar et.
+        if (
+            response.status_code != 200
+            and not api_key
+            and _is_missing_apikey(response.status_code, payload)
+        ):
+            discovered = await discover_refresh_api_key(settings, http)
+            if discovered:
+                notes.append("apikey otomatik keşfedildi")
+                headers["apikey"] = discovered
+                headers["Authorization"] = f"Bearer {discovered}"
+                try:
+                    response = await http.post(
+                        endpoint,
+                        json={"refresh_token": refresh_token},
+                        headers=headers,
+                        timeout=_REFRESH_TIMEOUT,
+                    )
+                    payload = _parse_json_dict(response)
+                except httpx.HTTPError as exc:
+                    logger.warning(
+                        "upstream_token_refresh_failed",
+                        error_type=type(exc).__name__,
+                    )
+                    return RefreshOutcome(
+                        ok=False,
+                        detail=f"Yenileme isteği başarısız ({type(exc).__name__}).",
+                        endpoint_path=path,
+                        notes=notes,
+                    )
+
+        if response.status_code != 200 or not payload.get("access_token"):
+            detail = _describe_failure(response.status_code, payload, endpoint)
+            logger.warning(
+                "upstream_token_refresh_rejected",
+                status_code=response.status_code,
+                endpoint_path=path,
+                slot=slot,
+            )
+            return RefreshOutcome(
+                ok=False,
+                detail=detail,
+                status_code=response.status_code,
+                endpoint_path=path,
+                notes=notes,
+            )
+
+        access_token = str(payload.get("access_token") or "")
+        new_refresh = str(payload.get("refresh_token") or "") or refresh_token
+        expires_in = payload.get("expires_in")
+        outcome = RefreshOutcome(
+            ok=True,
+            detail="Erişim token'ı yenilendi.",
+            status_code=response.status_code,
+            access_token=access_token,
+            refresh_token=new_refresh,
+            expires_in=int(expires_in) if isinstance(expires_in, (int, float)) else None,
             endpoint_path=path,
+            notes=notes,
         )
+        apply_refresh(settings, outcome, slot=slot)
+        if slot <= 1:
+            await sync_render_env(settings, http)
+        logger.info(
+            "upstream_token_refreshed",
+            endpoint_path=path,
+            expires_in=outcome.expires_in,
+            rotated=bool(payload.get("refresh_token")),
+            slot=slot,
+        )
+        return outcome
     finally:
         if owns_client:
             await http.aclose()
-
-    payload: dict[str, Any] = {}
-    try:
-        parsed = response.json()
-        if isinstance(parsed, dict):
-            payload = parsed
-    except ValueError:
-        payload = {}
-
-    if response.status_code != 200 or not payload.get("access_token"):
-        detail = _describe_failure(response.status_code, payload, endpoint)
-        logger.warning(
-            "upstream_token_refresh_rejected",
-            status_code=response.status_code,
-            endpoint_path=path,
-        )
-        return RefreshOutcome(
-            ok=False,
-            detail=detail,
-            status_code=response.status_code,
-            endpoint_path=path,
-        )
-
-    access_token = str(payload.get("access_token") or "")
-    new_refresh = str(payload.get("refresh_token") or "") or refresh_token
-    expires_in = payload.get("expires_in")
-    outcome = RefreshOutcome(
-        ok=True,
-        detail="Erişim token'ı yenilendi.",
-        status_code=response.status_code,
-        access_token=access_token,
-        refresh_token=new_refresh,
-        expires_in=int(expires_in) if isinstance(expires_in, (int, float)) else None,
-        endpoint_path=path,
-    )
-    apply_refresh(settings, outcome)
-    logger.info(
-        "upstream_token_refreshed",
-        endpoint_path=path,
-        expires_in=outcome.expires_in,
-        rotated=bool(payload.get("refresh_token")),
-    )
-    return outcome
 
 
 def _describe_failure(status: int, payload: dict[str, Any], endpoint: str) -> str:
@@ -315,27 +587,51 @@ def _describe_failure(status: int, payload: dict[str, Any], endpoint: str) -> st
     return f"Yenileme reddedildi (HTTP {status}); mevcut token korunuyor."
 
 
-def apply_refresh(settings: Settings, outcome: RefreshOutcome) -> list[str]:
+def apply_refresh(
+    settings: Settings, outcome: RefreshOutcome, *, slot: int = 1
+) -> list[str]:
     """Yenileme sonucunu ayarlara uygular; değişen alan adlarını döndürür."""
     if not outcome.ok or not outcome.access_token:
         return []
+    suffix = _slot_suffix(slot)
+    access_attr = f"upstream_access_token{suffix}"
+    cookie_attr = f"upstream_cookie{suffix}"
+
     changed: list[str] = []
-    if settings.upstream_access_token != outcome.access_token:
-        settings.upstream_access_token = outcome.access_token
-        changed.append("upstream_access_token")
-    if outcome.refresh_token and settings.upstream_refresh_token != outcome.refresh_token:
+    if getattr(settings, access_attr, "") != outcome.access_token:
+        setattr(settings, access_attr, outcome.access_token)
+        changed.append(access_attr)
+    if (
+        slot <= 1
+        and outcome.refresh_token
+        and settings.upstream_refresh_token != outcome.refresh_token
+    ):
         settings.upstream_refresh_token = outcome.refresh_token
         changed.append("upstream_refresh_token")
+
+    current_cookie = str(getattr(settings, cookie_attr, "") or "")
     rewritten, cookie_changed = rewrite_session_cookie(
-        settings.upstream_cookie or "",
+        current_cookie,
         access_token=outcome.access_token,
         refresh_token=outcome.refresh_token or None,
         expires_in=outcome.expires_in,
     )
-    if cookie_changed and rewritten != settings.upstream_cookie:
-        settings.upstream_cookie = rewritten
-        changed.append("upstream_cookie")
+    if cookie_changed and rewritten != current_cookie:
+        setattr(settings, cookie_attr, rewritten)
+        changed.append(cookie_attr)
+
+    if slot <= 1 and changed:
+        save_runtime_state(settings, source="token_refresh")
     return changed
+
+
+def configured_refresh_slots(settings: Settings) -> list[int]:
+    """Refresh token taşıyan hesap yuvalarını (1..MAX_ACCOUNT_SLOTS) döndürür."""
+    slots: list[int] = []
+    for slot in range(1, MAX_ACCOUNT_SLOTS + 1):
+        if cookie_refresh_token(settings, slot=slot):
+            slots.append(slot)
+    return slots
 
 
 def rewrite_session_cookie(
@@ -345,18 +641,34 @@ def rewrite_session_cookie(
     refresh_token: str | None = None,
     expires_in: int | None = None,
 ) -> tuple[str, bool]:
-    """Oturum çerezindeki JSON'u yeni token'larla günceller.
+    """Oturum çerezindeki JSON'u (veya düz JWT çerezini) yeni token'larla günceller.
 
     Parçalı çerezler (`ad.0`, `ad.1`) orijinal sınır uzunlukları korunarak
-    yeniden bölünür; adlar ve sıra değişmez. Çözülemeyen bir set gelirse
-    çerez **olduğu gibi** döner (`changed=False`) — bozuk bir çerez yazmaktansa
-    hiç dokunmamak doğrudur.
+    yeniden bölünür; ancak yeni gövde parça sınırlarını taşıracak kadar büyüdüyse
+    veya küçüldüyse 4 KB sınırını aşmadan dengeli bölünür. Çözülemeyen bir set
+    gelirse çerez **olduğu gibi** döner (`changed=False`) — bozuk bir çerez
+    yazmaktansa hiç dokunmamak doğrudur.
     """
     if not cookie_header:
         return cookie_header, False
     cookies = parse_cookie_header(cookie_header)
+    if not cookies:
+        return cookie_header, False
     entries = _session_entries(cookies)
     if not entries:
+        # Düz JWT taşıyan oturum çerezi varsa (ör. `sb-access-token=eyJ...`) onu güncelle.
+        for name, value in cookies.items():
+            lowered = name.lower()
+            if lowered in NEVER_TOKEN_COOKIES:
+                continue
+            if any(hint in lowered for hint in DEFAULT_COOKIE_HINTS) and looks_like_jwt(
+                value.strip()
+            ):
+                if cookies[name] == access_token:
+                    return cookie_header, False
+                cookies[name] = access_token
+                rebuilt = "; ".join(f"{k}={v}" for k, v in cookies.items())
+                return rebuilt, True
         return cookie_header, False
 
     base, payload = entries[0]
@@ -377,6 +689,14 @@ def rewrite_session_cookie(
         cookies[base] = encoded
     else:
         lengths = [len(cookies.get(f"{base}.{index}", "")) for index in indices]
+        # Orijinal parça boyları yeni gövdeye uyuyorsa birebir koru; aksi halde
+        # (boş parça oluşacaksa veya son parça 4 KB sınırını aşacaksa) dengeli böl.
+        prefix_sum = sum(lengths[:-1])
+        last_len = len(encoded) - prefix_sum
+        if prefix_sum >= len(encoded) or last_len > _MAX_COOKIE_CHUNK_LEN:
+            even_size = max(1, (len(encoded) + len(indices) - 1) // len(indices))
+            lengths = [even_size] * len(indices)
+
         cursor = 0
         for position, index in enumerate(indices):
             is_last = position == len(indices) - 1

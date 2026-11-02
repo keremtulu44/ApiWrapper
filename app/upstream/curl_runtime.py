@@ -6,7 +6,9 @@ from urllib.parse import urlsplit
 
 from app.core.config import MAX_ACCOUNT_SLOTS, Settings
 from app.core.logging import get_logger
+from app.upstream.auth import extract_access_token, extract_refresh_token, token_expiry
 from app.upstream.curl_import import build_settings, looks_like_stream_path, parse_curl
+from app.upstream.state_store import save_runtime_state
 
 logger = get_logger(__name__)
 
@@ -102,8 +104,15 @@ def apply_curl_to_settings(
         if getattr(settings, field, None) != new_value:
             setattr(settings, field, new_value)
             changed.append(field)
+    # Yeni cURL ile gelen çerezin refresh token'ını da hizala (eski dönmüş
+    # token yeni oturumu ezmesin).
+    settings.upstream_refresh_token = (
+        extract_refresh_token(settings.upstream_cookie or "") or ""
+    )
     # Ham cURL bellekte tutulmaz: yalnızca çıkarılan alanlar yaşar.
     settings.upstream_curl = ""
+    if changed:
+        save_runtime_state(settings, source="curl_import")
     logger.info("upstream_curl_hot_swapped", fields=changed, warnings=len(warnings))
     return {"fields": changed, "model_id": model_id, "warnings": warnings}
 
@@ -149,6 +158,39 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
         for key, field in _CURL_FIELDS.items()
         if key in env
     }
+    # Render'da `UPSTREAM_CURL` sabit kalırken `sync_render_env` dönen taze
+    # çerezi `UPSTREAM_COOKIE` / `UPSTREAM_REFRESH_TOKEN` ortam değişkenine
+    # yazar. Restart sonrası `UPSTREAM_COOKIE` içindeki JWT `exp` süresi
+    # `UPSTREAM_CURL` içindekinden daha yeniyse, dönmüş taze oturumu koru.
+    env_token = (settings.upstream_access_token or "").strip() or extract_access_token(
+        settings.upstream_cookie or ""
+    )
+    curl_token = (env.get("UPSTREAM_ACCESS_TOKEN") or "").strip() or extract_access_token(
+        env.get("UPSTREAM_COOKIE") or ""
+    )
+    env_exp = token_expiry(env_token) if env_token else None
+    curl_exp = token_expiry(curl_token) if curl_token else None
+    if env_exp is not None and (curl_exp is None or env_exp > curl_exp):
+        if settings.upstream_cookie:
+            updates["upstream_cookie"] = settings.upstream_cookie
+        if settings.upstream_access_token:
+            updates["upstream_access_token"] = settings.upstream_access_token
+        if settings.upstream_extra_headers:
+            curl_extra = settings.model_copy(
+                update={
+                    "upstream_extra_headers": str(
+                        updates.get("upstream_extra_headers") or ""
+                    )
+                }
+            ).parsed_extra_headers()
+            curl_extra.update(settings.parsed_extra_headers())
+            updates["upstream_extra_headers"] = ";".join(
+                f"{k}={v}" for k, v in curl_extra.items()
+            )
+        logger.info("upstream_curl_kept_fresher_env_cookie", env_exp=env_exp, curl_exp=curl_exp)
+    winning_cookie = str(updates.get("upstream_cookie") or settings.upstream_cookie or "")
+    if winning_refresh := extract_refresh_token(winning_cookie):
+        updates["upstream_refresh_token"] = winning_refresh
     # İsteğe bağlı alanlar cURL'de yoksa önceki secret/env'den özel değer
     # taşıma; sınıfın güvenli varsayılanına dön. Özellikle eski statik CAPTCHA
     # token'ının yeni oturumda kullanılmasını önler.

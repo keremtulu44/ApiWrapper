@@ -229,6 +229,14 @@ class Settings(BaseSettings):
     #: Refresh token (çerezden okunamıyorsa). Yenilemede dönen yeni değer
     #: bellekte buraya yazılır.
     upstream_refresh_token: str = ""
+    #: Dönen refresh/access token ve türev değerlerin süreç yeniden başladığında
+    #: kaybolmaması için atomik olarak yazılacağı yerel durum dosyası
+    #: (örn. ".cache/upstream_state.json"). Boşsa diske yazılmaz.
+    upstream_state_file: str = ""
+    #: Render gibi geçici diskli ortamlarda dönen oturum bilgilerini servis env
+    #: değişkenlerine sessizce yazmak için opsiyonel Render API bilgileri.
+    render_api_key: str = ""
+    render_service_id: str = ""
 
     # ------------------------------------------------------------- keepalive
     #: 0 = kapalı. Örn. 10800 üç saatte bir sentetik non-stream completion.
