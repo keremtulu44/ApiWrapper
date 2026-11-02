@@ -45,6 +45,9 @@ benden izin al" dedi. Bu yüzden:
 | #4 | `arena/d1587a5b-apiwrapper` | `arena/c55e601b-apiwrapper` | `b2ba4d1` |
 | #5 | `arena/9fb06017-apiwrapper` | `arena/c55e601b-apiwrapper` | `80ac8a8` |
 | #6 | `arena/9fb06017-apiwrapper` | `arena/c55e601b-apiwrapper` | `df5e0e0` |
+| #7 | `arena/9fb06017-apiwrapper` | `arena/c55e601b-apiwrapper` | `d9ca3f2` |
+| #8 | `arena/e0d5b9b0-apiwrapper` | `arena/c55e601b-apiwrapper` | `6ec6d2f` |
+| #9 | `arena/72e4a3e6-apiwrapper` | `arena/c55e601b-apiwrapper` | `8912185` |
 
 Yeni bir merge yapıldığında bu tabloya bir satır ekleyin.
 
