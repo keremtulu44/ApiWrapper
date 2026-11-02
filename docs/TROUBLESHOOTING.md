@@ -171,10 +171,11 @@ tazeleme → sıyırma → hata.
    `cx` + referer yolunu **anında** uygular. Deploy yok, cURL yok.
    * `✓ Oturum yakalandı` → bir mesaj atıp test edin.
    * `⚠ Oturum yakalanamadı` → site oturumu tamamen düşmüş; 2. adıma geçin.
-2. **Telefonda giriş + cURL:** siteye giriş yapıp bir mesaj gönderin, isteği
-   cURL olarak alın (mobilde DevTools olmadığı için **Kiwi Browser** — dahili
-   DevTools — veya **Firefox Android + HTTP header eklentisi** kullanın), sonra
-   **`/curl <cURL>`** ile gönderin. Bu da deploy gerektirmez.
+2. **Elinde çerez satırı varsa:** `/cookie ad=değer; ad2=değer2` — cURL'ün
+   tamamı gerekmez, wrapper `access_token`'ı kendisi ayıklar.
+   Tam cURL varsa `/curl <cURL>`.
+   Mobilde bu satırı nasıl alacağın: **[`MOBILE_CURL.md`](MOBILE_CURL.md)**
+   (Chrome/Safari'de DevTools yok; eklenti çalıştıran Android tarayıcı gerekir).
 3. Son çare **Render:** `UPSTREAM_CURL` secret'ını güncelleyip Manual Deploy.
 4. Doğrula: bot'a bir mesaj atın ya da `/ping` → `✓ Son upstream kontrolü: ...`.
 

@@ -31,7 +31,7 @@ _HELP = (
     "ApiWrapper test botu aktif.\n"
     "Bir metin gönderin; wrapper /v1/chat/completions üzerinden yanıt üretir.\n"
     "Komutlar: /ping (wrapper + son upstream kontrolü), /yenile (sunucu "
-    "tarayıcısıyla oturumu tazele), /curl <cURL> (elle cURL), /help.\n"
+    "tarayıcısıyla oturumu tazele), /cookie <çerez> ya da /curl <cURL>, /help.\n"
     "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
 )
 
@@ -221,6 +221,9 @@ class TelegramBot:
         if command in {"/yenile", "/refresh", "/capture"}:
             await self.capture_upstream_session(chat_id)
             return
+        if command in {"/cookie", "/cerez"}:
+            await self.send_cookie(chat_id, text)
+            return
         if text.startswith("/"):
             await self.send_text(chat_id, "Bilinmeyen komut. /help yazın.")
             return
@@ -247,6 +250,46 @@ class TelegramBot:
         # Süreç ayakta olsa da upstream oturumu ölmüş olabilir.
         lines.append(describe_probe(last_probe()))
         await self.send_text(chat_id, "\n".join(lines))
+
+    async def send_cookie(self, chat_id: int, text: str) -> None:
+        """Yalnızca çerez satırıyla oturumu tazeler (mobilde en kolay yol)."""
+        parts = text.split(maxsplit=1)
+        body = parts[1].strip() if len(parts) > 1 else ""
+        if not body:
+            await self.send_text(
+                chat_id,
+                "Kullanım: /cookie ad=değer; ad2=değer2\n"
+                "Tarayıcıdaki oturum çerezlerini (access_token içeren satırı) "
+                "kopyalayıp yapıştırın; cURL gerekmez.",
+            )
+            return
+        try:
+            response = await self.wrapper.post(
+                "/v1/admin/upstream/cookie", json={"cookie": body}
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("telegram_cookie_upload_failed", error_type=type(exc).__name__)
+            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; çerez uygulanmadı.")
+            return
+
+        payload: dict[str, Any] = {}
+        try:
+            payload = response.json()
+        except ValueError:  # pragma: no cover
+            payload = {}
+        if response.status_code != 200:
+            error = payload.get("error") if isinstance(payload, dict) else None
+            detail = (
+                str(error.get("message") or "")
+                if isinstance(error, dict)
+                else f"HTTP {response.status_code}"
+            )
+            await self.send_text(chat_id, "Çerez uygulanamadı: " + detail)
+            return
+        await self.send_text(
+            chat_id,
+            "✓ Çerez uygulandı. Şimdi bir mesaj atarak test edin.",
+        )
 
     async def capture_upstream_session(self, chat_id: int) -> None:
         """Sunucudaki Chromium ile taze oturum yakalar (telefonda DevTools gerekmez)."""
