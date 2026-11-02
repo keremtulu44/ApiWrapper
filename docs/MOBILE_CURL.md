@@ -11,6 +11,11 @@ dürüst cevabıdır.
 | Oturum tamamen düşmüş, elinde çerez satırı var | kolay | `/cookie ad=değer; ...` |
 | Elinde tam cURL var (masaüstü/başka cihaz) | kolay | `/curl <cURL>` |
 | Ne çerez ne cURL üretebiliyorsun | tarayıcı/araç gerekir | aşağıdaki 3. bölüm |
+| Emin değilsin: çerez işe yarar mı? | hiçbir şeyi bozmaz | `?dry_run=true` |
+
+**Altın kural:** `/yenile` ve `/capture` **asla giriş yapmaz** (parola/OTP/SMS
+yolu yoktur). Oturum öldüyse tek çözüm, giriş yapmış tarayıcıdan **çerez**
+getirmektir.
 
 ## 1. Neden telefondan doğrudan cURL alınamıyor?
 
@@ -62,29 +67,76 @@ API: `POST /v1/admin/upstream/capture` (gövdesiz).
 Wrapper'ın ihtiyacı olan asıl şey `Cookie` başlığıdır (içinden `access_token`
 ayıklanır). Bu tek satırdır; cURL'ün tamamını kopyalamak gerekmez.
 
-### 3.1 Eklenti destekleyen Android tarayıcı + Cookie-Editor
+### 3.1 Neden tarayıcı eklentisi gerekiyor?
 
-1. Chromium tabanlı, **masaüstü eklentisi** çalıştırabilen bir Android tarayıcı
-   kurun (ör. **Mises**, **Lemur**; **Kiwi** arşivlenmiş olsa da hâlâ çalışıyor).
-2. Mağazadan **Cookie-Editor** eklentisini ekleyin.
-3. Sitede giriş yapın → Cookie-Editor → **Export → Header String**
-   (çıktı: `ad=değer; ad2=değer2`).
-4. Telegram'a: `/cookie <yapıştır>`.
+Oturum çerezleri neredeyse her zaman **HttpOnly**'dir: sayfa JavaScript'i
+(`document.cookie`) onları **göremez**. Bu yüzden "adres çubuğuna küçük bir kod
+yazdırıp çerezleri kopyalama" yöntemi genelde çalışmaz — görünse bile oturum
+çerezi eksik kalır. Eklentiler tarayıcının çerez API'sini kullandığı için
+HttpOnly çerezleri de görebilir.
 
-Wrapper, oturum çerezi gibi görünmeyen metni reddeder (yanlışlıkla çalışan
-oturumun silinmemesi için).
+| Telefon | Durum |
+|---|---|
+| **Android + normal Chrome** | Eklenti yok → çerez dışa aktaramaz |
+| **Android + eklenti destekli tarayıcı** | ✅ En pratik yol (aşağıdaki adımlar) |
+| **iPhone / iPad (Safari, Chrome)** | Eklentiyle çerez dışa aktarma fiilen yok → masaüstünden bir kez `/curl`, ya da ağ paneli gösteren bir tarayıcı uygulaması |
+| **Masaüstü (bir kez)** | En kolayı: DevTools → `create-evaluation` → Copy as cURL → `/curl` |
 
-### 3.2 Firefox (Android) + başlık/çerez eklentisi
+### 3.2 Android: eklenti destekli tarayıcı + Cookie-Editor (adım adım)
 
-Firefox Android eklenti listesi kısıtlıdır; çerez/başlık dışa aktaran bir eklenti
-varsa aynı yöntem işler: çerez satırını kopyala → `/cookie ...`.
+1. Play Store'dan **masaüstü eklentisi** çalıştırabilen bir Chromium tarayıcı
+   kurun: **Mises**, **Lemur** veya **Kiwi** (arşivlenmiş olsa da çalışıyor).
+2. Bu tarayıcıda siteye **giriş yapın** (önemli: çerezler bu tarayıcıda oluşur).
+3. Aynı tarayıcıya **Cookie-Editor** eklentisini ekleyin (Chrome Web Store'dan).
+4. Eklentiyi açın → **Export** → iki biçim de olur:
+   * **Header String** → `ad=değer; ad2=değer2`
+   * **JSON** → `[{"name": "...", "value": "..."}, ...]`
+5. Telegram'a yapıştırın: `/cookie <çıktı>`
 
-### 3.3 İleri seviye: Termux + mitmproxy
+**Önce denemek isterseniz (hiçbir şeyi değiştirmez):**
+
+```bash
+curl -X POST "https://<servis>/v1/admin/upstream/cookie?dry_run=true" \
+  -H "Authorization: Bearer <API_KEY>" -H 'content-type: application/json' \
+  -d '{"cookie":"<çerez>"}'
+```
+
+Yanıt: `cookie_names`, `session_cookie_found`, `access_token_found`,
+`safe_to_apply`. `safe_to_apply: false` ise o set **oturum taşımıyor** —
+uygulanırsa çalışan oturum ezilebilir.
+
+Bot tarafında koruma: `/cookie` komutu çerezi önce inceler ve oturum çerezi
+yoksa **uygulamaz**, gelen adları yazar. Yine de uygulamak isterseniz:
+**`/cookie! <çerez>`** (kontrolü atlar).
+
+### 3.3 iPhone / iPad
+
+Safari'de HttpOnly çerezleri dışa aktarmanın pratik bir yolu yok. Seçenekler:
+
+1. **Masaüstünden bir kez** `create-evaluation` → *Copy as cURL* → `/curl <cURL>`.
+   Sonrasında damga eskimesi gibi sorunlarda `/yenile` yeterli olur.
+2. Ağ/Web Inspector paneli sunan bir iOS tarayıcı uygulaması (ör. **Inspect
+   Browser** benzeri araçlar) ile isteğin `Cookie` başlığını kopyalamak —
+   uygulamaya göre değişir, garanti değil.
+3. iPhone'da **Firefox** kurup eklenti listesinde çerez dışa aktaran bir eklenti
+   varsa aynı yöntem işler (liste kısıtlıdır).
+
+### 3.4 Masaüstü: en garanti yol (tek seferlik)
+
+1. Chrome/Firefox'ta siteye girin, bir sohbet mesajı gönderin.
+2. DevTools → **Network** → `create-evaluation` isteği → sağ tık →
+   **Copy → Copy as cURL**.
+3. Telegram'a: `/curl <yapıştır>` (veya `POST /v1/admin/upstream/curl`).
+
+cURL'de hem `cookie` hem `authorization` başlığı varsa ikisi de uygulanır ve
+sonraki istekler tam kimlikle gider.
+
+### 3.5 İleri seviye: Termux + mitmproxy
 
 Telefonda `mitmproxy` çalıştırıp trafiği izlemek teknik olarak mümkündür ama sertifika
 kurulumu/Android sürüm kısıtları nedeniyle zahmetlidir. Önerilmez.
 
-### 3.4 En pratik alternatif
+### 3.6 En pratik alternatif
 
 Bir kereliğine masaüstü/başka bir cihazda: DevTools → Network → ilgili istek →
 **Copy as cURL** → Telegram `/curl <...>`. Sonrasında sunucu tarayıcısı devralır.

@@ -15,6 +15,19 @@ servis bu dalı takip eder; `main` yalnızca kullanıcı açıkça isterse günc
 | **Çalışma dalı** | Oturumun kendi dalı (`arena/<oturum>-apiwrapper`); commit + push yalnız oraya |
 | **PR akışı** | Oturum dalı → `arena/c55e601b-apiwrapper` (base değiştirilir, sonra `gh pr merge`) |
 | **Deploy** | Render `arena/c55e601b-apiwrapper` dalını otomatik deploy eder |
+| **Onay** | **Merge = deploy.** Kullanıcı o mesajda açıkça izin vermedikçe merge **yapılmaz** |
+
+## Onay kuralı (2026-11 — kullanıcı talebi)
+
+Merge, Render'da yeni bir deploy demek. Kullanıcı "dakka başı deploy oluyor,
+benden izin al" dedi. Bu yüzden:
+
+1. **Commit + push + PR açmak serbesttir** (deploy tetiklemez).
+2. **Merge yalnızca kullanıcı o turda açıkça onaylarsa yapılır** ("merge et",
+   "yayına al", "evet" gibi). Onay yoksa dal açık PR olarak bekler.
+3. Bir turda birden fazla PR birleştirilmez; onay tek PR içindir.
+4. Acil durum istisnası yok: canlıda bir şey bozuksa bile önce kullanıcıya
+   "şu düzeltmeyi merge edeyim mi?" diye sorulur.
 
 ## Neden
 

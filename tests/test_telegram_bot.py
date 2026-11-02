@@ -209,6 +209,18 @@ async def test_cookie_command_reports_token_sync():
         return ok_telegram(request)
 
     def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        if "dry_run" in request.url.query.decode():
+            return httpx.Response(
+                200,
+                json={
+                    "status": "inspected",
+                    "safe_to_apply": True,
+                    "cookie_names": ["arena-auth-prod-v1.0"],
+                    "session_cookie_found": True,
+                    "access_token_found": True,
+                    "access_token_expired": False,
+                },
+            )
         return httpx.Response(
             200,
             json={
@@ -278,3 +290,78 @@ async def test_yenile_failure_names_the_cookies_that_arrived():
     assert "__cf_bm, _dd_s" in text
     assert "Oturum çerezi" in text
     assert "yüklenen çerez: 2" in text
+
+
+@pytest.mark.asyncio
+async def test_cookie_without_session_is_refused_before_applying():
+    """Oturum çerezi olmayan set, çalışan oturumun üzerine yazmamalı."""
+    sent: list[dict[str, Any]] = []
+    applied_calls = 0
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal applied_calls
+        if "dry_run" in request.url.query.decode():
+            return httpx.Response(
+                200,
+                json={
+                    "status": "inspected",
+                    "safe_to_apply": False,
+                    "cookie_names": ["__cf_bm", "_dd_s"],
+                    "session_cookie_found": False,
+                    "access_token_found": False,
+                },
+            )
+        applied_calls += 1
+        return httpx.Response(200, json={"status": "applied", "fields": ["upstream_cookie"]})
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/cookie __cf_bm=bm; _dd_s=rum"})
+
+    assert applied_calls == 0, "uygunsuz çerez uygulanmamalı"
+    assert "__cf_bm" in sent[-1]["text"]
+    assert "/cookie!" in sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_cookie_bang_forces_the_swap():
+    """/cookie! kontrolü atlar: oturum adı tanınmayan ama geçerli setler de geçebilsin."""
+    applied_calls = 0
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal applied_calls
+        if "dry_run" in request.url.query.decode():
+            return httpx.Response(
+                200,
+                json={"status": "inspected", "safe_to_apply": False, "cookie_names": []},
+            )
+        applied_calls += 1
+        return httpx.Response(200, json={"status": "applied", "fields": ["upstream_cookie"]})
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/cookie! ozel_isim=deger"})
+
+    assert applied_calls == 1
+    assert "Çerez uygulandı" in sent[-1]["text"]
