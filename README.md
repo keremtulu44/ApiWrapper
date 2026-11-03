@@ -10,12 +10,30 @@ OpenAI-compatible istemcilerle çalışır.
 ```
 
 Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** ·
+büyük resim ve 3 çerez katmanı: **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)** ·
+çerez ömrü ve otomatik yenileme: **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)** ·
+Render kurulumu: **[`docs/RENDER.md`](docs/RENDER.md)** ·
+mobilden çerez/cURL alma: **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** ·
 arıza/teşhis için: **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** ·
 son uçtan uca denetim kaydı: **[`docs/AUDIT_2026_11.md`](docs/AUDIT_2026_11.md)**
 
 > **Merge hedefi:** tüm değişiklikler **`arena/c55e601b-apiwrapper`** dalına
 > merge edilir; Render bu dalı deploy eder, **`main` dokunulmaz**.
 > Ayrıntı ve geçmiş: **[`docs/MERGE_TARGET.md`](docs/MERGE_TARGET.md)**
+
+---
+
+## Hızlı Belge ve Operasyon Rehberi
+
+Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damgası**, **Geçici reCAPTCHA/Anti-bot**) birbirinden ayırarak kendi kendini idame ettirir (`self-healing`):
+
+| Konu | Belge | Kısa Özet |
+|---|---|---|
+| **Büyük Resim & 3 Katman** | **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)** | Neden saat başı cURL gerekmez? Hangi değer sabit, hangisi döner, sistem nasıl kendi kendine yeniler? |
+| **Çerez Ömrü & Otomatik Refresh** | **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)** | `refresh_token` rotasyonu, `apikey` otomatik keşfi, parçalı çerez (`.0`/`.1`) yeniden yazımı ve 401 kurtarma |
+| **Render 7/24 Kurulumu** | **[`docs/RENDER.md`](docs/RENDER.md)** | `UPSTREAM_CURL`, `RENDER_API_KEY` ile restart sonrası kalıcılık ve gömülü Telegram botu |
+| **Telefondan Yönetim** | **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** | Bilgisayar yokken `/tani`, `/token`, `/apikey`, `/yenile`, `/cookie` ve `/curl` komutları |
+| **Arıza & Teşhis Sözlüğü** | **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** | 401 / 403 / 409 / 429 hata kodlarının anlamı ve otomatik kurtarma kademeleri |
 
 ---
 
@@ -107,9 +125,13 @@ Desteklenen çerez biçimleri (`app/upstream/auth.py`):
 > `UPSTREAM_EXTRA_HEADERS` en son uygulanır; `authorization=...` yazarak
 > otomatik üretilen başlığı bilinçli olarak ezebilirsiniz.
 >
-> Cookie içindeki `refresh_token` ayrıştırılıp `/v1/admin/auth` altında maskeli olarak
-> teşhis edilebilir. Ancak hedefe özel refresh HTTP çağrısı henüz uygulanmamıştır;
-> access token yenilemesi için upstream'in gerçek refresh isteği/cevabı tanımlanmalıdır.
+> **Otomatik Token Yenileme & Kalıcılık (`app/upstream/refresh.py`, `app/upstream/state_store.py`):**
+> Oturum çerezindeki `refresh_token` ayrıştırılır; `access_token` bitmesine 10 dk
+> kala (veya istek anında 401 alındığında) otomatik yenilenir, parçalı çereze ve
+> aktif `AccountPool` / `UpstreamClient` cookie jar'larına yayılır. Dönen yeni
+> `refresh_token` yerel durum dosyasına (`UPSTREAM_STATE_FILE`) ve yapılandırılmışsa
+> Render servis ortam değişkenlerine (`RENDER_API_KEY` + `RENDER_SERVICE_ID`)
+> sessizce kaydedilir. Ayrıntılar: **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)**.
 
 ### Teşhis
 
@@ -236,7 +258,7 @@ for chunk in stream:
 | Kaynak | Belirti | Çözüm |
 |---|---|---|
 | Yerel API | `Unknown endpoint … /chat/completions` | `base_url` olarak `http://localhost:8000` veya `http://localhost:8000/v1` kullanın (ikisi de çalışır). Bilinmeyen model `model_not_found` döner. |
-| Upstream | `upstream_not_found` / logda `HTTP 404` | `UPSTREAM_STREAM_PATH` tarayıcıdaki gerçek yolla uyuşmuyor. `python scripts/curl_to_env.py request.txt --write` çalıştırın. Yeni uçlar genelde `/nextjs-api/stream/create-evaluation` kullanır ve `chat_id`'yi URL'ye koymaz. |
+| Upstream | `upstream_not_found` / logda `HTTP 404` | `UPSTREAM_STREAM_PATH` tarayıcıdaki gerçek yolla uyuşmuyor. Mobilde önce Telegram `/yenile` deneyin; bot `Akış yolu: yakalandı` derse yeni yol uygulanmıştır. Yakalanamazsa sohbet POST isteğinin tam cURL'ünü `/curl <cURL>` ile gönderin; bilgisayarda `python scripts/curl_to_env.py request.txt --write` kullanılabilir. Yeni uçlar genelde `/nextjs-api/stream/create-evaluation` kullanır ve `chat_id`'yi URL'ye koymaz. |
 
 `python scripts/compare_curl.py request.txt` artık **URL yolunu** da karşılaştırır; buradaki `FARKLI` satırı 404'ün doğrudan nedenidir.
 

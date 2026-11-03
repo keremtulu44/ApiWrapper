@@ -36,7 +36,11 @@ tarafına taşıdık.
 
 Sunucudaki Chromium (reCAPTCHA için zaten çalışıyor) hedef sayfayı **elimizdeki
 çerezle** açar, gerçek bir `create-evaluation` isteğini yakalar ve cookie +
-`dpl_...` sürüm damgası + `cx` + referer yolunu uygular.
+`dpl_...` sürüm damgası + `cx` + referer yolu yanında gerçek akış URL yolunu da
+uygular. Bot yanıtında **“Akış yolu: yakalandı”** görürseniz eski
+`UPSTREAM_STREAM_PATH` güncellenmiştir. Yalnız “Oturum yakalandı” yazıyor ama
+akış yolu yakalanmadıysa 404'ün yolu hâlâ düzelmemiştir; güncel sohbet cURL'ünü
+`/curl <cURL>` ile göndermek gerekir.
 
 ### `/yenile` neyi yapar, neyi **asla** yapamaz
 

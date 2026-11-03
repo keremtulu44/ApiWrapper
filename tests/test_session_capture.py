@@ -153,10 +153,48 @@ def test_capture_collects_cookies_stamp_and_referer():
     assert result.cookies == FRESH_COOKIE
     assert result.deployment_id == STAMP
     assert result.cx == "cx-value-123"
+    assert result.stream_path == "/nextjs-api/stream/create-evaluation"
     assert result.logged_in is True
     assert result.referer_path == "/text/direct"
     assert "gerçek sohbet isteği yakalandı" in result.notes
     assert page.closed is True, "sayfa her durumda kapatılmalı"
+
+
+def test_capture_templates_dynamic_id_in_the_stream_path():
+    chat_id = "01a199f6-5355-7fdb-a8d3-f651a68db7fa"
+    page = FakePage(
+        requests=[
+            FakeRequest(
+                f"https://upstream.test/api/stream/{chat_id}?mode=direct",
+                {},
+            )
+        ],
+        url="https://upstream.test/text/direct",
+    )
+    context = FakeContext(
+        page, [{"name": "arena-auth-prod-v1.0", "value": "fresh-session"}]
+    )
+
+    result = _run(capture_session(context, make_settings(), wait_ms=0))
+
+    assert result.stream_path == "/api/stream/{chat_id}?mode=direct"
+
+
+def test_capture_does_not_take_a_stream_path_from_another_host():
+    page = FakePage(
+        requests=[
+            FakeRequest("https://analytics.test/stream/create-evaluation", {})
+        ],
+        url="https://upstream.test/text/direct",
+    )
+    context = FakeContext(
+        page, [{"name": "arena-auth-prod-v1.0", "value": "fresh-session"}]
+    )
+
+    result = _run(capture_session(context, make_settings(), wait_ms=0))
+
+    assert result.stream_path is None
+    assert "gerçek sohbet isteği yakalandı" not in result.notes
 
 
 def test_capture_reports_missing_session_instead_of_failing():
@@ -210,6 +248,7 @@ def test_apply_capture_updates_cookie_headers_and_referer():
         deployment_headers={"x-deployment-id": STAMP},
         cx="cx-value-123",
         referer_path="/text/direct",
+        stream_path="/nextjs-api/stream/create-evaluation",
         logged_in=True,
     )
 
@@ -217,11 +256,17 @@ def test_apply_capture_updates_cookie_headers_and_referer():
 
     assert settings.upstream_cookie == FRESH_COOKIE
     assert settings.upstream_referer_path == "/text/direct"
+    assert settings.upstream_stream_path == "/nextjs-api/stream/create-evaluation"
     headers = settings.parsed_extra_headers()
     assert headers["x-deployment-id"] == STAMP
     assert headers["cx"] == "cx-value-123"
     assert headers["accept"] == "text/plain", "diğer başlıklar korunmalı"
-    assert set(changed) >= {"upstream_cookie", "upstream_extra_headers", "upstream_referer_path"}
+    assert set(changed) >= {
+        "upstream_cookie",
+        "upstream_extra_headers",
+        "upstream_referer_path",
+        "upstream_stream_path",
+    }
 
 
 def test_apply_capture_keeps_existing_stamp_when_capture_has_none():
@@ -306,6 +351,8 @@ def test_admin_capture_endpoint_applies_session_without_secrets_in_response():
     assert body["logged_in"] is True
     assert body["cookie_found"] is True
     assert body["deployment_found"] is True
+    assert body["stream_path_found"] is True
+    assert app.state.settings.upstream_stream_path == "/nextjs-api/stream/create-evaluation"
     # Teşhis alanları: "cookie var" demek yetmiyor, hangi çerezler geldiği önemli.
     assert "arena-auth-prod-v1.0" in body["cookie_names"]
     assert body["session_cookie_found"] is True
@@ -315,6 +362,43 @@ def test_admin_capture_endpoint_applies_session_without_secrets_in_response():
     assert settings.upstream_cookie.startswith("arena-auth-prod-v1.0=fresh-session")
     assert app.state.settings.parsed_extra_headers()["x-deployment-id"] == STAMP
     assert provider.invalidated is True
+
+
+def test_admin_capture_reports_when_it_did_not_observe_the_stream_path():
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+
+    original_path = "/old/stream/path"
+    settings = make_settings(
+        upstream_cookie=OLD_COOKIE,
+        upstream_stream_path=original_path,
+    )
+    app = create_app(settings)
+
+    class FakeProvider:
+        async def browser_context(self) -> FakeContext:
+            page = FakePage(url="https://upstream.test/text/direct", requests=[])
+            return FakeContext(
+                page, [{"name": "arena-auth-prod-v1.0", "value": "fresh-session"}]
+            )
+
+        def invalidate(self) -> None:
+            return None
+
+    with TestClient(app) as client:
+        app.state.recaptcha = FakeProvider()  # type: ignore[assignment]
+        response = client.post(
+            "/v1/admin/upstream/capture",
+            headers={"Authorization": f"Bearer {TEST_API_KEY}"},
+        )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["logged_in"] is True
+    assert body["stream_path_found"] is False
+    assert "UPSTREAM_STREAM_PATH değişmedi" in body["next"]
+    assert settings.upstream_stream_path == original_path
 
 
 def test_admin_capture_requires_api_key():
@@ -350,7 +434,8 @@ async def test_telegram_yenile_reports_capture_result():
                 "cookie_found": True,
                 "deployment_found": True,
                 "cx_found": False,
-                "fields": ["upstream_cookie"],
+                "stream_path_found": True,
+                "fields": ["upstream_cookie", "upstream_stream_path"],
                 "next": "Bir mesaj atarak test edin.",
             },
         )
@@ -379,6 +464,7 @@ async def test_telegram_yenile_reports_capture_result():
     assert "yakalanıyor" in sent[0]["text"]
     assert "Oturum yakalandı" in sent[-1]["text"]
     assert "upstream_cookie" in sent[-1]["text"]
+    assert "Akış yolu: yakalandı" in sent[-1]["text"]
 
 
 # ------------------------------------- yakalama hatası çalışan oturumu bozmamalı

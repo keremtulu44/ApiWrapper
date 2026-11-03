@@ -9,8 +9,9 @@ de yok. Bu modül yakalamayı **telefonun yerine servisteki tarayıcıya** yapt�
 1. Zaten var olan cookie/token bağlama yüklenir,
 2. hedef sayfa açılır (uygulama kendi oturum yenilemesini tetikleyebilir),
 3. **gerçek** bir `create-evaluation` isteği yakalanır: cookie'ler, `dpl_...`
-   sürüm damgası, `cx` ve referer yolu,
-4. sonuç çalışan ayarlara uygulanır.
+   sürüm damgası, `cx`, referer yolu ve akış endpoint yolu,
+4. sonuç çalışan ayarlara uygulanır; yakalanan sohbet yolu eski
+   `UPSTREAM_STREAM_PATH` değerini düzeltebilir.
 
 Burada hiçbir DOM ayrıntısı zorunlu değildir: sohbet kutusu bulunamazsa bile
 sayfa yüklemesi sırasında giden herhangi bir API isteğinden başlıklar okunur.
@@ -22,9 +23,11 @@ from __future__ import annotations
 import base64
 import binascii
 import contextlib
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from app.core.config import Settings
 from app.core.logging import get_logger
@@ -36,13 +39,11 @@ from app.upstream.auth import (
     token_expiry,
     token_seconds_remaining,
 )
+from app.upstream.curl_import import looks_like_stream_path, stream_path_template
 from app.upstream.headers import DEPLOYMENT_HEADERS
 from app.upstream.state_store import save_runtime_state
 
 logger = get_logger(__name__)
-
-#: Sohbet isteği sayılacak URL parçaları (uç yolu ayarlardan da eklenir).
-_STREAM_HINTS = ("create-evaluation", "post-to-evaluation", "stream")
 
 #: "Giriş yapılmamış" sayılan URL parçaları.
 _LOGIN_HINTS = ("login", "signin", "sign-in", "auth/", "welcome")
@@ -61,6 +62,8 @@ class CaptureResult:
     deployment_id: str | None = None
     cx: str | None = None
     referer_path: str | None = None
+    #: Gerçek sohbet isteğinden alınan, `{chat_id}`'si normalize edilmiş yol.
+    stream_path: str | None = None
     logged_in: bool = False
     triggered_request: bool = False
     final_url: str = ""
@@ -237,8 +240,35 @@ async def capture_session(
         if lowered.get("apikey"):
             observed.setdefault("refresh_api_key", str(lowered["apikey"]))
         url = str(getattr(request, "url", ""))
-        if any(hint in url for hint in (*_STREAM_HINTS, settings.upstream_stream_path)):
+        parsed_url = urlsplit(url)
+        target_host = urlsplit("//" + settings.target_domain).hostname
+        request_host = parsed_url.hostname
+        configured_path = urlsplit(settings.upstream_stream_path).path
+        same_host = bool(
+            target_host
+            and request_host
+            and request_host.lower() == target_host.lower()
+        )
+        stream_like = looks_like_stream_path(parsed_url.path) or (
+            bool(configured_path) and parsed_url.path == configured_path
+        )
+        if same_host and stream_like:
             observed["stream_request"] = "1"
+            full_path = parsed_url.path or "/"
+            if parsed_url.query:
+                full_path += "?" + parsed_url.query
+            body: dict[str, Any] = {}
+            post_data = getattr(request, "post_data", None)
+            if isinstance(post_data, str):
+                try:
+                    parsed_body = json.loads(post_data)
+                except (TypeError, ValueError):
+                    parsed_body = None
+                if isinstance(parsed_body, dict):
+                    body = parsed_body
+            observed.setdefault(
+                "stream_path", stream_path_template(full_path, body)
+            )
 
     try:
         # Sayfa yüklenirken giden tüm istekleri dinle: damga başlıkları buradan gelir.
@@ -304,6 +334,7 @@ async def capture_session(
         if not result.logged_in:
             result.reason = _explain_not_logged_in(result, login_redirect)
         result.deployment_id = observed.get("deployment_id")
+        result.stream_path = observed.get("stream_path")
         if result.deployment_id and not result.deployment_headers:
             # Tek bir başlık adı görüldüyse onu kullan; isim bilinmiyorsa
             # varsayılan iki damga başlığı yazılır (canlı cURL'ler ikisini de taşır).
@@ -673,6 +704,13 @@ def apply_capture_to_settings(
                 f"{key}={value}" for key, value in headers.items()
             )
             changed.append("upstream_cx")
+    if (
+        result.stream_path
+        and looks_like_stream_path(result.stream_path)
+        and settings.upstream_stream_path != result.stream_path
+    ):
+        settings.upstream_stream_path = result.stream_path
+        changed.append("upstream_stream_path")
     if result.referer_path and settings.upstream_referer_path != result.referer_path:
         settings.upstream_referer_path = result.referer_path
         changed.append("upstream_referer_path")

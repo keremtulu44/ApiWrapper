@@ -69,6 +69,7 @@ PERSISTED_FIELDS: tuple[str, ...] = (
     "upstream_refresh_api_key",
     "upstream_extra_headers",
     "upstream_referer_path",
+    "upstream_stream_path",
 )
 
 #: Süreç başında hesaplanan tohum özeti (`id(settings)` -> sha256 hex).
@@ -87,6 +88,7 @@ def compute_seed_hash(settings: Settings) -> str:
             (settings.upstream_cookie or "").strip(),
             (settings.upstream_access_token or "").strip(),
             (settings.upstream_refresh_token or "").strip(),
+            (settings.upstream_stream_path or "").strip(),
         ]
     )
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
@@ -305,6 +307,8 @@ async def sync_render_env(
         updates["UPSTREAM_EXTRA_HEADERS"] = settings.upstream_extra_headers
     if settings.upstream_referer_path:
         updates["UPSTREAM_REFERER_PATH"] = settings.upstream_referer_path
+    if settings.upstream_stream_path:
+        updates["UPSTREAM_STREAM_PATH"] = settings.upstream_stream_path
     if not updates:
         return False
 
