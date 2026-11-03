@@ -698,6 +698,12 @@ class TelegramBot:
             f"Sürüm damgası: {'var' if payload.get('deployment_found') else 'yok'} · "
             f"cx: {'var' if payload.get('cx_found') else 'yok'}",
             (
+                "Sohbet gönderimi: denendi"
+                if payload.get("triggered_request")
+                else "Sohbet kutusu bulunamadı; istek tetiklenemedi"
+            ),
+            "Sayfa: " + str(payload.get("final_path") or "bilinmiyor"),
+            (
                 "Akış yolu: yakalandı"
                 if payload.get("stream_path_found")
                 else "Akış yolu: yakalanmadı; mevcut yol değişmedi"
