@@ -100,7 +100,7 @@ döngüsüyle yenilenir:
 
 | Parça | Davranış |
 |---|---|
-| Zamanlayıcı | 60 sn'de bir bakar; yalnız token'ın bitmesine **10 dk** kalınca istek atar |
+| Zamanlayıcı | Açılışta hemen, sonra 60 sn'de bir bakar; yalnız token'ın bitmesine **10 dk** kalınca istek atar |
 | İstek | `POST {iss}/auth/v1/token?grant_type=refresh_token` · gövde `{"refresh_token": "..."}` |
 | `apikey` | Upstream istiyorsa sitenin HTML/JS'inden **otomatik keşfedilir** (veya `UPSTREAM_REFRESH_API_KEY` / `/apikey`) |
 | Başarı | Yeni `access_token` + dönen yeni `refresh_token` (rotation) **bellekte**, **oturum çerezinde**, **`AccountPool` + `UpstreamClient` cookie jar'larında** ve **süreç dışı durum deposunda (`UPSTREAM_STATE_FILE`)** güncellenir |
@@ -114,22 +114,15 @@ Ayarlar: `UPSTREAM_REFRESH_ENABLED`, `UPSTREAM_REFRESH_LEEWAY_SECONDS` (600),
 çerezdeki JWT `iss` alanından türetilir), `UPSTREAM_REFRESH_API_KEY`,
 `UPSTREAM_REFRESH_TOKEN`.
 
-**Not:** yeni token'lar bellekte tutulur; süreç yeniden başlarsa Render'daki
-`UPSTREAM_CURL`/çerez ile başlar ve ilk denetimde kendini yine yeniler. Kalıcı
-olması için Render'daki çerezi de ara ara güncellemek iyi olur.
+**Kalıcılık:** Yeni token'lar bellekle sınırlı değildir. `UPSTREAM_STATE_FILE`
+atomik durum dosyasına yazılır; Render Blueprint'i bu dosya için `/app/.cache`
+altında 1 GB kalıcı disk tanımlar. Docker Compose da aynı yolu named volume ile
+korur. Opsiyonel `RENDER_API_KEY` + `RENDER_SERVICE_ID` ayrıca Render env
+senkronizasyonu sağlar. Bunlardan hiçbiri yoksa container restart'ında eski
+environment/cURL tohumuna dönülür ve dönen refresh token geçersiz kalabilir.
 
-## 5. Refresh token: kalıcı çözüm
-
-Oturum çerezinde `refresh_token` varsa, erişim token'ı **elle** değil
-`grant_type=refresh_token` ile yenilenebilir (Supabase/Auth.js ailesi bunu
-destekler). Bu akış eklenirse:
-
-* Erişim token'ı saatlik ölmez → 401 döngüsü biter,
-* Her yenilemede refresh token **döner** (rotation), yeni değer saklanmalı,
-* Yalnız refresh token da öldüğünde (haftalar) tarayıcıdan çerez gerekir.
-
-`/tani` çıktısında `Refresh token: var (N karakter)` görünüyorsa bu yol açıktır;
-`yok` ise elle çerez tek çözümdür.
+Token yenilemesi yeni istekleri taze client/cookie jar'ına geçirir; açık SSE
+akışlarının client'ı akış bitene kadar kapatılmaz.
 
 ## 6. Kerem'in 2026-11-02 vakası — okuma
 

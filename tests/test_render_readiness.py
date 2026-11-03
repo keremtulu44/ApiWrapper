@@ -100,8 +100,15 @@ def test_render_blueprint_is_single_instance_always_on_and_secret_free():
     assert service["numInstances"] == 1
     assert service["healthCheckPath"] == "/readyz"
     assert service["dockerfilePath"] == "./Dockerfile"
+    # Refresh token rotation'ı container restart/deploy'da kaybolmamalı.
+    assert service["disk"] == {
+        "name": "apiwrapper-state",
+        "mountPath": "/app/.cache",
+        "sizeGB": 1,
+    }
 
     env = {item["key"]: item for item in service["envVars"]}
+    assert env["UPSTREAM_STATE_FILE"]["value"] == "/app/.cache/upstream_state.json"
     for key in ("API_KEYS", "UPSTREAM_CURL"):
         assert env[key]["sync"] is False
         assert "value" not in env[key]
@@ -120,6 +127,37 @@ def test_render_blueprint_is_single_instance_always_on_and_secret_free():
     assert env["RECAPTCHA_SITE_KEY"]["value"] == "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0"
     assert env["RECAPTCHA_VERSION"]["value"] == "enterprise"
     assert env["RECAPTCHA_ACTION"]["value"] == "chat_submit"
+
+
+def test_render_state_restores_after_target_domain_fallback(monkeypatch, tmp_path):
+    from app.core.config import get_settings
+    from app.upstream.state_store import remember_seed, save_runtime_state
+
+    state_file = tmp_path / "upstream_state.json"
+    source = Settings(
+        _env_file=None,
+        target_domain="arena.ai",
+        upstream_cookie="session=persisted",
+        upstream_access_token="persistent-access-token",
+        upstream_state_file=str(state_file),
+    )
+    remember_seed(source)
+    assert save_runtime_state(source, source="test") is True
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("UPSTREAM_STATE_FILE", str(state_file))
+    monkeypatch.setenv("UPSTREAM_CURL", "")
+    monkeypatch.setenv("TARGET_DOMAIN", "")
+    monkeypatch.setenv("API_KEYS", "sk-render-test")
+    monkeypatch.setenv("RECAPTCHA_PROVIDER", "noop")
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        assert app.state.settings.target_domain == "arena.ai"
+        assert app.state.settings.upstream_access_token == "persistent-access-token"
+        assert app.state.settings.upstream_cookie == "session=persisted"
+    finally:
+        get_settings.cache_clear()
 
 
 def test_telegram_worker_dockerfile_starts_bot_without_a_start_command():

@@ -4,8 +4,9 @@ Bu belge sistemi dağıtımdan cevaba kadar sırayla yürütür. Amaç yalnızca
 açmak değil, **hangi aşamanın çalıştığını ve hatanın nerede başladığını** ayırt
 edebilmektir.
 
-> **Hangi dal?** Servis **`arena/c55e601b-apiwrapper`** dalını deploy eder. Tüm
-> merge'ler oraya yapılır; `main` dokunulmaz. Bkz. [`MERGE_TARGET.md`](MERGE_TARGET.md).
+> **Hangi dal?** `render.yaml` dal seçmez; Render servis ayarlarındaki production
+> dal kullanılır. Canlı servisin izlediği dalı Render panelinden doğrulayın.
+> Geçmiş merge kayıtları [`MERGE_TARGET.md`](MERGE_TARGET.md) içindedir.
 
 ## 1. Dağıtım nasıl ilerler?
 
@@ -23,6 +24,9 @@ edebilmektir.
 
 `plan: starter` sleep etmeyen ücretli plandır. `numInstances: 1` bilinçlidir: hesap
 kotaları, cookie jar'lar, öğrenilen limitler ve sohbetler bellek içindedir.
+Blueprint ayrıca `/app/.cache` yolunda 1 GB kalıcı disk tanımlar; dönen refresh
+token ve çerezler buradaki `upstream_state.json` dosyasında restart/deploy boyunca
+korunur. Sohbet geçmişi ve öğrenilen kota sayaçları bilinçli olarak bellek içindedir.
 
 ## 2. Bir tamamlama isteği nasıl yürür?
 
@@ -75,10 +79,13 @@ kotaları, cookie jar'lar, öğrenilen limitler ve sohbetler bellek içindedir.
    silmek en temiz seçenektir.
 4. `RECAPTCHA_PROVIDER=browser`, public site key, Enterprise sürümü ve action blueprint'te
    hazırdır. cURL'deki kısa ömürlü CAPTCHA token'ı bu seçimi static'e çevirmez.
-5. Deploy loglarında Chromium kurulumu ve application startup aşamalarını izleyin.
+5. **Mevcut servislerde** Render panelinde 1 GB diskin `/app/.cache` yoluna bağlı
+   olduğunu doğrulayın. Blueprint değişikliği eski servise otomatik disk eklemiyorsa
+   diski panelden aynı ad ve mount path ile ekleyin; farklı yol kullanmayın.
+6. Deploy loglarında Chromium kurulumu ve application startup aşamalarını izleyin.
    `upstream_curl_loaded` yalnız uygulanan alan adlarını ve model bulunup bulunmadığını
    gösterir; ham cURL veya secret taşımaz.
-6. Aşağıdaki kontrolleri yapın.
+7. Aşağıdaki kontrolleri yapın.
 
 Blueprint secret değerleri depoda tutmaz; `sync: false` alanları Render tarafından
 istenir. cURL'den domain, akış yolu, mode, referer, kullanıcı ajanı, ek header'lar,
@@ -138,7 +145,8 @@ Bu ayrım, geçici upstream arızalarının Render restart döngüsü oluşturma
 | SSE HTTP 200 ama metin/usage yok | Akış içinde upstream hatası | SSE `error.code` ve aynı `request_id` altındaki `stream_failed` |
 | 502 ağ/TLS/proxy | Upstream bağlantısı | Domain, TLS, outbound erişim |
 | 504 | Idle veya toplam deadline | Upstream yanıt süresi ve timeout ayarları |
-| Restart sonrası sohbet/kota sıfırlandı | Bellek içi durum | Beklenen davranış; kalıcı state yok |
+| Restart sonrası sohbet/kota sıfırlandı | Bellek içi çalışma durumu | Beklenen davranış; kimlik/token durumu kalıcı diskte ayrı tutulur |
+| Restart sonrası refresh token eskiye döndü | Kalıcı disk/env sync | `/app/.cache` mount'unu veya Render env senkronizasyonunu doğrulayın |
 | İkinci hesap birincinin cookie'sini kullanıyor | Eski davranış/regresyon | Hesap client/cookie testlerini çalıştırın |
 
 Yönetim uçları API anahtarı ister. Token değerleri değil, maskeli teşhis kullanın:
@@ -206,8 +214,11 @@ bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamı
 ## 7. 7/24 çalışma sınırları
 
 - Render'ın aktif kalması, upstream oturumunun sonsuza kadar geçerli olması demek değildir.
-- Gerçek refresh HTTP sözleşmesi henüz uygulanmamıştır. `refresh_token` ayrıştırma ve
-  hesap bazlı cookie altyapısı hazırdır; tahmini refresh endpoint'i kullanılmamalıdır.
+- Refresh HTTP akışı uygulanmıştır: refresh token varsa erişim token'ı açılışta
+  hemen ve sonrasında 60 sn'de bir denetlenir, bitmesine 10 dk kala Supabase/GoTrue
+  `grant_type=refresh_token` isteğiyle yenilenir. İstek anında süresi dolmuş token
+  ve 401 için de kurtarma denenir. Refresh token yoksa/iptal edildiyse giriş yapmış
+  tarayıcıdan yeni çerez gerekir; wrapper parola/OTP ile giriş yapamaz.
 - `static` CAPTCHA token'ı kısa ömürlüdür; unattended kullanım için `browser` veya
   uygun `external` sağlayıcı gerekir.
 - Browser sağlayıcı CAPTCHA bootstrap belgesini Playwright route ile hedef origin'de
@@ -216,8 +227,13 @@ bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamı
   Chromium RAM/CPU kullanır; kaynak sınırını Render loglarından izleyin.
 - Tek instance/tek worker sınırını kaldırmak, bellek içi hesap ve sohbet durumunu
   instance'lar arasında senkronize etmez.
-- Her deploy/restart cookie jar'ı environment'taki başlangıç değerlerinden kurar ve
-  öğrenilen kota/sohbet durumunu sıfırlar.
+- Her deploy/restart'ta öğrenilen kota ve sohbet durumu sıfırlanır. Cookie/token
+  tarafında ise önce environment/cURL tohumu okunur, ardından `/app/.cache` kalıcı
+  diskindeki daha taze durumla uzlaştırılır. Disk yoksa opsiyonel Render env
+  senkronizasyonu (`RENDER_API_KEY` + `RENDER_SERVICE_ID`) kullanılmalıdır.
+- Token yenilemesi eski hesap client'larını yeni isteklere hemen kapatır; açık
+  upstream akışları ise eski client üzerinde tamamlanır. Böylece saatlik yenileme
+  devam eden SSE cevabını kesmez.
 - `UPSTREAM_KEEPALIVE_INTERVAL_SECONDS=10800` süreç ayaktayken üç saatte bir kısa
   non-stream completion gönderir; varsayılan `0` kapalıdır. Bu kota kullanan bir
   hareketsizlik deneyidir, auth refresh uygulaması değildir. Aralık

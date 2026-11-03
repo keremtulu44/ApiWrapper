@@ -79,9 +79,9 @@ taşıyan herhangi bir istek yeterli.
 - Wrapper **giriş yapamaz** (parola/OTP yolu yok); ölü oturumu diriltemez.
 - `/yenile` yalnız türevleri tazeler, oturumu diriltmez.
 - **429 kota** kimlik sorunu değildir; çerezle çözülmez.
-- Refresh token her kullanımda **döner**; token'lar bellekte olduğundan
-  **restart/deploy sonrası** Render'daki eski çerez geçersiz kalabilir → bir kez
-  taze çerez gerekir.
+- Refresh token her kullanımda **döner**. Blueprint'teki `/app/.cache` kalıcı
+  diski (veya Render env senkronizasyonu) yoksa eski token restart/deploy'da
+  kaybolabilir; bu yapılandırmalardan biri canlı serviste doğrulanmalıdır.
 - Upstream `apikey` isterse tek ayar yeterli: `UPSTREAM_REFRESH_API_KEY`.
 
 ## 7. Tamamlanan yol haritası (otomatik sürdürülebilirlik)

@@ -11,7 +11,15 @@ services:
     autoDeploy: true
     # Process ayakta olması ile dağıtım ayarlarının hazır olması ayrıdır.
     healthCheckPath: /readyz
+    # Dönen refresh token ve çerezler container restart/deploy sonrasında da
+    # korunsun. Docker imajındaki UPSTREAM_STATE_FILE bu mount'u kullanır.
+    disk:
+      name: apiwrapper-state
+      mountPath: /app/.cache
+      sizeGB: 1
     envVars:
+      - key: UPSTREAM_STATE_FILE
+        value: /app/.cache/upstream_state.json
       - key: API_KEYS
         sync: false
       # Network'teki tamamlanmış create-evaluation isteğini normal cURL olarak

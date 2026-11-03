@@ -679,6 +679,7 @@ def apply_cookie_to_settings(settings: Settings, raw: str) -> list[str]:
     refresh = extract_refresh_token(normalized)
     if refresh and settings.upstream_refresh_token != refresh:
         settings.upstream_refresh_token = refresh
+        changed.append("upstream_refresh_token")
     if changed:
         save_runtime_state(settings, source="cookie_import")
     return changed
@@ -750,6 +751,7 @@ def apply_capture_to_settings(
         refresh = extract_refresh_token(result.cookies)
         if refresh and settings.upstream_refresh_token != refresh:
             settings.upstream_refresh_token = refresh
+            changed.append("upstream_refresh_token")
     if result.deployment_headers:
         headers = settings.parsed_extra_headers()
         updated = False

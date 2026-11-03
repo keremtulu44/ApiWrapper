@@ -847,6 +847,21 @@ def test_inspect_reports_chunked_cookies_and_refresh_token():
     assert report["problems"] == []
 
 
+def test_apply_cookie_reports_refresh_token_only_change():
+    from app.upstream.auth import extract_access_token
+    from app.upstream.session_capture import apply_cookie_to_settings
+
+    cookie = _chunked_cookie()
+    settings = make_settings(
+        upstream_cookie=cookie,
+        upstream_access_token=extract_access_token(cookie) or "",
+        upstream_refresh_token="",
+    )
+    changed = apply_cookie_to_settings(settings, cookie)
+    assert changed == ["upstream_refresh_token"]
+    assert settings.upstream_refresh_token == "l6lb6efhioff"
+
+
 def test_inspect_reports_missing_chunk():
     cookie = _chunked_cookie().split("; ")[0]  # yalnız .0 parçası
     report = inspect_cookie(cookie)
