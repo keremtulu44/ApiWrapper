@@ -34,10 +34,13 @@ tarafına taşıdık.
 
 ### `/yenile` — sunucu tarayıcısı
 
-Sunucudaki Chromium (reCAPTCHA için zaten çalışıyor) hedef sayfayı **elimizdeki
-çerezle** açar, gerçek bir `create-evaluation` isteğini yakalar ve cookie +
-`dpl_...` sürüm damgası + `cx` + referer yolu yanında gerçek akış URL yolunu da
-uygular. Bot yanıtında **“Akış yolu: yakalandı”** görürseniz eski
+Sunucudaki Chromium (reCAPTCHA için zaten çalışıyor) **yapılandırılmış sohbet
+sayfasını** (`UPSTREAM_REFERER_PATH`) eldeki çerezle açar; kök sayfada kalmaz.
+Sohbet alanını bulursa kısa bir `merhaba` denemesi göndererek gerçek
+`create-evaluation` isteğini tetikler. Bu deneme upstream kotasını kullanabilir.
+Yakalanan isteğin cookie + `dpl_...` sürüm damgası + `cx` + referer yolu yanında
+gerçek akış URL yolu da uygulanır. Bot yanıtında **“Akış yolu: yakalandı”**
+görürseniz eski
 `UPSTREAM_STREAM_PATH` güncellenmiştir. Yalnız “Oturum yakalandı” yazıyor ama
 akış yolu yakalanmadıysa 404'ün yolu hâlâ düzelmemiştir; güncel sohbet cURL'ünü
 `/curl <cURL>` ile göndermek gerekir.
@@ -54,7 +57,7 @@ akış yolu yakalanmadıysa 404'ün yolu hâlâ düzelmemiştir; güncel sohbet 
 (damga, cx, referer) tazele" demektir. Oturum çerezini tazelemek için tarayıcıda
 giriş yapmış olman ve `/cookie` göndermen gerekir.
 
-* `✓ Oturum yakalandı` → bitti, mesaj atıp test edin.
+* `✓ Oturum yakalandı` tek başına yolun düzeldiği anlamına gelmez: ayrıca `Akış yolu: yakalandı` doğrulamasını görün. Bu satır yoksa 404 için güncel cURL gerekir.
 * `⚠ Oturum yakalanamadı` → mesaj artık **hangi çerezlerin geldiğini** de yazar
   (`Gelen çerezler: __cf_bm, _dd_s ...`). Üç ayrı durum:
   1. `hiç çerez yüklenemedi` → elde çerez yok/bozuk,

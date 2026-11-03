@@ -72,6 +72,7 @@ class FakePage:
         self._has_textarea = has_textarea
         self.keyboard = FakeKeyboard()
         self.closed = False
+        self.visited_urls: list[str] = []
         self._listeners: list[Any] = []
 
     def on(self, _event: str, callback: Any) -> None:
@@ -79,8 +80,8 @@ class FakePage:
         for request in self._requests:
             callback(request)
 
-    async def goto(self, _url: str, **_kwargs: Any) -> None:
-        return None
+    async def goto(self, url: str, **_kwargs: Any) -> None:
+        self.visited_urls.append(url)
 
     async def wait_for_timeout(self, _ms: int) -> None:
         return None
@@ -124,6 +125,47 @@ def _run(coro: Any) -> Any:
     return asyncio.run(coro)
 
 
+def test_try_send_message_prefers_visible_submit_button():
+    from app.upstream.session_capture import _try_send_message
+
+    class Element:
+        def __init__(self, selector: str, clicked: list[str]) -> None:
+            self.selector = selector
+            self.clicked = clicked
+            self.first = self
+
+        async def count(self) -> int:
+            return int(self.selector in {"textarea:not([disabled])", 'button[type="submit"]'})
+
+        async def is_visible(self) -> bool:
+            return True
+
+        async def is_enabled(self) -> bool:
+            return True
+
+        async def click(self, **_kwargs: Any) -> None:
+            self.clicked.append(self.selector)
+
+        async def fill(self, _value: str, **_kwargs: Any) -> None:
+            return None
+
+    class Page:
+        def __init__(self) -> None:
+            self.clicked: list[str] = []
+            self.keyboard = FakeKeyboard()
+
+        def locator(self, selector: str) -> Element:
+            return Element(selector, self.clicked)
+
+        async def wait_for_timeout(self, _ms: int) -> None:
+            return None
+
+    page = Page()
+    assert _run(_try_send_message(page, "merhaba", 0)) is True
+    assert page.clicked == ['textarea:not([disabled])', 'button[type="submit"]']
+    assert page.keyboard.pressed == []
+
+
 def test_capture_collects_cookies_stamp_and_referer():
     page = FakePage(
         requests=[
@@ -151,6 +193,7 @@ def test_capture_collects_cookies_stamp_and_referer():
     result = _run(capture_session(context, settings, wait_ms=0))
 
     assert result.cookies == FRESH_COOKIE
+    assert page.visited_urls[0].startswith("https://upstream.test/c/")
     assert result.deployment_id == STAMP
     assert result.cx == "cx-value-123"
     assert result.stream_path == "/nextjs-api/stream/create-evaluation"
@@ -158,6 +201,23 @@ def test_capture_collects_cookies_stamp_and_referer():
     assert result.referer_path == "/text/direct"
     assert "gerçek sohbet isteği yakalandı" in result.notes
     assert page.closed is True, "sayfa her durumda kapatılmalı"
+
+
+def test_capture_navigates_to_configured_chat_page_not_site_root():
+    page = FakePage(url="https://upstream.test/text/direct")
+    context = FakeContext(
+        page, [{"name": "arena-auth-prod-v1.0", "value": "fresh-session"}]
+    )
+
+    _run(
+        capture_session(
+            context,
+            make_settings(upstream_referer_path="/text/direct"),
+            wait_ms=0,
+        )
+    )
+
+    assert page.visited_urls == ["https://upstream.test/text/direct"]
 
 
 def test_capture_templates_dynamic_id_in_the_stream_path():
