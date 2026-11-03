@@ -371,6 +371,41 @@ def test_state_store_persists_rotated_tokens_and_respects_fresh_env(tmp_path):
     assert extract_refresh_token(s3.upstream_cookie) == "user-brand-new"
 
 
+def test_state_store_persists_captured_stream_path_and_honors_env_override(tmp_path):
+    from app.upstream.state_store import remember_seed, restore_runtime_state, save_runtime_state
+
+    state_file = tmp_path / "captured_state.json"
+    original_path = "/old/stream/path"
+    captured_path = "/nextjs-api/stream/create-evaluation"
+    cookie = session_cookie(expires_in=3600)
+
+    source = _settings(
+        upstream_cookie=cookie,
+        upstream_state_file=str(state_file),
+        upstream_stream_path=original_path,
+    )
+    remember_seed(source)
+    source.upstream_stream_path = captured_path
+    assert save_runtime_state(source, source="session_capture") is True
+
+    same_env = _settings(
+        upstream_cookie=cookie,
+        upstream_state_file=str(state_file),
+        upstream_stream_path=original_path,
+    )
+    restored = restore_runtime_state(same_env)
+    assert "upstream_stream_path" in restored
+    assert same_env.upstream_stream_path == captured_path
+
+    explicit_env = _settings(
+        upstream_cookie=cookie,
+        upstream_state_file=str(state_file),
+        upstream_stream_path="/operator-configured/stream",
+    )
+    restore_runtime_state(explicit_env)
+    assert explicit_env.upstream_stream_path == "/operator-configured/stream"
+
+
 @pytest.mark.asyncio
 async def test_expiring_token_warning_fires_once_per_token():
     from app.services.token_refresh import maybe_warn_expiring_token
