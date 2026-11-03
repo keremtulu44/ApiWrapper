@@ -420,11 +420,13 @@ class TelegramBot:
         if auto:
             persistence: list[str] = []
             if auto.get("state_file_configured"):
-                persistence.append("disk")
+                # Free Render'da yerel dosya ephemeral'dır; "kalıcı disk" gibi
+                # göstermek kullanıcıyı yanıltır. Asıl kalıcı katman Render-env.
+                persistence.append("yerel-dosya")
             if auto.get("render_sync_configured"):
                 persistence.append("Render-env")
             persist_suffix = (
-                f" · kalıcılık: {'+'.join(persistence)}"
+                f" · depolama: {'+'.join(persistence)}"
                 if persistence
                 else ""
             )
