@@ -811,8 +811,8 @@ class TelegramBot:
         if payload.get("upstream_model"):
             lines.append(f"Upstream model: {payload['upstream_model']}")
         lines.append(
-            "Değişiklik uygulandı ve kalıcı durum dosyasına yazıldı; "
-            "Render'daki UPSTREAM_CURL'ü de güncellemeniz önerilir."
+            "Değişiklik uygulandı; yerel durum dosyasına ve yapılandırılmışsa "
+            "Render env'e kaydedildi. UPSTREAM_CURL'ü de güncellemeniz önerilir."
         )
         warnings = payload.get("warnings") or []
         if isinstance(warnings, list):

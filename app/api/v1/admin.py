@@ -335,8 +335,8 @@ async def update_upstream_curl(
         "upstream_model": result["model_id"],
         "warnings": warnings,
         "note": (
-            "Değişiklik uygulandı ve kalıcı durum deposuna yazıldı; Render'daki "
-            "UPSTREAM_CURL secret'ını da aynı cURL ile güncellemeniz önerilir."
+            "Değişiklik uygulandı; yerel durum dosyasına ve yapılandırılmışsa "
+            "Render env'e kaydedildi. UPSTREAM_CURL secret'ını da güncellemeniz önerilir."
         ),
     }
 

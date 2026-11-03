@@ -79,16 +79,16 @@ taşıyan herhangi bir istek yeterli.
 - Wrapper **giriş yapamaz** (parola/OTP yolu yok); ölü oturumu diriltemez.
 - `/yenile` yalnız türevleri tazeler, oturumu diriltmez.
 - **429 kota** kimlik sorunu değildir; çerezle çözülmez.
-- Refresh token her kullanımda **döner**. Blueprint'teki `/app/.cache` kalıcı
-  diski (veya Render env senkronizasyonu) yoksa eski token restart/deploy'da
-  kaybolabilir; bu yapılandırmalardan biri canlı serviste doğrulanmalıdır.
+- Refresh token her kullanımda **döner**. Free Render'da kalıcı disk olmadığı için
+  `RENDER_API_KEY` ile env senkronizasyonu yapılandırılmalıdır; aksi hâlde eski
+  token restart/deploy'da kaybolabilir ve `/cookie` ile tazeleme gerekir.
 - Upstream `apikey` isterse tek ayar yeterli: `UPSTREAM_REFRESH_API_KEY`.
 
 ## 7. Tamamlanan yol haritası (otomatik sürdürülebilirlik)
 
 1. ✅ **Refresh token süreç dışında saklanıyor (`app/upstream/state_store.py`):**
-   `UPSTREAM_STATE_FILE` (yerel atomik dosya) ve opsiyonel `RENDER_API_KEY` +
-   `RENDER_SERVICE_ID` (Render env senkronizasyonu) ile restart sonrası dönmüş
+   `UPSTREAM_STATE_FILE` (yerel atomik dosya) ve Free Render'da `RENDER_API_KEY` +
+   otomatik `RENDER_SERVICE_ID` (Render env senkronizasyonu) ile restart sonrası dönmüş
    refresh token korunur; kullanıcı `.env`'e daha yeni bir cURL koyarsa yeni
    tohum tercih edilir.
 2. ✅ **`apikey` otomatik keşfediliyor (`discover_refresh_api_key`):**

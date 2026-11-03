@@ -194,9 +194,9 @@ Bir kereliğine masaüstü/başka bir cihazda: DevTools → Network → ilgili i
 
 * Sunucu **senin yerine giriş yapamaz**: şifre/2FA/OAuth akışı senin cihazında
   olmalı. Şifreni Telegram'a/loglara yazmayın; wrapper şifre kabul etmez.
-* `UPSTREAM_CURL`/çerez çalışan servise hemen uygulanır ve `UPSTREAM_STATE_FILE`
-  altındaki kalıcı diske yazılır; `RENDER_API_KEY` + `RENDER_SERVICE_ID` varsa
-  Render env'e de senkronlanır. Blueprint diskini kullanmıyorsan restart öncesi
-  secret'ı ayrıca güncellemek gerekir.
+* `UPSTREAM_CURL`/çerez çalışan servise hemen uygulanır ve yerel durum dosyasına
+  yazılır. Free Render'da bu dosya kalıcı değildir; `RENDER_API_KEY` sayesinde
+  güncel kimlik Render env'e senkronlanır (`RENDER_SERVICE_ID` otomatiktir). API key
+  yoksa restart sonrası `/cookie` ile tazeleme gerekebilir.
 * `/cookie` ve `/curl` yalnızca yetkili Telegram sohbetinden çalışır
   (`TELEGRAM_ALLOWED_CHAT_IDS`) ve değerler hiçbir yanıtta/logda görünmez.

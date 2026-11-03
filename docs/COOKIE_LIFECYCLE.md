@@ -114,12 +114,12 @@ Ayarlar: `UPSTREAM_REFRESH_ENABLED`, `UPSTREAM_REFRESH_LEEWAY_SECONDS` (600),
 çerezdeki JWT `iss` alanından türetilir), `UPSTREAM_REFRESH_API_KEY`,
 `UPSTREAM_REFRESH_TOKEN`.
 
-**Kalıcılık:** Yeni token'lar bellekle sınırlı değildir. `UPSTREAM_STATE_FILE`
-atomik durum dosyasına yazılır; Render Blueprint'i bu dosya için `/app/.cache`
-altında 1 GB kalıcı disk tanımlar. Docker Compose da aynı yolu named volume ile
-korur. Opsiyonel `RENDER_API_KEY` + `RENDER_SERVICE_ID` ayrıca Render env
-senkronizasyonu sağlar. Bunlardan hiçbiri yoksa container restart'ında eski
-environment/cURL tohumuna dönülür ve dönen refresh token geçersiz kalabilir.
+**Free Render kalıcılığı:** Yeni token'lar `UPSTREAM_STATE_FILE` atomik dosyasına
+yazılır ancak Free Render dosya sistemi kalıcı değildir. Asıl restart/deploy
+koruması `RENDER_API_KEY` + otomatik `RENDER_SERVICE_ID` ile yapılan Render env
+senkronizasyonudur. API key yoksa container restart'ında eski environment/cURL
+tohumuna dönülür ve dönen refresh token geçersiz kalabilir. Docker Compose'daki
+named volume yalnız yerel Docker kullanımında aynı dosyayı korur.
 
 Token yenilemesi yeni istekleri taze client/cookie jar'ına geçirir; açık SSE
 akışlarının client'ı akış bitene kadar kapatılmaz.

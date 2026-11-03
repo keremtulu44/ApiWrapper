@@ -267,6 +267,21 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     restore_runtime_state(settings)
 
     configure_logging(settings.log_level, settings.log_json)
+    if (
+        from_env
+        and (os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID"))
+        and settings.upstream_refresh_enabled
+        and not (
+            settings.render_api_key.strip() and settings.render_service_id.strip()
+        )
+    ):
+        logger.warning(
+            "render_env_sync_not_configured",
+            hint=(
+                "Free Render has no persistent disk. Set RENDER_API_KEY so rotated "
+                "cookies/tokens survive restart; RENDER_SERVICE_ID is automatic."
+            ),
+        )
 
     app = FastAPI(
         title=settings.app_name,

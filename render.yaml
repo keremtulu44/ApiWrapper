@@ -1,26 +1,24 @@
-# Render Blueprint: tek instance, sleep etmeyen Docker Web Service.
+# Render Blueprint: tek instance, ücretsiz Docker Web Service.
 # Gizli değerler depoya yazılmaz; Blueprint oluşturulurken Render sorar.
 services:
   - type: web
     name: apiwrapper
     runtime: docker
-    plan: starter
+    plan: free
     dockerfilePath: ./Dockerfile
     dockerContext: .
     numInstances: 1
     autoDeploy: true
     # Process ayakta olması ile dağıtım ayarlarının hazır olması ayrıdır.
     healthCheckPath: /readyz
-    # Dönen refresh token ve çerezler container restart/deploy sonrasında da
-    # korunsun. Docker imajındaki UPSTREAM_STATE_FILE bu mount'u kullanır.
-    disk:
-      name: apiwrapper-state
-      mountPath: /app/.cache
-      sizeGB: 1
     envVars:
-      - key: UPSTREAM_STATE_FILE
-        value: /app/.cache/upstream_state.json
       - key: API_KEYS
+        sync: false
+      # Free planda kalıcı disk yoktur. Dönen refresh token/çerezlerin restart
+      # sonrası korunması için Render API key'i girin. RENDER_SERVICE_ID,
+      # Render tarafından otomatik sağlanır; ayrıca yazılmaz. Env güncellemesi
+      # deploy tetiklemez ve ek ücretli kaynak oluşturmaz.
+      - key: RENDER_API_KEY
         sync: false
       # Network'teki tamamlanmış create-evaluation isteğini normal cURL olarak
       # yapıştırın. Domain, yol, mode, cookie/token ve tarayıcı header'ları
