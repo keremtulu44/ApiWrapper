@@ -353,7 +353,9 @@ async def capture_upstream_session(
 
     Servisteki Chromium (reCAPTCHA sağlayıcısı) hedef sayfayı açar, gerçek bir
     `create-evaluation` isteğini yakalar ve cookie/sürüm damgası/`cx`/referer
-    yolunu çalışan ayarlara uygular. Hiçbir gizli değer yanıta konmaz.
+    yolu yanında gerçek akış URL yolunu çalışan ayarlara uygular. Gerçek akış
+    isteği yakalanamazsa mevcut `UPSTREAM_STREAM_PATH` değiştirilmez. Hiçbir
+    gizli değer yanıta konmaz.
     """
     from app.core.logging import get_logger
 
@@ -390,7 +392,15 @@ async def capture_upstream_session(
         changed=changed,
     )
     applied_cookie = "upstream_cookie" in changed
-    if applied_cookie:
+    stream_path_found = bool(result.stream_path)
+    captured = applied_cookie or stream_path_found
+    if not stream_path_found and result.logged_in:
+        next_step = (
+            "Oturum yakalandı ancak sohbet akış isteği yakalanmadı; "
+            "UPSTREAM_STREAM_PATH değişmedi. 404 sürerse güncel sohbet cURL'ünü "
+            "Telegram'a /curl ile gönderin."
+        )
+    elif applied_cookie or stream_path_found:
         next_step = "Bir mesaj atarak test edin."
     elif result.reason:
         # Net olalım: sunucu tarayıcısı **giriş yapamaz** (şifre/2FA yok).
@@ -403,12 +413,13 @@ async def capture_upstream_session(
     else:
         next_step = "Değişiklik yok; bir mesaj atarak test edin."
     return {
-        "status": "captured" if applied_cookie else "not_captured",
+        "status": "captured" if captured else "not_captured",
         "logged_in": result.logged_in,
         "cookie_found": result.has_cookie,
         "cookie_applied": applied_cookie,
         "deployment_found": bool(result.deployment_id),
         "cx_found": bool(result.cx),
+        "stream_path_found": stream_path_found,
         "triggered_request": result.triggered_request,
         "injected_cookies": result.injected_cookies,
         "cookie_names": result.cookie_names,

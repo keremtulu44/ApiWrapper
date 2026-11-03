@@ -150,3 +150,30 @@ def test_metric_registry_caps_series_per_metric():
     assert rendered.count('deneme_total{') == MAX_SERIES_PER_METRIC
     assert registry.dropped_series() >= 25
     assert "apiwrapper_metrics_series_dropped" in rendered
+
+
+def test_unhandled_requests_use_normalized_path_and_record_latency(monkeypatch):
+    """İstisna yolundaki erişim metrikleri de sınırlı kardinalitede kalmalı."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    import app.core.middleware as middleware
+
+    registry = MetricsRegistry()
+    monkeypatch.setattr(middleware, "metrics", registry)
+    app = FastAPI()
+    app.add_middleware(middleware.AccessLogMiddleware)
+
+    @app.get("/dynamic/{value}")
+    async def fail(value: str):
+        raise RuntimeError(f"failure for {value}")
+
+    secret_path = "/dynamic/secret-path-identifier"
+    with TestClient(app, raise_server_exceptions=False) as client:
+        response = client.get(secret_path)
+
+    assert response.status_code == 500
+    rendered = registry.render()
+    assert "secret-path-identifier" not in rendered
+    assert 'apiwrapper_requests_total{path="other",status="500"} 1' in rendered
+    assert 'apiwrapper_request_duration_seconds_count{path="other"} 1' in rendered

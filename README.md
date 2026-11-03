@@ -258,7 +258,7 @@ for chunk in stream:
 | Kaynak | Belirti | Çözüm |
 |---|---|---|
 | Yerel API | `Unknown endpoint … /chat/completions` | `base_url` olarak `http://localhost:8000` veya `http://localhost:8000/v1` kullanın (ikisi de çalışır). Bilinmeyen model `model_not_found` döner. |
-| Upstream | `upstream_not_found` / logda `HTTP 404` | `UPSTREAM_STREAM_PATH` tarayıcıdaki gerçek yolla uyuşmuyor. `python scripts/curl_to_env.py request.txt --write` çalıştırın. Yeni uçlar genelde `/nextjs-api/stream/create-evaluation` kullanır ve `chat_id`'yi URL'ye koymaz. |
+| Upstream | `upstream_not_found` / logda `HTTP 404` | `UPSTREAM_STREAM_PATH` tarayıcıdaki gerçek yolla uyuşmuyor. Mobilde önce Telegram `/yenile` deneyin; bot `Akış yolu: yakalandı` derse yeni yol uygulanmıştır. Yakalanamazsa sohbet POST isteğinin tam cURL'ünü `/curl <cURL>` ile gönderin; bilgisayarda `python scripts/curl_to_env.py request.txt --write` kullanılabilir. Yeni uçlar genelde `/nextjs-api/stream/create-evaluation` kullanır ve `chat_id`'yi URL'ye koymaz. |
 
 `python scripts/compare_curl.py request.txt` artık **URL yolunu** da karşılaştırır; buradaki `FARKLI` satırı 404'ün doğrudan nedenidir.
 

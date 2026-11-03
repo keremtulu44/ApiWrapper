@@ -697,6 +697,11 @@ class TelegramBot:
             f"Cookie: {'var' if payload.get('cookie_found') else 'yok'} · "
             f"Sürüm damgası: {'var' if payload.get('deployment_found') else 'yok'} · "
             f"cx: {'var' if payload.get('cx_found') else 'yok'}",
+            (
+                "Akış yolu: yakalandı"
+                if payload.get("stream_path_found")
+                else "Akış yolu: yakalanmadı; mevcut yol değişmedi"
+            ),
         ]
         injected = payload.get("injected_cookies")
         if isinstance(injected, int):

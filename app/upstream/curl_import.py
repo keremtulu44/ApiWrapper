@@ -280,7 +280,7 @@ def build_settings(
         full_path = split.path
         if split.query:
             full_path = f"{full_path}?{split.query}"
-        template = _stream_path_template(full_path, body)
+        template = stream_path_template(full_path, body)
         env["UPSTREAM_STREAM_PATH"] = template
         if template != DEFAULT_STREAM_PATH:
             warnings.append(
@@ -418,7 +418,7 @@ def looks_like_stream_path(path: str) -> bool:
 _looks_like_stream_path = looks_like_stream_path
 
 
-def _stream_path_template(path: str, body: dict[str, Any]) -> str:
+def stream_path_template(path: str, body: dict[str, Any]) -> str:
     """URL yolundaki sohbet kimliğini ``{chat_id}`` yer tutucusuna çevirir.
 
     Upstream yolu sürümlenebildiği ve kimliği URL'de taşımayabildiği için

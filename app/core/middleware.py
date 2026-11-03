@@ -78,19 +78,30 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Handler) -> Response:
         started = time.monotonic()
         path = request.url.path
+        # Ham yollar, ör. dinamik model kimlikleri veya saldırgan kontrollü
+        # 404 yolları, log ve metrik etiketlerinde sınırsız kardinalite yaratabilir
+        # ve URL içinde taşınan hassas değerleri açığa çıkarabilir.
+        label_path = metric_path(path)
         try:
             response = await call_next(request)
         except Exception:
             duration = time.monotonic() - started
             logger.exception(
-                "request_error", method=request.method, path=path, duration_ms=duration * 1000
+                "request_error",
+                method=request.method,
+                path=label_path,
+                duration_ms=duration * 1000,
             )
-            metrics.inc("apiwrapper_requests_total", labels={"path": path, "status": "500"})
+            metrics.inc(
+                "apiwrapper_requests_total",
+                labels={"path": label_path, "status": "500"},
+            )
+            metrics.observe(
+                "apiwrapper_request_duration_seconds", duration, {"path": label_path}
+            )
             raise
 
         duration = time.monotonic() - started
-        # Etiket olarak normalize yol kullanılır (bilinmeyenler `other`).
-        label_path = metric_path(path)
         metrics.inc(
             "apiwrapper_requests_total",
             labels={"path": label_path, "status": str(response.status_code)},
@@ -100,7 +111,7 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
             logger.info(
                 "request",
                 method=request.method,
-                path=path,
+                path=label_path,
                 status=response.status_code,
                 duration_ms=round(duration * 1000, 2),
                 client=request.client.host if request.client else None,
@@ -223,7 +234,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         allowed, retry_after = await self.limiter.acquire(key)
         if not allowed:
-            logger.warning("rate_limited", path=request.url.path, retry_after=retry_after)
+            logger.warning(
+                "rate_limited",
+                path=metric_path(request.url.path),
+                retry_after=retry_after,
+            )
             return JSONResponse(
                 status_code=429,
                 content=error_payload(
