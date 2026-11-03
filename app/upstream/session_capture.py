@@ -42,6 +42,7 @@ from app.upstream.auth import (
 from app.upstream.curl_import import looks_like_stream_path, stream_path_template
 from app.upstream.headers import DEPLOYMENT_HEADERS
 from app.upstream.state_store import save_runtime_state
+from app.utils.ids import new_chat_id
 
 logger = get_logger(__name__)
 
@@ -279,11 +280,39 @@ async def capture_session(
         # her site giriş ekranına düşer (eski sürümdeki hata buydu).
         result.injected_cookies = await _inject_cookies(context, settings)
 
-        url = settings.base_url
+        # Kök sayfa bazı sağlayıcılarda pazarlama/oturum açma sayfasıdır ve
+        # sohbet alanı içermez. Gerçek sohbet arayüzünü açmak için cURL'den
+        # gelen referer yolu kullanılır; gerekiyorsa geçici bir chat ID üretilir.
+        url = settings.referer_url(new_chat_id())
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=navigation_timeout_ms)
+            navigation = await page.goto(
+                url, wait_until="domcontentloaded", timeout=navigation_timeout_ms
+            )
+            navigation_status = getattr(navigation, "status", None)
+            if (
+                navigation_status is not None
+                and navigation_status >= 400
+                and url != settings.base_url
+            ):
+                result.notes.append(f"sohbet sayfası HTTP {navigation_status}")
+                await page.goto(
+                    settings.base_url,
+                    wait_until="domcontentloaded",
+                    timeout=navigation_timeout_ms,
+                )
         except Exception as exc:
-            result.notes.append(f"sayfa açılamadı: {type(exc).__name__}")
+            result.notes.append(f"sohbet sayfası açılamadı: {type(exc).__name__}")
+            if url != settings.base_url:
+                try:
+                    await page.goto(
+                        settings.base_url,
+                        wait_until="domcontentloaded",
+                        timeout=navigation_timeout_ms,
+                    )
+                except Exception as fallback_exc:
+                    result.notes.append(
+                        f"ana sayfa açılamadı: {type(fallback_exc).__name__}"
+                    )
 
         await _wait(page, wait_ms)
         result.final_url = str(getattr(page, "url", "") or "")
@@ -369,20 +398,57 @@ async def _content(page: Any) -> str:
 
 
 async def _try_send_message(page: Any, prompt: str, wait_ms: int) -> bool:
-    """Sohbet kutusuna kısa bir istem yazıp Enter'a basmayı dener.
+    """Sohbet kutusuna kısa istem gönderip gerçek akış isteğini tetiklemeyi dener.
 
-    Başarılı olursa uygulama kendi `create-evaluation` isteğini atar ve
-    `on_request` gerçek başlıkları yakalar. DOM tanınmazsa False döner.
+    Önce görünen ve etkin bir editör arar; Enter bazı arayüzlerde yeni satır
+    eklediği için varsa görünür gönder düğmesini tercih eder. DOM tanınmazsa False.
     """
-    selectors = ("textarea", '[contenteditable="true"]', 'input[type="text"]')
-    for selector in selectors:
+    editors = (
+        "textarea:not([disabled])",
+        '[contenteditable="true"]',
+        '[role="textbox"]',
+        'input[type="text"]:not([disabled])',
+    )
+    for selector in editors:
         try:
             locator = page.locator(selector).first
             if not await locator.count():
                 continue
+            is_visible = getattr(locator, "is_visible", None)
+            if is_visible is not None and not await is_visible():
+                continue
+            is_enabled = getattr(locator, "is_enabled", None)
+            if is_enabled is not None and not await is_enabled():
+                continue
             await locator.click(timeout=3000)
             await locator.fill(prompt, timeout=3000)
-            await page.keyboard.press("Enter")
+
+            submitted = False
+            for button_selector in (
+                'button[type="submit"]',
+                'button[aria-label*="send" i]',
+                'button[aria-label*="gönder" i]',
+                'button[title*="send" i]',
+                'button[title*="gönder" i]',
+            ):
+                try:
+                    button = page.locator(button_selector).first
+                    if not await button.count():
+                        continue
+                    button_visible = getattr(button, "is_visible", None)
+                    if button_visible is not None and not await button_visible():
+                        continue
+                    button_enabled = getattr(button, "is_enabled", None)
+                    if button_enabled is not None and not await button_enabled():
+                        continue
+                    await button.click(timeout=2000)
+                    submitted = True
+                    break
+                except Exception:
+                    continue
+
+            if not submitted:
+                await page.keyboard.press("Enter")
             await _wait(page, wait_ms)
             return True
         except Exception:
