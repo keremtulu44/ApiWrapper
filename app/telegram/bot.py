@@ -698,7 +698,11 @@ class TelegramBot:
             ("✓ Oturum yakalandı." if payload.get("logged_in") else "⚠ Oturum yakalanamadı."),
             f"Cookie: {'var' if payload.get('cookie_found') else 'yok'} · "
             f"Sürüm damgası: {'var' if payload.get('deployment_found') else 'yok'} · "
-            f"cx: {'var' if payload.get('cx_found') else 'yok'}",
+            + (
+                "cx: var"
+                if payload.get("cx_found")
+                else "cx: yok (isteğe bağlı)"
+            ),
             (
                 "Sohbet gönderimi: denendi"
                 if payload.get("triggered_request")
@@ -715,10 +719,20 @@ class TelegramBot:
         if isinstance(injected, int):
             # "Çerez yüklenmedi" ile "çerez yüklendi ama oturum değil" farkı,
             # telefondan bakınca görünmeli.
-            lines.append(
-                f"Tarayıcıya yüklenen çerez: {injected} "
-                + ("(eldeki oturum çerezi bağlandı)" if injected else "(elde çerez yok!)")
-            )
+            injection_error = str(payload.get("cookie_injection_error") or "")
+            if injected:
+                detail = "(eldeki oturum çerezi bağlandı)"
+            elif injection_error == "upstream_cookie_empty":
+                detail = "(UPSTREAM_COOKIE boş)"
+            elif injection_error:
+                detail = f"(yükleme hatası: {injection_error})"
+            else:
+                detail = "(çerez yüklenmedi)"
+            lines.append(f"Tarayıcıya yüklenen çerez: {injected} {detail}")
+        status = payload.get("navigation_status")
+        lines.append(f"Sayfa HTTP: {status or 'bilinmiyor'}")
+        if payload.get("bot_challenge_detected"):
+            lines.append("Bot doğrulaması: algılandı; sohbet sayfası açılmamış olabilir")
         names = payload.get("cookie_names") or []
         if names and not payload.get("logged_in"):
             # Hangi çerezlerin geldiğini göster: "oturum çerezi yok" demek,
