@@ -395,7 +395,13 @@ async def capture_upstream_session(
     applied_cookie = "upstream_cookie" in changed
     stream_path_found = bool(result.stream_path)
     captured = applied_cookie or stream_path_found
-    if not stream_path_found and result.logged_in:
+    if result.bot_challenge_detected:
+        next_step = (
+            "Çerez/sürüm damgası alındı ancak bot doğrulaması nedeniyle sohbet "
+            "arayüzü doğrulanamadı; UPSTREAM_STREAM_PATH değişmedi. Önce normal "
+            "bir mesajla test edin. 401/403 sürerse taze çerezleri /cookie ile gönderin."
+        )
+    elif not stream_path_found and result.logged_in:
         next_step = (
             "Oturum yakalandı ancak sohbet akış isteği yakalanmadı; "
             "UPSTREAM_STREAM_PATH değişmedi. 404 sürerse güncel sohbet cURL'ünü "

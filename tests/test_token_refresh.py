@@ -25,7 +25,7 @@ from app.upstream.refresh import (
 )
 from tests.conftest import TEST_API_KEY, make_settings
 
-SECRET_REFRESH = "l6lb6efhioff"
+SECRET_REFRESH = "test-refresh-token"
 
 
 def _jwt(*, exp: float, iss: str | None = None) -> str:
@@ -371,6 +371,35 @@ def test_state_store_persists_rotated_tokens_and_respects_fresh_env(tmp_path):
     assert extract_refresh_token(s3.upstream_cookie) == "user-brand-new"
 
 
+def test_state_store_restores_intentionally_cleared_refresh_token(tmp_path):
+    from app.upstream.state_store import remember_seed, restore_runtime_state, save_runtime_state
+
+    state_file = tmp_path / "cleared_refresh_state.json"
+    initial_cookie = session_cookie()
+    source = _settings(
+        upstream_cookie=initial_cookie,
+        upstream_refresh_token="seed-refresh",
+        upstream_state_file=str(state_file),
+    )
+    remember_seed(source)
+    # Yeni oturum artık refresh token taşımıyor; boş değer de anlık görüntünün
+    # parçası olarak saklanmalı ve aynı tohumla açılışta geri yüklenmeli.
+    source.upstream_cookie = "session=opaque-session"
+    source.upstream_refresh_token = ""
+    assert save_runtime_state(source, source="test_cleared_refresh") is True
+
+    restarted = _settings(
+        upstream_cookie=initial_cookie,
+        upstream_refresh_token="seed-refresh",
+        upstream_state_file=str(state_file),
+    )
+    changed = restore_runtime_state(restarted)
+
+    assert restarted.upstream_cookie == "session=opaque-session"
+    assert restarted.upstream_refresh_token == ""
+    assert "upstream_refresh_token" in changed
+
+
 def test_state_store_persists_captured_stream_path_and_honors_env_override(tmp_path):
     from app.upstream.state_store import remember_seed, restore_runtime_state, save_runtime_state
 
@@ -515,6 +544,36 @@ def test_render_restart_prefers_fresher_synced_cookie_over_older_upstream_curl()
     assert extract_refresh_token(updated.upstream_cookie) == "render-synced-refresh"
 
 
+def test_render_restart_prefers_synced_refresh_when_jwt_expiry_is_equal():
+    from app.upstream.auth import extract_access_token
+    from app.upstream.curl_runtime import apply_upstream_curl
+
+    old_cookie = session_cookie(expires_in=3600)
+    same_access = extract_access_token(old_cookie)
+    assert same_access is not None
+    rotated_cookie, _ = rewrite_session_cookie(
+        old_cookie,
+        access_token=same_access,
+        refresh_token="latest-render-refresh",
+        expires_in=3600,
+    )
+    curl = (
+        "curl 'https://upstream.test/nextjs-api/stream/create-evaluation' "
+        f"-H 'cookie: {old_cookie}' "
+        '--data-raw \'{"id":"1","modelAId":"m1","userMessage":"hi"}\''
+    )
+    settings = _settings(
+        upstream_curl=curl,
+        upstream_cookie=rotated_cookie,
+        upstream_refresh_token="latest-render-refresh",
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.upstream_cookie == rotated_cookie
+    assert extract_refresh_token(updated.upstream_cookie) == "latest-render-refresh"
+
+
 def test_upstream_set_cookie_persists_into_settings_and_survives_client_reset(respx_mock):
     from fastapi.testclient import TestClient
 
@@ -593,6 +652,41 @@ async def test_concurrent_token_refresh_deduplicates_single_use_refresh_token():
     assert all(o.ok for o in outcomes)
     assert auth_calls == 1
     assert settings.upstream_refresh_token == "single-use-rotated"
+
+
+@pytest.mark.asyncio
+async def test_concurrent_refresh_deduplicates_when_initial_access_token_is_empty(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import asyncio
+
+    import app.upstream.refresh as refresh_module
+
+    settings = _settings(
+        upstream_cookie="",
+        upstream_access_token="",
+        upstream_refresh_token="non-rotating-refresh",
+    )
+    fresh_access = _jwt(exp=time.time() + 3600)
+
+    async def unexpected_network_refresh(*_args: Any, **_kwargs: Any):
+        raise AssertionError("ikinci görev yeniden ağa çıkmamalı")
+
+    monkeypatch.setattr(
+        refresh_module, "_refresh_upstream_token_locked", unexpected_network_refresh
+    )
+    lock = refresh_module._get_refresh_lock(1)
+    await lock.acquire()
+    task = asyncio.create_task(refresh_upstream_token(settings))
+    await asyncio.sleep(0)  # görev token_before'ı okuyup kilitte beklesin
+    settings.upstream_access_token = fresh_access
+    lock.release()
+
+    outcome = await asyncio.wait_for(task, timeout=1)
+
+    assert outcome.ok is True
+    assert outcome.access_token == fresh_access
+    assert "deduplicated_concurrent_refresh" in outcome.notes
 
 
 @pytest.mark.asyncio

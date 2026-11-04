@@ -71,6 +71,45 @@ async def test_credential_reset_retires_client_after_active_stream_finishes():
 
 
 @pytest.mark.asyncio
+async def test_set_cookie_schedules_free_render_credential_sync(monkeypatch):
+    from app.upstream import state_store
+
+    synced = asyncio.Event()
+    snapshots: list[str] = []
+
+    async def fake_sync(settings) -> bool:
+        snapshots.append(settings.upstream_cookie)
+        synced.set()
+        return True
+
+    monkeypatch.setattr(state_store, "sync_render_env", fake_sync)
+    settings = make_settings(
+        upstream_cookie="session=old",
+        render_api_key="render-test-key",
+        render_service_id="srv-test",
+    )
+    upstream = UpstreamClient(settings)
+    await upstream.startup()
+    try:
+        http = upstream.client
+        http.cookies.set("session", "rotated", domain="upstream.test", path="/")
+        response = httpx.Response(
+            200, headers={"set-cookie": "session=rotated; Path=/"}
+        )
+
+        upstream._ingest_set_cookie(response, http, None)
+        await asyncio.wait_for(synced.wait(), timeout=1)
+        task = upstream._render_sync_task
+        assert task is not None
+        await task
+
+        assert settings.upstream_cookie == "session=rotated"
+        assert snapshots == ["session=rotated"]
+    finally:
+        await upstream.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_token_refresher_checks_immediately_after_startup(monkeypatch):
     from app.services import token_refresh
 

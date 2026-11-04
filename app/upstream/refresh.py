@@ -413,9 +413,13 @@ async def refresh_upstream_token(
         token_inside = cookie_access_token(settings, slot=slot)
         refresh_inside = cookie_refresh_token(settings, slot=slot)
         if (
-            (token_before and token_inside and token_inside != token_before)
-            or (refresh_before and refresh_inside and refresh_inside != refresh_before)
+            (token_inside and token_inside != token_before)
+            or (refresh_inside and refresh_inside != refresh_before)
         ):
+            # Başlangıçta access token hiç yoksa da başka görevin ürettiği yeni
+            # değeri yakala. Eski koşul ``token_before`` zorunlu tuttuğu için
+            # non-rotating refresh token kullanan bu sınır durumunda ikinci
+            # istek yeniden ağa çıkıyordu.
             rem = token_seconds_remaining(token_inside) if token_inside else None
             return RefreshOutcome(
                 ok=True,
@@ -574,8 +578,9 @@ def _describe_failure(status: int, payload: dict[str, Any], endpoint: str) -> st
     lowered = message.lower()
     if status in (400, 401) and ("api key" in lowered or "apikey" in lowered):
         return (
-            "Upstream `apikey` istiyor: sitede kullanılan anon anahtarını "
-            "UPSTREAM_REFRESH_API_KEY olarak ekleyin (ya da /apikey <anahtar>)."
+            "Upstream `apikey` istiyor: önce /apikey komutunu parametresiz "
+            "göndererek otomatik keşfi deneyin; anahtarı biliyorsanız "
+            "/apikey <anahtar> veya UPSTREAM_REFRESH_API_KEY kullanın."
         )
     if status in (400, 401) and ("refresh" in lowered or "token" in lowered):
         return (

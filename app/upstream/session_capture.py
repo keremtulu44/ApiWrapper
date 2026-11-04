@@ -390,11 +390,18 @@ async def capture_session(
         await _wait(page, wait_ms)
         result.final_url = str(getattr(page, "url", "") or "")
 
-        # Sohbet isteğini tetiklemeyi dene (bulunamazsa sessizce devam).
+        # SPA'nın editörü veya Cloudflare'in otomatik doğrulaması ilk bekleme
+        # sonunda hazır olmayabilir. Henüz istem gönderilmediyse bir kez daha
+        # bekle; başarılı gönderimleri asla tekrarlayarak kota harcama.
         result.triggered_request = await _try_send_message(page, prompt, wait_ms)
+        html = await _content(page)
+        if not result.triggered_request and wait_ms > 0:
+            await _wait(page, min(max(wait_ms, 3000), 6000))
+            result.triggered_request = await _try_send_message(page, prompt, wait_ms)
+            html = await _content(page)
+            result.notes.append("sohbet editörü için ikinci bekleme denemesi yapıldı")
 
         # HTML'de damga ve olası bot doğrulaması ara. Sayfa metni/loglanmaz.
-        html = await _content(page)
         if "deployment_id" not in observed and html:
             from app.upstream.deployment import _from_body  # tek kaynak
 
@@ -490,13 +497,38 @@ async def _content(page: Any) -> str:
 
 
 def _is_bot_challenge(html: str) -> bool:
-    """Sohbet yerine doğrulama sayfası mı açıldı? İçerik saklanmaz/loglanmaz."""
-    sample = html[:200_000].lower()
-    return any(
-        marker in sample
+    """Gerçek doğrulama ekranını, normal sayfadaki Cloudflare betiklerinden ayır.
+
+    ``cf-chl`` veya ``challenge-platform`` gibi teknik adlar uygulamanın normal
+    JS paketinde de bulunabilir; bunlar tek başına kanıt değildir. Görünür metin
+    için script/style içeriği çıkarılır. Hiçbir sayfa içeriği saklanmaz/loglanmaz.
+    """
+    sample = html[:200_000]
+    lowered = sample.lower()
+    if any(
+        marker in lowered
         for marker in (
-            "cf-chl",
-            "challenge-platform",
+            "window._cf_chl_opt",
+            'id="challenge-form"',
+            "id='challenge-form'",
+            'id="challenge-stage"',
+            "id='challenge-stage'",
+            'name="cf-turnstile-response"',
+            "name='cf-turnstile-response'",
+        )
+    ):
+        return True
+
+    without_scripts = re.sub(
+        r"<(script|style)\b[^>]*>.*?</\1\s*>",
+        " ",
+        sample,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    visible_text = re.sub(r"<[^>]+>", " ", without_scripts).lower()
+    return any(
+        marker in visible_text
+        for marker in (
             "checking your browser",
             "verify you are human",
             "verify your humanity",
