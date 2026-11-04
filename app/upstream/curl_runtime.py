@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import urlsplit
 
 from app.core.config import MAX_ACCOUNT_SLOTS, Settings
@@ -36,7 +37,11 @@ _CURL_FIELDS: dict[str, str] = {
 
 def _runtime_fields() -> tuple[str, ...]:
     """Canlı `Settings` nesnesine yazılabilecek alan adları (allowlist)."""
-    fields: list[str] = list(_CURL_FIELDS.values())
+    fields: list[str] = [
+        *_CURL_FIELDS.values(),
+        "upstream_captured_model_id",
+        "upstream_snapshot_version",
+    ]
     for slot in range(2, MAX_ACCOUNT_SLOTS + 1):
         fields.extend(
             [
@@ -105,6 +110,9 @@ def apply_curl_to_settings(
         if getattr(settings, field, None) != new_value:
             setattr(settings, field, new_value)
             changed.append(field)
+    # Model kimliği de cURL snapshot'ının parçasıdır; aksi halde restart'ta
+    # yeni cookie/header'lar eski UPSTREAM_CURL modeliyle birleşir.
+    settings.upstream_captured_model_id = model_id.strip() if model_id else ""
     # Yeni cURL ile gelen çerezin refresh token'ını da hizala (eski dönmüş
     # token yeni oturumu ezmesin).
     settings.upstream_refresh_token = (
@@ -154,11 +162,15 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
             "siteye giriş yapmışken tamamlanmış sohbet isteğini kopyalayın."
         )
 
-    updates = {
+    updates: dict[str, Any] = {
         field: env[key]
         for key, field in _CURL_FIELDS.items()
         if key in env
     }
+    updates["upstream_captured_model_id"] = (
+        model_id.strip() if isinstance(model_id, str) else ""
+    )
+    updates["upstream_snapshot_version"] = 1
     # Render'da `UPSTREAM_CURL` sabit kalırken `sync_render_env` dönen taze
     # çerezi `UPSTREAM_COOKIE` / `UPSTREAM_REFRESH_TOKEN` ortam değişkenine
     # yazar. Restart sonrası `UPSTREAM_COOKIE` içindeki JWT `exp` süresi
@@ -176,11 +188,31 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
         # hızlı restart'ta görülür. Render env, çalışma sırasında yazılan son
         # anlık görüntüdür; eşitlikte eski UPSTREAM_CURL'e dönmek tek kullanımlık
         # eski refresh token'ı diriltir.
-        if settings.upstream_cookie:
-            updates["upstream_cookie"] = settings.upstream_cookie
-        if settings.upstream_access_token:
-            updates["upstream_access_token"] = settings.upstream_access_token
-        if settings.upstream_extra_headers:
+        # İki alan da boş değerleriyle kopyalanır: cookie-only yeni snapshot'ın
+        # yanında eski cURL'den ayrı bir Authorization token'ı hayatta kalmaz.
+        updates["upstream_cookie"] = settings.upstream_cookie
+        updates["upstream_access_token"] = settings.upstream_access_token
+        if settings.upstream_snapshot_version >= 1:
+            # Render'a ayrı env anahtarları olarak yazılan güncel tam snapshot,
+            # eski UPSTREAM_CURL'nin bütün istemci kimliğini ezer. Merge yapılmaz:
+            # yeni cURL'den kaldırılan eski header yeniden dirilmez.
+            for field in (
+                "upstream_extra_headers",
+                "upstream_auth_from_cookie",
+                "upstream_auth_scheme",
+                "upstream_user_agent",
+                "upstream_accept_language",
+                "upstream_mode",
+                "upstream_recaptcha_field",
+                "upstream_referer_path",
+                "upstream_stream_path",
+                "upstream_captured_model_id",
+                "recaptcha_static_token",
+            ):
+                updates[field] = getattr(settings, field)
+        elif settings.upstream_extra_headers:
+            # Geriye uyumluluk: eski sürüm yalnız credential ve birleşik extra
+            # header senkronu yapmıştı; varsayılan UA/mode değerleri cURL'ü ezmez.
             curl_extra = settings.model_copy(
                 update={
                     "upstream_extra_headers": str(
@@ -209,8 +241,8 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
         "UPSTREAM_REFERER_PATH",
         "RECAPTCHA_STATIC_TOKEN",
     ):
-        if key not in env:
-            field = _CURL_FIELDS[key]
+        field = _CURL_FIELDS[key]
+        if key not in env and field not in updates:
             default = Settings.model_fields[field].default
             updates[field] = default if isinstance(default, str) else ""
     # Bu secret tek-hesap Max kurulumunun tam anlık görüntüsüdür. Render'da
@@ -232,11 +264,16 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
     merged.update(updates)
     updated = Settings(**merged)
 
+    # Yaşam döngüsüne dönen model kimliği de **kazanan** snapshot'tan gelmeli:
+    # tam snapshot eski UPSTREAM_CURL'ü ezdiğinde eski `modelAId` yeni oturuma
+    # taşınırsa istek yanlış modele gider.
+    loaded_model_id = str(updates.get("upstream_captured_model_id") or "").strip()
+
     for item in warnings:
         logger.warning("upstream_curl_warning", detail=item)
     logger.info(
         "upstream_curl_loaded",
         fields=sorted(updates),
-        model_id_detected=bool(model_id),
+        model_id_detected=bool(loaded_model_id),
     )
-    return updated, model_id.strip() if isinstance(model_id, str) else None
+    return updated, loaded_model_id or None

@@ -204,26 +204,58 @@ def extract_anon_key_from_text(text: str) -> str | None:
     return None
 
 
-async def discover_refresh_api_key(
+@dataclass(slots=True)
+class ApiKeyDiscovery:
+    """`apikey` keşif denemesinin sonucu ve **başarısızlık nedeni**.
+
+    Eski sürüm yalnız boş metin döndürüyordu; telefonundan `/apikey` deneyen
+    operatör "bulunamadı" dışında hiçbir ipucu alamıyordu (ana sayfa 403 mü,
+    anahtar hiç gömülmemiş mi, yoksa yalnız ilk 4 JS parçasına mı bakıldı?).
+    """
+
+    key: str = ""
+    #: Kullanıcıya gösterilebilir, gizli değer içermeyen açıklama.
+    detail: str = ""
+    home_status: int | None = None
+    scripts_seen: int = 0
+    scripts_fetched: int = 0
+    found_in: str = ""
+
+    @property
+    def ok(self) -> bool:
+        return bool(self.key)
+
+
+#: Keşifte taranacak azami Next.js parça sayısı (ilk denemede 4 ile sınırlıydı;
+#: anahtar genelde geç yüklenen chunk'larda duruyor).
+_MAX_DISCOVERY_SCRIPTS = 12
+
+
+async def discover_refresh_api_key_report(
     settings: Settings,
     client: httpx.AsyncClient | None = None,
-) -> str:
-    """Hedef sayfanın HTML/JS'inden Supabase `apikey` değerini otomatik keşfeder.
-
-    Bulunursa `settings.upstream_refresh_api_key` içine de yazılır; böylece
-    sonraki yenilemelerde tekrar sayfa okunmaz.
-    """
+) -> ApiKeyDiscovery:
+    """`apikey`'i keşfeder ve başarısızlığın **nedenini** de raporlar."""
     existing = (settings.upstream_refresh_api_key or "").strip()
     if existing:
-        return existing
+        return ApiKeyDiscovery(
+            key=existing, detail="Anahtar zaten yapılandırılmış.", found_in="settings"
+        )
 
     domain = (settings.target_domain or "").strip().lower()
     if not domain or domain in {"localhost", "127.0.0.1"}:
-        return ""
+        return ApiKeyDiscovery(
+            detail=(
+                "TARGET_DOMAIN gerçek hedefi göstermiyor; keşif atlandı. "
+                "Anahtarı /apikey <anahtar> ile elle verin."
+            )
+        )
 
+    report = ApiKeyDiscovery()
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=10.0)
     headers = build_page_headers(settings, include_cookie=False)
+    found = ""
     try:
         try:
             response = await http.get(
@@ -232,24 +264,38 @@ async def discover_refresh_api_key(
                 timeout=10.0,
                 follow_redirects=True,
             )
-        except httpx.HTTPError:
-            return ""
+        except httpx.HTTPError as exc:
+            report.detail = (
+                f"Hedefin ana sayfasına ulaşılamadı ({type(exc).__name__}). "
+                "Anahtarı /apikey <anahtar> ile elle verin."
+            )
+            return report
 
+        report.home_status = response.status_code
         if not (200 <= response.status_code < 400):
-            return ""
+            report.detail = (
+                f"Hedefin ana sayfası HTTP {response.status_code} döndü; "
+                "anahtar okunamadı (bot koruması/oturum duvarı olabilir). "
+                "Anahtarı /apikey <anahtar> ile elle verin."
+            )
+            return report
 
         html = response.text or ""
-        found = extract_anon_key_from_text(html)
+        found = extract_anon_key_from_text(html) or ""
+        if found:
+            report.found_in = "home_page"
+
         if not found:
-            # Next.js uygulamalarında env değişkenleri `_next/static/chunks/*.js`
-            # içine gömülür; ilk birkaç betiği kontrol et.
+            # Next.js env değişkenleri `_next/static/chunks/*.js` içine gömülür.
+            # Anahtar ilk 4 parçada olmayabilir; daha geniş tarama yapılır.
             script_paths: list[str] = []
-            for match in _NEXT_SCRIPT_RE.finditer(html[:200_000]):
+            for match in _NEXT_SCRIPT_RE.finditer(html[:400_000]):
                 script_path = match.group("path")
                 if script_path not in script_paths:
                     script_paths.append(script_path)
-                if len(script_paths) >= 4:
+                if len(script_paths) >= _MAX_DISCOVERY_SCRIPTS:
                     break
+            report.scripts_seen = len(script_paths)
             for script_path in script_paths:
                 try:
                     js_resp = await http.get(
@@ -259,9 +305,11 @@ async def discover_refresh_api_key(
                     )
                 except httpx.HTTPError:
                     continue
+                report.scripts_fetched += 1
                 if 200 <= js_resp.status_code < 400:
-                    found = extract_anon_key_from_text(js_resp.text or "")
+                    found = extract_anon_key_from_text(js_resp.text or "") or ""
                     if found:
+                        report.found_in = "script"
                         break
     finally:
         if owns_client:
@@ -269,9 +317,33 @@ async def discover_refresh_api_key(
 
     if found:
         settings.upstream_refresh_api_key = found
-        logger.info("upstream_refresh_api_key_discovered")
-        return found
-    return ""
+        report.key = found
+        report.detail = "Anahtar otomatik keşfedildi."
+        logger.info("upstream_refresh_api_key_discovered", found_in=report.found_in)
+        return report
+
+    report.detail = (
+        "Ana sayfa ve "
+        f"{report.scripts_fetched}/{report.scripts_seen} JS parçası tarandı; "
+        "anon anahtar bulunamadı. Site anahtarı istemciye hiç göndermiyorsa "
+        "otomatik keşif çalışmaz: /apikey <anahtar> ile elle verin veya "
+        "UPSTREAM_REFRESH_API_KEY ayarlayın."
+    )
+    return report
+
+
+async def discover_refresh_api_key(
+    settings: Settings,
+    client: httpx.AsyncClient | None = None,
+) -> str:
+    """Hedef sayfanın HTML/JS'inden Supabase `apikey` değerini otomatik keşfeder.
+
+    Bulunursa `settings.upstream_refresh_api_key` içine de yazılır; böylece
+    sonraki yenilemelerde tekrar sayfa okunmaz. Ayrıntılı neden için
+    `discover_refresh_api_key_report` kullanın.
+    """
+    report = await discover_refresh_api_key_report(settings, client)
+    return report.key
 
 
 def derive_refresh_url(settings: Settings, *, slot: int = 1) -> str:

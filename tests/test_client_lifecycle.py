@@ -135,3 +135,54 @@ async def test_token_refresher_checks_immediately_after_startup(monkeypatch):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
+
+
+@pytest.mark.asyncio
+async def test_failed_render_sync_is_retried_and_latest_credentials_win(monkeypatch):
+    """Tek seferlik Render hatası, sonraki token rotasyonuna bırakılmamalı.
+
+    Free Render'da disk kalıcı değil: başarısız env yazımı restart'ta tazelenmiş
+    oturumun kaybolması demek. İşçi artan aralıkla yeniden denemeli ve denemede
+    **en güncel** ayarları okumalı.
+    """
+    from app.upstream import client as client_module
+    from app.upstream import state_store
+
+    monkeypatch.setattr(
+        client_module, "_RENDER_SYNC_RETRY_INITIAL_SECONDS", 0.0, raising=True
+    )
+    monkeypatch.setattr(
+        client_module, "_RENDER_SYNC_RETRY_MAX_SECONDS", 0.0, raising=True
+    )
+
+    attempts: list[str] = []
+    done = asyncio.Event()
+
+    async def flaky_sync(settings) -> bool:
+        attempts.append(settings.upstream_cookie)
+        if len(attempts) == 1:
+            return False  # ilk deneme başarısız (geçici Render 5xx)
+        done.set()
+        return True
+
+    monkeypatch.setattr(state_store, "sync_render_env", flaky_sync)
+    settings = make_settings(
+        upstream_cookie="session=old",
+        render_api_key="render-test-key",
+        render_service_id="srv-test",
+    )
+    upstream = UpstreamClient(settings)
+    await upstream.startup()
+    try:
+        upstream._schedule_render_env_sync()
+        # İlk deneme başarısız olduktan sonra kimlik döndü.
+        settings.upstream_cookie = "session=rotated"
+        await asyncio.wait_for(done.wait(), timeout=3)
+        task = upstream._render_sync_task
+        assert task is not None
+        await asyncio.wait_for(task, timeout=3)
+    finally:
+        await upstream.shutdown()
+
+    assert len(attempts) >= 2, "başarısız yazım yeniden denenmedi"
+    assert attempts[-1] == "session=rotated", "tekrar deneme eski kimlikle yapıldı"

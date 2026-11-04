@@ -55,6 +55,7 @@ benden izin al" dedi. Bu yüzden:
 | #15 | `arena/ecf279c9-apiwrapper` | `arena/c55e601b-apiwrapper` | *(bu PR)* |
 | #21 | `arena/d6beb89f-apiwrapper` | `arena/c55e601b-apiwrapper` | *(bu PR)* |
 | #22 | `arena/af86b04b-apiwrapper` | `arena/c55e601b-apiwrapper` | *(bu PR)* |
+| #25 | `arena/55a90bd1-apiwrapper` | `arena/c55e601b-apiwrapper` | *(bu PR)* |
 
 Yeni bir merge yapıldığında bu tabloya bir satır ekleyin.
 

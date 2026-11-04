@@ -857,3 +857,112 @@ async def test_token_command_explains_failure():
 
     assert "yenilenemedi" in sent[-1]["text"]
     assert "taze çerez" in sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_apikey_command_reports_that_refresh_happened():
+    """/apikey 'kaydedildi' deyip susmamalı; token gerçekten tazelendiyse söylemeli."""
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/admin/upstream/apikey"
+        return httpx.Response(
+            200,
+            json={
+                "status": "applied",
+                "source": "manual",
+                "has_api_key": True,
+                "length": 11,
+                "refreshed": True,
+                "refresh_detail": "Erişim token'ı yenilendi.",
+                "expires_in": 3600,
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram=telegram, wrapper=wrapper)
+        await bot.set_refresh_apikey(42, "/apikey anon-manual")
+
+    text = sent[-1]["text"]
+    assert "kaydedildi" in text
+    assert "Token yenilendi" in text
+    assert "~60 dk" in text
+
+
+@pytest.mark.asyncio
+async def test_apikey_command_warns_when_refresh_still_fails():
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "applied",
+                "refreshed": False,
+                "refresh_detail": "Upstream `apikey` istiyor.",
+                "length": 9,
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram=telegram, wrapper=wrapper)
+        await bot.set_refresh_apikey(42, "/apikey wrong-key")
+
+    text = sent[-1]["text"]
+    assert "token hâlâ yenilenemedi" in text
+    assert "/cookie" in text
+
+
+@pytest.mark.asyncio
+async def test_apikey_discovery_failure_shows_why_and_how_many_scripts_were_scanned():
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "not_found",
+                "detail": "Hedefin ana sayfası HTTP 403 döndü.",
+                "home_status": 403,
+                "scripts_seen": 0,
+                "scripts_fetched": 0,
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram=telegram, wrapper=wrapper)
+        await bot.set_refresh_apikey(42, "/apikey")
+
+    text = sent[-1]["text"]
+    assert "403" in text
+    assert "/apikey <anahtar>" in text
