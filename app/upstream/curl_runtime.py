@@ -8,6 +8,7 @@ from app.core.config import MAX_ACCOUNT_SLOTS, Settings
 from app.core.logging import get_logger
 from app.upstream.auth import extract_access_token, extract_refresh_token, token_expiry
 from app.upstream.curl_import import build_settings, looks_like_stream_path, parse_curl
+from app.upstream.header_store import format_extra_headers
 from app.upstream.state_store import save_runtime_state
 
 logger = get_logger(__name__)
@@ -188,9 +189,7 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
                 }
             ).parsed_extra_headers()
             curl_extra.update(settings.parsed_extra_headers())
-            updates["upstream_extra_headers"] = ";".join(
-                f"{k}={v}" for k, v in curl_extra.items()
-            )
+            updates["upstream_extra_headers"] = format_extra_headers(curl_extra)
         logger.info("upstream_curl_kept_fresher_env_cookie", env_exp=env_exp, curl_exp=curl_exp)
     winning_cookie = str(
         updates.get("upstream_cookie", settings.upstream_cookie or "")

@@ -420,6 +420,38 @@ async def test_curl_command_shows_warnings_from_wrapper():
     assert "Canlı akış yolu korundu" in sent[-1]["text"]
 
 
+@pytest.mark.asyncio
+async def test_curl_command_explains_when_same_settings_are_already_loaded():
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"status": "applied", "fields": [], "accounts_updated": {}},
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message(
+            {"chat": {"id": 42}, "text": "/curl curl 'https://upstream.test/'"}
+        )
+
+    text = sent[-1]["text"]
+    assert "ayarlar zaten yüklü" in text
+    assert "Aynı cURL'ü tekrar" in text
+    assert "0 alan güncellendi" not in text
+
+
 def _auth_payload(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "cookie_count": 3,

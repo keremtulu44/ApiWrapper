@@ -12,6 +12,8 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
+from app.upstream.header_store import format_extra_headers
+
 
 def normalize_curl(raw: str) -> str:
     """Windows (`^`) ve bash (`\\`) satır devamı kaçışlarını temizler."""
@@ -125,8 +127,21 @@ CAPTCHA_FIELDS: tuple[str, ...] = (
 #: Tarayıcı parmak izi için korunan, dinamik olmayan ek başlıklar.
 #: Authorization/cookie gibi kimlikler ve her istekte değişen traceparent buraya
 #: alınmaz. Rastgele bütün x-* başlıklarını almak gizli anahtar da sızdırabilirdi.
+#: Client Hint ve Fetch Metadata başlıkları ise uydurulmamalıdır: özellikle mobil
+#: cURL'deki `sec-ch-ua-mobile: ?1` değerini masaüstü `?0` ile değiştirmek isteğin
+#: gerçek tarayıcı parmak izini bozar.
 PASSTHROUGH_HEADERS: tuple[str, ...] = (
+    "accept",
+    "cache-control",
     "dnt",
+    "pragma",
+    "priority",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+    "sec-fetch-dest",
+    "sec-fetch-mode",
+    "sec-fetch-site",
     "x-arena-web-deployment",
     "x-deployment-id",
 )
@@ -315,13 +330,12 @@ def build_settings(
     # Yalnız bilinen, dinamik olmayan parmak izi başlıklarını koru. Değerler
     # tek satırlık `K1=V1;K2=V2` biçimine getirilir; eski hedefe ait değerlerin
     # kalmasını önlemek için cURL'de hiçbiri yoksa alan boş yazılır.
-    extra_headers: list[str] = []
+    extra_headers: dict[str, str] = {}
     for name in PASSTHROUGH_HEADERS:
         value = headers.get(name, "").strip()
         if value:
-            value = value.replace("\r", " ").replace("\n", " ")
-            extra_headers.append(f"{name}={value}")
-    env["UPSTREAM_EXTRA_HEADERS"] = ";".join(extra_headers)
+            extra_headers[name] = value.replace("\r", " ").replace("\n", " ")
+    env["UPSTREAM_EXTRA_HEADERS"] = format_extra_headers(extra_headers)
 
     # --- referer yolu (sohbet sayfası şablonu; parmak izi için gönderilir)
     if referer_path := extract_referer_path(headers):
