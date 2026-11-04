@@ -250,8 +250,6 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     else:
         settings, upstream_curl_model_id = apply_upstream_curl(settings)
 
-    restore_runtime_state(settings)
-
     if from_env and (
         os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID")
     ):
@@ -264,7 +262,26 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if not keys or keys == ["sk-local-dev-key"]:
             settings.api_keys = [f"sk-render-{secrets.token_urlsafe(24)}"]
 
+    # Render'ın domain fallback'i önce uygulanmalı: aksi hâlde TARGET_DOMAIN
+    # boşken kalıcı durum "localhost != arena.ai" nedeniyle geri yüklenemez.
+    restore_runtime_state(settings)
+
     configure_logging(settings.log_level, settings.log_json)
+    if (
+        from_env
+        and (os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID"))
+        and settings.upstream_refresh_enabled
+        and not (
+            settings.render_api_key.strip() and settings.render_service_id.strip()
+        )
+    ):
+        logger.warning(
+            "render_env_sync_not_configured",
+            hint=(
+                "Free Render has no persistent disk. Set RENDER_API_KEY so rotated "
+                "cookies/tokens survive restart; RENDER_SERVICE_ID is automatic."
+            ),
+        )
 
     app = FastAPI(
         title=settings.app_name,

@@ -71,6 +71,11 @@ class CaptureResult:
     final_path: str = ""
     #: Mevcut cookie bağlama yüklendi mi (0 = yüklenemedi).
     injected_cookies: int = 0
+    #: Yükleme başarısızsa gizli değer içermeyen neden/kademe bilgisi.
+    cookie_injection_error: str = ""
+    #: Sayfa HTTP durumu ve bot koruması göstergesi (içerik/token taşımaz).
+    navigation_status: int | None = None
+    bot_challenge_detected: bool = False
     access_token_found: bool = False
     access_token_expired: bool | None = None
     #: Oturum yakalanamadıysa nedeni (Türkçe, gizli değer içermez).
@@ -91,6 +96,20 @@ class CaptureResult:
     @property
     def has_cookie(self) -> bool:
         return bool(self.cookies.strip())
+
+    @property
+    def cookie_application_safe(self) -> bool:
+        """Tarayıcı çerezleri gerçek oturum kanıtı taşıyor mu?
+
+        Yalnız ``logged_in`` bayrağına güvenmek yeterli değil: auth *adlı*
+        bayat bir çerez, hiç çerez yüklenemeyen anonim bir sekmede bile yanlış
+        pozitif üretebilirdi. Geçerli JWT, gerçek akış isteği veya bu çalışma
+        sırasında yüklenmiş oturum çerezi olmadan mevcut ayar ezilmez.
+        """
+        if not self.logged_in:
+            return False
+        valid_token = self.access_token_found and self.access_token_expired is False
+        return bool(self.injected_cookies > 0 or self.stream_path or valid_token)
 
 
 def cookie_header_from(items: list[dict[str, Any]]) -> str:
@@ -129,10 +148,18 @@ def _explain_not_logged_in(result: CaptureResult, login_redirect: bool) -> str:
             f"sayfa giriş ekranına yönlendi ({result.final_path or '/'}): "
             "oturum çerezi ölü, yeni giriş gerekiyor."
         )
-    if not result.cookie_names:
+    if result.bot_challenge_detected:
         return (
-            "tarayıcıya hiç çerez yüklenemedi: UPSTREAM_COOKIE boş ya da "
-            "ayrıştırılamadı."
+            "sayfa bot koruması/doğrulama ekranında kaldı; sohbet arayüzü "
+            "yüklenemedi. Birkaç dakika sonra tekrar deneyin veya /cookie kullanın."
+        )
+    if not result.cookie_names:
+        detail = (
+            f" ({result.cookie_injection_error})" if result.cookie_injection_error else ""
+        )
+        return (
+            "tarayıcıya hiç çerez yüklenemedi: UPSTREAM_COOKIE boş, geçersiz "
+            f"veya Chromium reddetti{detail}."
         )
     if result.access_token_found and result.access_token_expired:
         return "cookie'deki access_token süresi dolmuş; site oturumu yenilemedi."
@@ -142,21 +169,39 @@ def _explain_not_logged_in(result: CaptureResult, login_redirect: bool) -> str:
             "gelen çerezlerde oturum taşıyan ad yok "
             f"(gelenler: {names}). Giriş yapmış tarayıcıdan **tüm** çerezleri aktarın."
         )
+    if result.cookie_injection_error:
+        return (
+            "mevcut oturum çerezleri tarayıcıya yüklenemedi "
+            f"({result.cookie_injection_error}); sayfa anonim/bot korumalı "
+            "açılmış olabilir. Önce /cookie ile taze auth çerezlerini uygulayın."
+        )
     return "sayfa oturum açmadı (gerçek sohbet isteği görülmedi)."
 
 
-async def _inject_cookies(context: Any, settings: Settings) -> int:
-    """Mevcut `UPSTREAM_COOKIE` çerezlerini tarayıcı bağlamına yükler.
+async def _inject_cookies(context: Any, settings: Settings) -> tuple[int, str]:
+    """Mevcut çerezleri temiz bağlama yükle; sayı ve güvenli hata kodu döndür.
 
-    Bu adım olmadan sunucu tarayıcısı anonim açılır: her istek giriş ekranına
-    düşer ve yakalama "oturum yok" der. Dönüş: yüklenen çerez sayısı.
+    Paylaşılan Chromium context'inde önceki yakalamanın auth parçaları kalabilir.
+    Onları yeni oturumla karıştırmamak için önce jar temizlenir. Domain biçimi
+    reddedilirse aynı çerezler ``url`` biçimiyle bir kez daha denenir. Hata
+    metinleri cookie/token taşıyabileceğinden yalnız sınıf adı döndürülür.
     """
-    cookies = parse_cookie_header(settings.upstream_cookie)
+    clearer = getattr(context, "clear_cookies", None)
+    if clearer is not None:
+        try:
+            await clearer()
+        except Exception as exc:  # pragma: no cover - tarayıcıya bağlı
+            logger.warning(
+                "upstream_capture_cookie_clear_failed", error_type=type(exc).__name__
+            )
+
+    raw_cookie = (settings.upstream_cookie or "").strip()
+    cookies = parse_cookie_header(raw_cookie)
     if not cookies:
-        return 0
+        return 0, "upstream_cookie_empty" if not raw_cookie else "upstream_cookie_invalid"
     domain = (settings.target_domain or "").split(":", 1)[0].strip()
     if not domain:
-        return 0
+        return 0, "target_domain_missing"
     payload = [
         {
             "name": name,
@@ -169,12 +214,31 @@ async def _inject_cookies(context: Any, settings: Settings) -> int:
     ]
     adder = getattr(context, "add_cookies", None)
     if adder is None:
-        return 0
+        return 0, "browser_cookie_api_unavailable"
     try:
         await adder(payload)
-    except Exception:  # pragma: no cover - tarayıcı reddederse yakalama devam eder
-        return 0
-    return len(payload)
+        return len(payload), ""
+    except Exception as exc:
+        first_error = type(exc).__name__
+
+    # Playwright bazı sürümler/domain biçimlerinde domain yerine URL ister.
+    url_payload = [
+        {
+            "name": name,
+            "value": value,
+            "url": settings.base_url,
+            "secure": settings.upstream_scheme == "https",
+        }
+        for name, value in cookies.items()
+    ]
+    try:
+        await adder(url_payload)
+        logger.info("upstream_capture_cookies_injected_with_url_fallback")
+        return len(url_payload), ""
+    except Exception as exc:
+        reason = f"domain:{first_error};url:{type(exc).__name__}"
+        logger.warning("upstream_capture_cookie_injection_failed", reason=reason)
+        return 0, reason
 
 
 def _looks_logged_in(cookies: list[dict[str, Any]]) -> bool:
@@ -278,7 +342,9 @@ async def capture_session(
 
         # Eldeki oturumu bağlama yükle. Bu olmadan tarayıcı anonim açılır ve
         # her site giriş ekranına düşer (eski sürümdeki hata buydu).
-        result.injected_cookies = await _inject_cookies(context, settings)
+        result.injected_cookies, result.cookie_injection_error = await _inject_cookies(
+            context, settings
+        )
 
         # Kök sayfa bazı sağlayıcılarda pazarlama/oturum açma sayfasıdır ve
         # sohbet alanı içermez. Gerçek sohbet arayüzünü açmak için cURL'den
@@ -289,25 +355,32 @@ async def capture_session(
                 url, wait_until="domcontentloaded", timeout=navigation_timeout_ms
             )
             navigation_status = getattr(navigation, "status", None)
+            result.navigation_status = navigation_status
             if (
                 navigation_status is not None
                 and navigation_status >= 400
                 and url != settings.base_url
             ):
                 result.notes.append(f"sohbet sayfası HTTP {navigation_status}")
-                await page.goto(
+                fallback_navigation = await page.goto(
                     settings.base_url,
                     wait_until="domcontentloaded",
                     timeout=navigation_timeout_ms,
+                )
+                result.navigation_status = getattr(
+                    fallback_navigation, "status", navigation_status
                 )
         except Exception as exc:
             result.notes.append(f"sohbet sayfası açılamadı: {type(exc).__name__}")
             if url != settings.base_url:
                 try:
-                    await page.goto(
+                    fallback_navigation = await page.goto(
                         settings.base_url,
                         wait_until="domcontentloaded",
                         timeout=navigation_timeout_ms,
+                    )
+                    result.navigation_status = getattr(
+                        fallback_navigation, "status", None
                     )
                 except Exception as fallback_exc:
                     result.notes.append(
@@ -320,22 +393,36 @@ async def capture_session(
         # Sohbet isteğini tetiklemeyi dene (bulunamazsa sessizce devam).
         result.triggered_request = await _try_send_message(page, prompt, wait_ms)
 
-        # HTML'de damga varsa onu da kullan (istek yakalanamadıysa).
-        if "deployment_id" not in observed:
-            html = await _content(page)
-            if html:
-                from app.upstream.deployment import _from_body  # tek kaynak
+        # HTML'de damga ve olası bot doğrulaması ara. Sayfa metni/loglanmaz.
+        html = await _content(page)
+        if "deployment_id" not in observed and html:
+            from app.upstream.deployment import _from_body  # tek kaynak
 
-                found = _from_body(html)
-                if found:
-                    observed["deployment_id"] = found
-                    result.notes.append("damga HTML'den okundu")
+            found = _from_body(html)
+            if found:
+                observed["deployment_id"] = found
+                result.notes.append("damga HTML'den okundu")
+        result.bot_challenge_detected = _is_bot_challenge(html)
+        if result.bot_challenge_detected:
+            result.notes.append("sayfada bot doğrulaması/challenge algılandı")
 
         try:
             cookies = list(await context.cookies(url))
         except Exception:  # pragma: no cover - savunmacı
             cookies = []
         result.cookies = cookie_header_from(cookies)
+        if "deployment_id" not in observed:
+            from app.upstream.deployment import _from_body
+
+            for item in cookies:
+                name = str(item.get("name", "")).lower()
+                if not name.startswith("_vcrr"):
+                    continue
+                found = _from_body(str(item.get("value", "")))
+                if found:
+                    observed["deployment_id"] = found
+                    result.notes.append("damga tarayıcı çerezinden okundu")
+                    break
         result.cookie_names = sorted(
             {str(item.get("name", "")).strip() for item in cookies if item.get("name")}
         )[:20]
@@ -359,7 +446,12 @@ async def capture_session(
             # sayılmamalı, yoksa bayat çerez çalışan oturumun üzerine yazılır.
             result.logged_in = not result.access_token_expired
         else:
-            result.logged_in = session_cookie or "stream_request" in observed
+            # Auth *adı* tek başına oturum kanıtı değildir. Bu yakalama
+            # sırasında çerez yüklenemediyse anonim sayfadaki bayat auth adı
+            # "logged_in" ve cookie güncellemesi üretmemeli.
+            result.logged_in = (
+                session_cookie and result.injected_cookies > 0
+            ) or "stream_request" in observed
         if not result.logged_in:
             result.reason = _explain_not_logged_in(result, login_redirect)
         result.deployment_id = observed.get("deployment_id")
@@ -397,62 +489,89 @@ async def _content(page: Any) -> str:
         return ""
 
 
-async def _try_send_message(page: Any, prompt: str, wait_ms: int) -> bool:
-    """Sohbet kutusuna kısa istem gönderip gerçek akış isteğini tetiklemeyi dener.
+def _is_bot_challenge(html: str) -> bool:
+    """Sohbet yerine doğrulama sayfası mı açıldı? İçerik saklanmaz/loglanmaz."""
+    sample = html[:200_000].lower()
+    return any(
+        marker in sample
+        for marker in (
+            "cf-chl",
+            "challenge-platform",
+            "checking your browser",
+            "verify you are human",
+            "verify your humanity",
+            "just a moment...",
+        )
+    )
 
-    Önce görünen ve etkin bir editör arar; Enter bazı arayüzlerde yeni satır
-    eklediği için varsa görünür gönder düğmesini tercih eder. DOM tanınmazsa False.
+
+async def _try_send_message(page: Any, prompt: str, wait_ms: int) -> bool:
+    """Ana sayfa ve iframe'lerde editörü bulup gerçek akışı tetiklemeyi dene.
+
+    Arena'nın kullandığı editör textarea, contenteditable, ProseMirror, Slate
+    veya Lexical olabilir. Gönder düğmesi bulunamazsa Enter kullanılır; DOM
+    tanınmazsa hiçbir ayar değiştirilmeden False döner.
     """
     editors = (
         "textarea:not([disabled])",
         '[contenteditable="true"]',
+        ".ProseMirror",
+        '[data-slate-editor="true"]',
+        '[data-lexical-editor="true"]',
         '[role="textbox"]',
         'input[type="text"]:not([disabled])',
     )
-    for selector in editors:
-        try:
-            locator = page.locator(selector).first
-            if not await locator.count():
-                continue
-            is_visible = getattr(locator, "is_visible", None)
-            if is_visible is not None and not await is_visible():
-                continue
-            is_enabled = getattr(locator, "is_enabled", None)
-            if is_enabled is not None and not await is_enabled():
-                continue
-            await locator.click(timeout=3000)
-            await locator.fill(prompt, timeout=3000)
+    scopes = [page]
+    for frame in getattr(page, "frames", []) or []:
+        if frame is not page:
+            scopes.append(frame)
 
-            submitted = False
-            for button_selector in (
-                'button[type="submit"]',
-                'button[aria-label*="send" i]',
-                'button[aria-label*="gönder" i]',
-                'button[title*="send" i]',
-                'button[title*="gönder" i]',
-            ):
-                try:
-                    button = page.locator(button_selector).first
-                    if not await button.count():
-                        continue
-                    button_visible = getattr(button, "is_visible", None)
-                    if button_visible is not None and not await button_visible():
-                        continue
-                    button_enabled = getattr(button, "is_enabled", None)
-                    if button_enabled is not None and not await button_enabled():
-                        continue
-                    await button.click(timeout=2000)
-                    submitted = True
-                    break
-                except Exception:
+    for scope in scopes:
+        for selector in editors:
+            try:
+                locator = scope.locator(selector).first
+                if not await locator.count():
                     continue
+                is_visible = getattr(locator, "is_visible", None)
+                if is_visible is not None and not await is_visible():
+                    continue
+                is_enabled = getattr(locator, "is_enabled", None)
+                if is_enabled is not None and not await is_enabled():
+                    continue
+                await locator.click(timeout=3000)
+                await locator.fill(prompt, timeout=3000)
 
-            if not submitted:
-                await page.keyboard.press("Enter")
-            await _wait(page, wait_ms)
-            return True
-        except Exception:
-            continue
+                submitted = False
+                for button_selector in (
+                    'button[type="submit"]',
+                    'button[aria-label*="send" i]',
+                    'button[aria-label*="gönder" i]',
+                    'button[title*="send" i]',
+                    'button[title*="gönder" i]',
+                ):
+                    try:
+                        button = scope.locator(button_selector).first
+                        if not await button.count():
+                            continue
+                        button_visible = getattr(button, "is_visible", None)
+                        if button_visible is not None and not await button_visible():
+                            continue
+                        button_enabled = getattr(button, "is_enabled", None)
+                        if button_enabled is not None and not await button_enabled():
+                            continue
+                        await button.click(timeout=2000)
+                        submitted = True
+                        break
+                    except Exception:
+                        continue
+
+                if not submitted:
+                    keyboard = getattr(scope, "keyboard", page.keyboard)
+                    await keyboard.press("Enter")
+                await _wait(page, wait_ms)
+                return True
+            except Exception:
+                continue
     return False
 
 
@@ -679,6 +798,7 @@ def apply_cookie_to_settings(settings: Settings, raw: str) -> list[str]:
     refresh = extract_refresh_token(normalized)
     if refresh and settings.upstream_refresh_token != refresh:
         settings.upstream_refresh_token = refresh
+        changed.append("upstream_refresh_token")
     if changed:
         save_runtime_state(settings, source="cookie_import")
     return changed
@@ -737,7 +857,7 @@ def apply_capture_to_settings(
     )
     if (
         result.has_cookie
-        and (result.logged_in or force or fresher)
+        and (result.cookie_application_safe or force or fresher)
         and result.cookies != settings.upstream_cookie
     ):
         settings.upstream_cookie = result.cookies
@@ -750,6 +870,7 @@ def apply_capture_to_settings(
         refresh = extract_refresh_token(result.cookies)
         if refresh and settings.upstream_refresh_token != refresh:
             settings.upstream_refresh_token = refresh
+            changed.append("upstream_refresh_token")
     if result.deployment_headers:
         headers = settings.parsed_extra_headers()
         updated = False

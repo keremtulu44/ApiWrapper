@@ -214,9 +214,9 @@ async def run_token_refresher(
     logger.info("token_refresher_started", interval_seconds=interval)
     async with httpx.AsyncClient() as client:
         while True:
-            # `CancelledError` burada yutulmaz: yutulursa iptal edilen görev
-            # sonsuz döner ve uygulama kapanışı kilitlenir.
-            await asyncio.sleep(interval)
+            # İlk kontrolü hemen yap: restart sonrası süresi dolmak üzere olan
+            # token için kullanıcıyı gereksiz yere bir aralık bekletme. Token
+            # tazeyse `refresh_if_needed` ağ isteği atmadan döner.
             try:
                 result = await refresh_if_needed(
                     settings,
@@ -235,3 +235,6 @@ async def run_token_refresher(
                 raise
             except Exception as exc:  # pragma: no cover - savunmacı
                 logger.warning("token_refresher_error", error_type=type(exc).__name__)
+            # `CancelledError` sleep'te de yutulmaz; uygulama kapanışı
+            # bir sonraki aralığı beklemeden tamamlanır.
+            await asyncio.sleep(interval)

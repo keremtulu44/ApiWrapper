@@ -120,6 +120,11 @@ class UpstreamClient:
         # Cookie jar ve bağlantı havuzu hesaplar arasında paylaşılmaz. Ortak jar,
         # bir hesabın Set-Cookie cevabını başka hesabın isteğine sızdırıyordu.
         self._account_clients: dict[int, httpx.AsyncClient] = {}
+        # Kimlik tazelemede eski client'ı hemen kapatmak, üzerindeki canlı SSE
+        # akışını kesebilir. Kullanım sayacı, eski client'ı yeni isteklere
+        # kapatırken mevcut isteklerin güvenle bitmesini sağlar.
+        self._client_use_counts: dict[int, int] = {}
+        self._retiring_clients: set[httpx.AsyncClient] = set()
         # Sürüm damgası (x-deployment-id / x-arena-web-deployment) kanaryası.
         self.deployment = DeploymentIdResolver(settings)
 
@@ -176,14 +181,20 @@ class UpstreamClient:
 
     async def shutdown(self) -> None:
         clients = list(self._account_clients.values())
+        clients.extend(self._retiring_clients)
         if self._client is not None:
             clients.append(self._client)
         self._account_clients.clear()
+        self._retiring_clients.clear()
+        self._client_use_counts.clear()
         self._client = None
-        for client in clients:
+        # Aynı client hem aktif hem emekli listede bulunmasın diye kimlikle
+        # tekilleştir; kapanış sırasında bütün bağlantılar serbest bırakılır.
+        unique_clients = {id(client): client for client in clients}
+        for client in unique_clients.values():
             await client.aclose()
-        if clients:
-            logger.info("upstream_client_closed", count=len(clients))
+        if unique_clients:
+            logger.info("upstream_client_closed", count=len(unique_clients))
 
     @property
     def client(self) -> httpx.AsyncClient:
@@ -206,16 +217,45 @@ class UpstreamClient:
             logger.debug("upstream_account_client_started", account=account.label)
         return client
 
-    async def reset_account_clients(self) -> int:
-        """Hesap bazlı client/cookie jar'larını kapatır ve damga önbelleğini siler.
+    def _retain_client(self, client: httpx.AsyncClient) -> None:
+        """Client üzerinde bir işlem başladığını işaretle (aynı event-loop)."""
+        key = id(client)
+        self._client_use_counts[key] = self._client_use_counts.get(key, 0) + 1
 
-        Yeni kimlik bilgileri uygulandığında eski jar'daki çerezlerin isteğe
-        karışmaması için gerekir.
+    async def _release_client(self, client: httpx.AsyncClient) -> None:
+        """İşlemi bitir; emekli client'ın son kullanıcısıysa bağlantıyı kapat."""
+        key = id(client)
+        remaining = max(0, self._client_use_counts.get(key, 1) - 1)
+        if remaining:
+            self._client_use_counts[key] = remaining
+            return
+        self._client_use_counts.pop(key, None)
+        if client not in self._retiring_clients:
+            return
+        self._retiring_clients.discard(client)
+        try:
+            await client.aclose()
+        except Exception as exc:  # pragma: no cover - kapanış isteği bozmamalı
+            logger.debug("upstream_retired_client_close_failed", error_type=type(exc).__name__)
+
+    async def _retire_client(self, client: httpx.AsyncClient) -> None:
+        """Client'ı yeni isteklerden ayır; aktif işlem varsa kapanışı ertele."""
+        if self._client_use_counts.get(id(client), 0) > 0:
+            self._retiring_clients.add(client)
+            return
+        await client.aclose()
+
+    async def reset_account_clients(self) -> int:
+        """Hesap client'larını yeniler; devam eden akışları kapatmadan.
+
+        Yeni kimlik bilgileri uygulandığında eski jar'daki çerezlerin yeni
+        isteklere karışmaması için hesap eşlemesi hemen sıfırlanır. Üzerinde
+        istek bulunan eski client ise yalnızca son işi bitince kapanır.
         """
         clients = list(self._account_clients.values())
         self._account_clients.clear()
         for client in clients:
-            await client.aclose()
+            await self._retire_client(client)
         if self._client is not None:
             self._client.cookies.clear()
             cookie_host = self.settings.target_domain.split(":", 1)[0]
@@ -423,8 +463,10 @@ class UpstreamClient:
             account.effective_settings(self.settings) if account else self.settings
         )
         url = request_settings.referer_url(chat_id)
+        client = self._client_for(account)
+        self._retain_client(client)
         try:
-            response = await self._client_for(account).get(
+            response = await client.get(
                 url,
                 headers=build_page_headers(
                     request_settings,
@@ -432,7 +474,7 @@ class UpstreamClient:
                 ),
                 timeout=httpx.Timeout(request_settings.connect_timeout + 10.0),
             )
-            self._ingest_set_cookie(response, self._client_for(account), account)
+            self._ingest_set_cookie(response, client, account)
             # Aynı yanıtı damga için de değerlendir (ek istek yok).
             self.deployment.ingest(response, request_settings.base_url)
             logger.debug(
@@ -443,6 +485,8 @@ class UpstreamClient:
             )
         except Exception as exc:  # pragma: no cover - ısıtma kritik değil
             logger.debug("upstream_warmup_failed", error=str(exc))
+        finally:
+            await self._release_client(client)
 
     @staticmethod
     def _is_captcha_body(status: int, body: str) -> bool:
@@ -559,6 +603,26 @@ class UpstreamClient:
     async def stream_completion(
         self, chat_id: str, payload: dict[str, object], account: Account | None = None
     ) -> AsyncIterator[AsyncIterator[bytes]]:
+        """İsteği client yaşam süresi boyunca koru; reset akışı kesmesin."""
+        client = self._client_for(account)
+        self._retain_client(client)
+        try:
+            async with self._stream_completion_with_client(
+                chat_id, payload, account=account, client=client
+            ) as chunks:
+                yield chunks
+        finally:
+            await self._release_client(client)
+
+    @asynccontextmanager
+    async def _stream_completion_with_client(
+        self,
+        chat_id: str,
+        payload: dict[str, object],
+        *,
+        account: Account | None,
+        client: httpx.AsyncClient,
+    ) -> AsyncIterator[AsyncIterator[bytes]]:
         """Upstream'e istek atıp bayt akışı döndürür (retry + breaker dahil).
 
         `--data-raw` ile birebir aynı gövde `text/plain` olarak gönderilir.
@@ -576,7 +640,6 @@ class UpstreamClient:
         )
         url = request_settings.stream_url(chat_id)
         body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        client = self._client_for(account)
 
         # Sürüm damgasını tazele (önbellek sıcaksa ağa çıkmaz). Okunamazsa
         # `UPSTREAM_CURL`'deki donmuş değer kullanılır: kanarya isteği bozmaz.

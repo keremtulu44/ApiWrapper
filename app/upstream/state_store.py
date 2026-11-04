@@ -23,11 +23,12 @@ Bu modül dönen kimlik ve türev değerleri süreç dışında saklar:
      (`saved.seed_hash != current_seed_hash`), hangisinin erişim token'ı daha
      taze ise o tercih edilir; yeni tohum taze ise durum dosyası yeni tohumla
      güncellenir.
-3. **Opsiyonel Render Env Senkronizasyonu (`RENDER_API_KEY` + `RENDER_SERVICE_ID`):**
-   Render gibi geçici diskli (ephemeral) ortamlarda, yapılandırılmışsa dönen
-   `UPSTREAM_COOKIE` ve `UPSTREAM_REFRESH_TOKEN` değerlerini Render REST API
-   üzerinden sessizce günceller (deploy tetiklemeden). Böylece sonraki container
-   açılışında taze refresh token doğrudan ortamdan gelir.
+3. **Render Env Senkronizasyonu (`RENDER_API_KEY` + `RENDER_SERVICE_ID`):**
+   Free Render gibi kalıcı diski olmayan ortamlarda asıl kalıcılık katmanıdır.
+   Yapılandırıldığında dönen `UPSTREAM_COOKIE` ve `UPSTREAM_REFRESH_TOKEN`
+   değerlerini Render REST API üzerinden sessizce günceller (deploy tetiklemeden).
+   Böylece sonraki container açılışında taze refresh token doğrudan ortamdan gelir.
+   `RENDER_SERVICE_ID`, Render tarafından otomatik sağlanır.
 
 Güvenlik kuralları:
 * Hiçbir gizli değer (cookie, access_token, refresh_token) loglanmaz.

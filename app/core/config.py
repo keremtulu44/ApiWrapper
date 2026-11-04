@@ -229,9 +229,9 @@ class Settings(BaseSettings):
     #: Refresh token (çerezden okunamıyorsa). Yenilemede dönen yeni değer
     #: bellekte buraya yazılır.
     upstream_refresh_token: str = ""
-    #: Dönen refresh/access token ve türev değerlerin süreç yeniden başladığında
-    #: kaybolmaması için atomik olarak yazılacağı yerel durum dosyası
-    #: (örn. ".cache/upstream_state.json"). Boşsa diske yazılmaz.
+    #: Dönen refresh/access token ve türev değerlerin atomik yazılacağı yerel
+    #: durum dosyası (örn. ".cache/upstream_state.json"). Kalıcılığı dosya
+    #: sisteminin ömrüyle sınırlıdır; Free Render'da Render env sync gerekir.
     upstream_state_file: str = ""
     #: Render gibi geçici diskli ortamlarda dönen oturum bilgilerini servis env
     #: değişkenlerine sessizce yazmak için opsiyonel Render API bilgileri.

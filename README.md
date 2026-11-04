@@ -17,9 +17,9 @@ mobilden çerez/cURL alma: **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** ·
 arıza/teşhis için: **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** ·
 son uçtan uca denetim kaydı: **[`docs/AUDIT_2026_11.md`](docs/AUDIT_2026_11.md)**
 
-> **Merge hedefi:** tüm değişiklikler **`arena/c55e601b-apiwrapper`** dalına
-> merge edilir; Render bu dalı deploy eder, **`main` dokunulmaz**.
-> Ayrıntı ve geçmiş: **[`docs/MERGE_TARGET.md`](docs/MERGE_TARGET.md)**
+> **Dağıtım notu:** Render, servis ayarlarında seçili production dalı deploy eder;
+> `render.yaml` dal seçmez. Canlı servisin hangi dalı izlediğini Render panelinden
+> doğrulayın. Geçmiş merge kayıtları: **[`docs/MERGE_TARGET.md`](docs/MERGE_TARGET.md)**.
 
 ---
 
@@ -31,7 +31,7 @@ Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damg
 |---|---|---|
 | **Büyük Resim & 3 Katman** | **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)** | Neden saat başı cURL gerekmez? Hangi değer sabit, hangisi döner, sistem nasıl kendi kendine yeniler? |
 | **Çerez Ömrü & Otomatik Refresh** | **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)** | `refresh_token` rotasyonu, `apikey` otomatik keşfi, parçalı çerez (`.0`/`.1`) yeniden yazımı ve 401 kurtarma |
-| **Render 7/24 Kurulumu** | **[`docs/RENDER.md`](docs/RENDER.md)** | `UPSTREAM_CURL`, `RENDER_API_KEY` ile restart sonrası kalıcılık ve gömülü Telegram botu |
+| **Free Render Kurulumu** | **[`docs/RENDER.md`](docs/RENDER.md)** | `UPSTREAM_CURL`, `RENDER_API_KEY` ile restart sonrası kalıcılık, uyku davranışı ve gömülü Telegram botu |
 | **Telefondan Yönetim** | **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** | Bilgisayar yokken `/tani`, `/token`, `/apikey`, `/yenile`, `/cookie` ve `/curl` komutları |
 | **Arıza & Teşhis Sözlüğü** | **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** | 401 / 403 / 409 / 429 hata kodlarının anlamı ve otomatik kurtarma kademeleri |
 
@@ -399,13 +399,20 @@ Upstream token'ı reddederse (403) dinamik sağlayıcıda cache otomatik geçers
 
 ### Render / Docker
 
-- Depodaki `render.yaml` tek instance, sleep etmeyen `starter` Docker servisi tanımlar.
+- Depodaki `render.yaml` tek instance, ücretsiz `free` Docker servisi tanımlar;
+  ücretli disk veya paid plan gerektirmez.
 - `/healthz` yalnızca process liveness, `/readyz` statik dağıtım readiness kontrolüdür.
   Render blueprint'i `/readyz` kullanır; canlı upstream healthcheck içinde denenmez.
 - Başlatma komutu Render'ın `PORT` değişkenini, yoksa `8000` portunu kullanır.
-- Bellek içi hesap/sohbet durumu nedeniyle **tek instance ve tek worker** ile başlayın.
-- Sürekli proses gerekiyorsa sleep etmeyen bir plan seçin; bu upstream oturumunun
-  yenilenmesini tek başına çözmez.
+- Bellek içi hesap/sohbet durumu nedeniyle **tek instance ve tek worker** kullanılır.
+- Free planda kalıcı disk yoktur. Dönen refresh token/çerezlerin restart/deploy
+  sonrası korunması için `RENDER_API_KEY` secret'ını girin. `RENDER_SERVICE_ID`
+  Render tarafından otomatik sağlanır; token yenileme sonrası env senkronizasyonu
+  deploy tetiklemez. API key yoksa sistem çalışır ancak dönen kimlikler restart'ta
+  kaybolabilir ve `/cookie` ile tazeleme gerekebilir.
+- Free servis hareketsizlikte uyuyabilir; gelen HTTP isteğiyle uyanır. İlk istek
+  gecikebilir ve gömülü Telegram botu uyku sırasında mesajları işleyemez. Kod,
+  açılışta token'ı hemen denetleyerek uyku sonrası toparlanmayı hızlandırır.
 - Güçlü bir `API_KEYS` değeri ve tam sohbet cURL'ünü `UPSTREAM_CURL` secret'ına girin;
   domain, model ID ve upstream kimliği buradan çıkar. Kullanılan CAPTCHA kipinin ayarları
   ayrı environment alanlarında kalır.
@@ -428,7 +435,8 @@ her probe farklı, kısa bir istem gönderir; böylece tam saatte atılan, birbi
 aynısı isteklerden oluşan robotik desen oluşmaz. Günde bir kez
 (`UPSTREAM_KEEPALIVE_STREAM_SMOKE_INTERVAL_SECONDS`, vars. 86400) aynı kontrol
 `stream: true` ile yapılır: non-stream probe akış yolundaki bir kırılmayı göremez.
-Render Free uyuduğunda task da durur. Sonuçlar timestamp'li
+Render Free uyuduğunda task da durur; servis içi loopback istekleri Free uyku
+süresini sıfırlamak için güvenilir bir always-on çözümü değildir. Sonuçlar timestamp'li
 `upstream_keepalive_completed`, `upstream_keepalive_failed` ve
 `upstream_keepalive_stream_smoke_*` loglarından izlenir.
 
@@ -454,9 +462,11 @@ ayarlara hem oturum çerezine yazılır. Elle tetik: Telegram **`/token`** veya
 Elle uygulamak için: Telegram `/cookie <ad=değer; ...>` (Cookie-Editor'ün
 *Header String* **veya** JSON çıktısı) ya da `/curl <cURL>`; API karşılığı
 `POST /v1/admin/upstream/cookie {"cookie": "..."}` ·
-`POST /v1/admin/upstream/curl {"curl": "..."}`. Değişiklik bellekte uygulanır
-(hesap cookie jar'ları kapatılır, oturum önbelleği temizlenir); kalıcı olması
-için Render'daki `UPSTREAM_CURL` da güncellenmelidir.
+`POST /v1/admin/upstream/curl {"curl": "..."}`. Değişiklik çalışan servise hemen uygulanır; yeni istekler taze client/cookie
+jar'ına geçer, açık akışlar eski client üzerinde güvenle tamamlanır ve oturum
+önbelleği temizlenir. Kimlik durumu `UPSTREAM_STATE_FILE` altına, yapılandırıldıysa
+Render env'e de yazılır. En net dağıtım geçmişi için Render'daki `UPSTREAM_CURL`
+secret'ını da güncellemek önerilir.
 
 `/cookie` artık **önce inceler** (`POST /v1/admin/upstream/cookie?dry_run=true`):
 gelen çerez adları, `session_cookie_found`, `access_token_found/expired` ve

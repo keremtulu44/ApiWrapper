@@ -297,8 +297,9 @@ async def update_upstream_curl(
     beklemek yerine bu uç nokta alanları yerinde değiştirir, hesap cookie
     jar'larını kapatır ve oturum önbelleğini temizler.
 
-    Not: bu değişiklik **bellekte**dir; süreç yeniden başlarsa Render'daki
-    `UPSTREAM_CURL` değerine döner. Kalıcı olması için secret'ı da güncelleyin.
+    Kimlik ve türev alanları kalıcı durum dosyasına, yapılandırıldıysa Render
+    env'e de yazılır. Dağıtım tohumunu da güncel tutmak için Render'daki
+    `UPSTREAM_CURL` secret'ını yenilemek yine önerilir.
     """
     from app.core.logging import get_logger
 
@@ -334,8 +335,8 @@ async def update_upstream_curl(
         "upstream_model": result["model_id"],
         "warnings": warnings,
         "note": (
-            "Değişiklik bellekte uygulandı; kalıcı olması için Render'daki "
-            "UPSTREAM_CURL secret'ını da aynı cURL ile güncelleyin."
+            "Değişiklik uygulandı; yerel durum dosyasına ve yapılandırılmışsa "
+            "Render env'e kaydedildi. UPSTREAM_CURL secret'ını da güncellemeniz önerilir."
         ),
     }
 
@@ -422,6 +423,9 @@ async def capture_upstream_session(
         "stream_path_found": stream_path_found,
         "triggered_request": result.triggered_request,
         "injected_cookies": result.injected_cookies,
+        "cookie_injection_error": result.cookie_injection_error,
+        "navigation_status": result.navigation_status,
+        "bot_challenge_detected": result.bot_challenge_detected,
         "cookie_names": result.cookie_names,
         "session_cookie_found": result.session_cookie_found,
         "login_redirect": result.login_redirect,

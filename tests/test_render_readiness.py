@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
+import pytest
 import yaml
 from fastapi.testclient import TestClient
 
@@ -90,18 +92,26 @@ def test_shipped_max_model_uses_the_observed_stable_upstream_id():
     assert registry.resolve(None) is entry
 
 
-def test_render_blueprint_is_single_instance_always_on_and_secret_free():
+def test_render_blueprint_is_single_instance_free_and_secret_free():
     data = yaml.safe_load(Path("render.yaml").read_text())
     assert len(data["services"]) == 1
     service = data["services"][0]
     assert service["type"] == "web"
     assert service["runtime"] == "docker"
-    assert service["plan"] == "starter"
+    assert service["plan"] == "free"
     assert service["numInstances"] == 1
     assert service["healthCheckPath"] == "/readyz"
     assert service["dockerfilePath"] == "./Dockerfile"
+    # Free plan ücretli disk/always-on kaynağı içermemeli. Kimlik kalıcılığı
+    # Render env API ile sağlanır; servis ID'si Render'da otomatik bulunur.
+    assert "disk" not in service
+    assert "disks" not in service
 
     env = {item["key"]: item for item in service["envVars"]}
+    assert env["RENDER_API_KEY"]["sync"] is False
+    assert "value" not in env["RENDER_API_KEY"]
+    assert "RENDER_SERVICE_ID" not in env
+    assert "UPSTREAM_STATE_FILE" not in env
     for key in ("API_KEYS", "UPSTREAM_CURL"):
         assert env[key]["sync"] is False
         assert "value" not in env[key]
@@ -120,6 +130,69 @@ def test_render_blueprint_is_single_instance_always_on_and_secret_free():
     assert env["RECAPTCHA_SITE_KEY"]["value"] == "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0"
     assert env["RECAPTCHA_VERSION"]["value"] == "enterprise"
     assert env["RECAPTCHA_ACTION"]["value"] == "chat_submit"
+
+
+@pytest.mark.asyncio
+async def test_free_render_persists_rotated_credentials_through_env_api():
+    from app.upstream.state_store import sync_render_env
+
+    settings = make_settings(
+        render_api_key="render-secret",
+        render_service_id="srv-free-test",
+        upstream_cookie="session=rotated",
+        upstream_access_token="fresh-access-token",
+        upstream_refresh_token="fresh-refresh-token",
+    )
+    updates: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["authorization"] == "Bearer render-secret"
+        assert request.url.path.startswith("/v1/services/srv-free-test/env-vars/")
+        updates[request.url.path.rsplit("/", 1)[-1]] = request.read().decode()
+        return httpx.Response(200, json={"value": "stored"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await sync_render_env(settings, client) is True
+
+    assert {
+        "UPSTREAM_COOKIE",
+        "UPSTREAM_ACCESS_TOKEN",
+        "UPSTREAM_REFRESH_TOKEN",
+        "UPSTREAM_STREAM_PATH",
+        "UPSTREAM_REFERER_PATH",
+    } <= updates.keys()
+    assert all("render-secret" not in value for value in updates.values())
+
+
+def test_render_state_restores_after_target_domain_fallback(monkeypatch, tmp_path):
+    from app.core.config import get_settings
+    from app.upstream.state_store import remember_seed, save_runtime_state
+
+    state_file = tmp_path / "upstream_state.json"
+    source = Settings(
+        _env_file=None,
+        target_domain="arena.ai",
+        upstream_cookie="session=persisted",
+        upstream_access_token="persistent-access-token",
+        upstream_state_file=str(state_file),
+    )
+    remember_seed(source)
+    assert save_runtime_state(source, source="test") is True
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("UPSTREAM_STATE_FILE", str(state_file))
+    monkeypatch.setenv("UPSTREAM_CURL", "")
+    monkeypatch.setenv("TARGET_DOMAIN", "")
+    monkeypatch.setenv("API_KEYS", "sk-render-test")
+    monkeypatch.setenv("RECAPTCHA_PROVIDER", "noop")
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        assert app.state.settings.target_domain == "arena.ai"
+        assert app.state.settings.upstream_access_token == "persistent-access-token"
+        assert app.state.settings.upstream_cookie == "session=persisted"
+    finally:
+        get_settings.cache_clear()
 
 
 def test_telegram_worker_dockerfile_starts_bot_without_a_start_command():
