@@ -695,7 +695,15 @@ class TelegramBot:
 
         fields = payload.get("fields") or []
         lines = [
-            ("✓ Oturum yakalandı." if payload.get("logged_in") else "⚠ Oturum yakalanamadı."),
+            (
+                "⚠ Oturum yakalanamadı: bot doğrulaması."
+                if payload.get("bot_challenge_detected")
+                else (
+                    "✓ Oturum yakalandı."
+                    if payload.get("logged_in")
+                    else "⚠ Oturum yakalanamadı."
+                )
+            ),
             f"Cookie: {'var' if payload.get('cookie_found') else 'yok'} · "
             f"Sürüm damgası: {'var' if payload.get('deployment_found') else 'yok'} · "
             + (

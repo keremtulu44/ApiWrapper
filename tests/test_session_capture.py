@@ -355,6 +355,44 @@ def test_capture_records_http_fallback_and_bot_challenge_without_html_leak():
     assert "private-page-marker" not in " ".join(result.notes)
 
 
+def test_bot_challenge_detection_ignores_normal_cloudflare_script_names():
+    from app.upstream.session_capture import _is_bot_challenge
+
+    normal_page = """
+    <html><head><script src="/cdn-cgi/challenge-platform/h/b/orchestrate.js">
+    </script><script>const cf-chl = 'verify you are human';</script></head>
+    <body><textarea placeholder="Mesaj"></textarea></body></html>
+    """
+    assert _is_bot_challenge(normal_page) is False
+    assert _is_bot_challenge('<form id="challenge-form"></form>') is True
+    assert _is_bot_challenge("<html>Verify you are human</html>") is True
+
+
+def test_capture_retries_editor_once_before_reporting_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import app.upstream.session_capture as capture_module
+
+    calls = 0
+
+    async def delayed_editor(_page: Any, _prompt: str, _wait_ms: int) -> bool:
+        nonlocal calls
+        calls += 1
+        return calls == 2
+
+    monkeypatch.setattr(capture_module, "_try_send_message", delayed_editor)
+    page = FakePage(url="https://upstream.test/text/direct", has_textarea=False)
+    context = FakeContext(
+        page, [{"name": "arena-auth-prod-v1.0", "value": "fresh-session"}]
+    )
+
+    result = _run(capture_session(context, make_settings(), wait_ms=1))
+
+    assert calls == 2
+    assert result.triggered_request is True
+    assert "ikinci bekleme denemesi" in " ".join(result.notes)
+
+
 def test_capture_falls_back_to_html_stamp():
     page = FakePage(html=f'<script>window.__dpl="{STAMP}"</script>')
     context = FakeContext(page, [{"name": "sb-token", "value": "x"}])
