@@ -17,7 +17,7 @@ from app.core.config import Settings
 from app.core.errors import InvalidRequestError
 from app.core.logging import mask_value
 from app.core.metrics import metrics
-from app.core.security import api_key_dependency
+from app.core.security import api_key_dependency, require_admin
 from app.services.account import AccountPool
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
@@ -111,7 +111,11 @@ class UpstreamCookiePayload(BaseModel):
     cookie: str = Field(min_length=10, max_length=30000)
 
 
-@router.post("/upstream/cookie", summary="Swap upstream cookies without a cURL")
+@router.post(
+    "/upstream/cookie",
+    summary="Swap upstream cookies without a cURL",
+    dependencies=[Depends(require_admin)],
+)
 async def update_upstream_cookie(
     payload: UpstreamCookiePayload,
     request: Request,
@@ -187,7 +191,11 @@ class UpstreamCurlPayload(BaseModel):
     allow_path_change: bool = False
 
 
-@router.post("/upstream/refresh", summary="Refresh the upstream access token")
+@router.post(
+    "/upstream/refresh",
+    summary="Refresh the upstream access token",
+    dependencies=[Depends(require_admin)],
+)
 async def refresh_upstream_credentials(
     request: Request,
     settings: Settings = Depends(get_settings_dep),
@@ -237,51 +245,89 @@ class UpstreamApiKeyPayload(BaseModel):
     apikey: str = Field(default="", max_length=4096)
 
 
-@router.post("/upstream/apikey", summary="Set or auto-discover upstream refresh apikey")
+@router.post(
+    "/upstream/apikey",
+    summary="Set or auto-discover upstream refresh apikey",
+    dependencies=[Depends(require_admin)],
+)
 async def update_upstream_apikey(
     payload: UpstreamApiKeyPayload,
     settings: Settings = Depends(get_settings_dep),
+    upstream: UpstreamClient = Depends(get_upstream),
+    accounts: AccountPool = Depends(get_accounts),
+    sessions: SessionManager = Depends(get_sessions),
 ) -> dict[str, Any]:
     """Token yenileme için gereken `apikey` (Supabase anon anahtarı) değerini ayarlar
     veya boş gönderilirse sitenin HTML/JS'inden otomatik keşfeder.
+
+    Anahtar kaydedildikten sonra yenileme **hemen** denenir. Eski davranışta
+    `/apikey` yalnız anahtarı yazıyordu; operatör "kaydedildi" cevabını alıp
+    oturumun 401'e düşmesini bekliyordu. Artık cevap gerçek sonucu söyler:
+    anahtar doğruysa token tazelenir, değilse hata nedeni döner.
     """
-    from app.upstream.refresh import discover_refresh_api_key
+    from app.services.token_refresh import record_refresh
+    from app.upstream.refresh import (
+        discover_refresh_api_key_report,
+        refresh_upstream_token,
+    )
     from app.upstream.state_store import save_runtime_state, sync_render_env
 
+    discovery_detail = ""
     provided = (payload.apikey or "").strip()
     if provided:
         settings.upstream_refresh_api_key = provided
+        source = "manual"
+        status = "applied"
         save_runtime_state(settings, source="apikey_manual")
-        await sync_render_env(settings)
-        return {
-            "status": "applied",
-            "source": "manual",
-            "has_api_key": True,
-            "length": len(provided),
-        }
-
-    discovered = await discover_refresh_api_key(settings)
-    if discovered:
+    else:
+        report = await discover_refresh_api_key_report(settings)
+        if not report.ok:
+            return {
+                "status": "not_found",
+                "source": None,
+                "has_api_key": bool(
+                    (settings.upstream_refresh_api_key or "").strip()
+                ),
+                "home_status": report.home_status,
+                "scripts_seen": report.scripts_seen,
+                "scripts_fetched": report.scripts_fetched,
+                "detail": report.detail,
+            }
+        source = "auto"
+        status = "discovered"
+        discovery_detail = report.detail
         save_runtime_state(settings, source="apikey_discovered")
-        await sync_render_env(settings)
-        return {
-            "status": "discovered",
-            "source": "auto",
-            "has_api_key": True,
-            "length": len(discovered),
-        }
+
+    await sync_render_env(settings)
+
+    # Anahtarın gerçekten işe yarayıp yaramadığını aynı cevapta göster.
+    outcome = await refresh_upstream_token(settings)
+    record_refresh(ok=outcome.ok, detail=outcome.detail)
+    refreshed = False
+    if outcome.ok:
+        refreshed = True
+        accounts.reload_credentials(settings)
+        await upstream.reset_account_clients()
+        upstream.breaker.reset()
+        await sessions.clear()
+
     return {
-        "status": "not_found",
-        "source": None,
-        "has_api_key": bool((settings.upstream_refresh_api_key or "").strip()),
-        "detail": (
-            "Sitenin ana sayfasından anon anahtar otomatik keşfedilemedi. "
-            "Anahtarı biliyorsanız /apikey <anahtar> ile doğrudan verebilirsiniz."
-        ),
+        "status": status,
+        "source": source,
+        "has_api_key": True,
+        "length": len(settings.upstream_refresh_api_key or ""),
+        "refreshed": refreshed,
+        "refresh_detail": outcome.detail,
+        "expires_in": outcome.expires_in,
+        "discovery_detail": discovery_detail,
     }
 
 
-@router.post("/upstream/curl", summary="Swap upstream credentials from a fresh cURL")
+@router.post(
+    "/upstream/curl",
+    summary="Swap upstream credentials from a fresh cURL",
+    dependencies=[Depends(require_admin)],
+)
 async def update_upstream_curl(
     payload: UpstreamCurlPayload,
     request: Request,
@@ -341,7 +387,11 @@ async def update_upstream_curl(
     }
 
 
-@router.post("/upstream/capture", summary="Capture a fresh session with the server browser")
+@router.post(
+    "/upstream/capture",
+    summary="Capture a fresh session with the server browser",
+    dependencies=[Depends(require_admin)],
+)
 async def capture_upstream_session(
     request: Request,
     settings: Settings = Depends(get_settings_dep),

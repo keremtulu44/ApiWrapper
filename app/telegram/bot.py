@@ -341,23 +341,41 @@ class TelegramBot:
             await self.send_text(chat_id, f"Beklenmeyen yanıt (HTTP {response.status_code}).")
             return
         status = payload.get("status")
-        if status == "applied":
-            await self.send_text(
-                chat_id,
-                f"✓ Yenileme `apikey` kaydedildi ({payload.get('length', 0)} karakter). "
-                "Şimdi /token ile test edebilirsiniz.",
-            )
+        if status in {"applied", "discovered"}:
+            label = "kaydedildi" if status == "applied" else "otomatik keşfedildi"
+            lines = [
+                f"✓ Yenileme `apikey` {label} "
+                f"({payload.get('length', 0)} karakter)."
+            ]
+            # Uç nokta yenilemeyi aynı istekte deniyor: kullanıcıya "şimdi
+            # /token deneyin" demek yerine gerçek sonucu söyle.
+            if payload.get("refreshed"):
+                expires = payload.get("expires_in")
+                if isinstance(expires, int) and expires > 0:
+                    lines.append(f"✓ Token yenilendi (~{expires // 60} dk geçerli).")
+                else:
+                    lines.append("✓ Token yenilendi.")
+            else:
+                detail = str(payload.get("refresh_detail") or "").strip()
+                lines.append(
+                    "⚠ Ama token hâlâ yenilenemedi" + (f": {detail}" if detail else ".")
+                )
+                lines.append(
+                    "Yapılacak: Oturum 401'e düşmeden /cookie veya /yenile ile "
+                    "taze çerez gönderin."
+                )
+            await self.send_text(chat_id, "\n".join(lines))
             return
-        if status == "discovered":
-            await self.send_text(
-                chat_id,
-                f"✓ Yenileme `apikey` siteden otomatik keşfedildi "
-                f"({payload.get('length', 0)} karakter). Şimdi /token ile test edebilirsiniz.",
-            )
-            return
+        detail = str(payload.get("detail") or "Anon anahtar bulunamadı.")
+        hint = ""
+        scripts = payload.get("scripts_fetched")
+        seen = payload.get("scripts_seen")
+        if isinstance(scripts, int) and isinstance(seen, int) and seen:
+            hint = f" (taranan JS: {scripts}/{seen})"
         await self.send_text(
             chat_id,
-            "⚠ " + str(payload.get("detail") or "Anon anahtar bulunamadı."),
+            "⚠ " + detail + hint
+            + "\nAnahtarı biliyorsanız /apikey <anahtar> ile doğrudan verin.",
         )
 
     async def diagnose(self, chat_id: int) -> None:

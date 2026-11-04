@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import base64
 import json
+import time
 from typing import Any
 
 import httpx
@@ -22,18 +24,23 @@ def fresh_curl(
     *,
     url: str = "https://upstream.test/nextjs-api/stream/create-evaluation",
     cookie: str = SECRET_COOKIE,
+    user_agent: str = "RuntimeTest/1.0",
+    accept_language: str = "en-US,en;q=0.9",
+    model_id: str = "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    mode: str = "direct-battle",
 ) -> str:
     """Gerçek cURL'e benzeyen, testlerde kullanılan bir örnek."""
     body = {
         "id": "chat-1",
-        "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+        "modelAId": model_id,
         "userMessage": "selam",
-        "mode": "direct-battle",
+        "mode": mode,
     }
     return (
         f"curl '{url}' \\\n"
         f"  -H 'cookie: {cookie}' \\\n"
-        "  -H 'user-agent: RuntimeTest/1.0' \\\n"
+        f"  -H 'user-agent: {user_agent}' \\\n"
+        f"  -H 'accept-language: {accept_language}' \\\n"
         "  -H 'referer: https://upstream.test/text/direct' \\\n"
         f"  --data-raw '{json.dumps(body)}'"
     )
@@ -51,6 +58,85 @@ def test_apply_curl_to_settings_updates_fields_in_place_and_forgets_raw_curl():
     # Ham cURL bellekte tutulmaz.
     assert settings.upstream_curl == ""
     assert SECRET_COOKIE not in json.dumps(result["fields"])
+
+
+def _jwt(expires_in: int) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"ES256"}').decode().rstrip("=")
+    payload = base64.urlsafe_b64encode(
+        json.dumps({"exp": int(time.time()) + expires_in}).encode()
+    ).decode().rstrip("=")
+    return f"{header}.{payload}.signature"
+
+
+def _session_cookie(expires_in: int) -> str:
+    payload = {
+        "access_token": _jwt(expires_in),
+        "refresh_token": f"refresh-{expires_in}",
+        "token_type": "bearer",
+    }
+    value = "base64-" + base64.b64encode(json.dumps(payload).encode()).decode()
+    return f"arena-auth-prod-v1={value}"
+
+
+def test_complete_curl_snapshot_survives_local_and_render_restart(tmp_path):
+    """Yeni cookie eski cURL'ün UA/mode/model ayarlarıyla birleşmemeli."""
+    from app.upstream.curl_runtime import apply_upstream_curl
+    from app.upstream.state_store import remember_seed, restore_runtime_state
+
+    old_cookie = _session_cookie(600)
+    new_cookie = _session_cookie(7200)
+    old_curl = fresh_curl(
+        cookie=old_cookie,
+        user_agent="OldAgent/1.0",
+        accept_language="en-US,en;q=0.9",
+        model_id="old-upstream-model",
+        mode="direct",
+    )
+    new_curl = fresh_curl(
+        cookie=new_cookie,
+        user_agent="NewAgent/2.0",
+        accept_language="tr-TR,tr;q=0.9",
+        model_id="new-upstream-model",
+        mode="side-by-side",
+    )
+    state_file = tmp_path / "runtime-state.json"
+    settings = make_settings(
+        upstream_cookie=old_cookie,
+        upstream_auth_from_cookie=True,
+        upstream_state_file=str(state_file),
+    )
+    remember_seed(settings)
+    apply_curl_to_settings(settings, new_curl)
+
+    assert settings.upstream_captured_model_id == "new-upstream-model"
+    assert settings.upstream_snapshot_version == 1
+
+    # Docker/local restart: başlangıç tohumu eski, evrilmiş disk snapshot'ı yeni.
+    local = make_settings(
+        upstream_cookie=old_cookie,
+        upstream_auth_from_cookie=True,
+        upstream_state_file=str(state_file),
+    )
+    restored = restore_runtime_state(local)
+    assert "upstream_user_agent" in restored
+    assert local.upstream_cookie == new_cookie
+    assert local.upstream_user_agent == "NewAgent/2.0"
+    assert local.upstream_accept_language == "tr-TR,tr;q=0.9"
+    assert local.upstream_mode == "side-by-side"
+    assert local.upstream_captured_model_id == "new-upstream-model"
+    assert local.upstream_auth_from_cookie is False
+
+    # Free Render restart: eski UPSTREAM_CURL durur, ayrı env alanlarındaki yeni
+    # tam snapshot daha yeni JWT exp sayesinde kazanır.
+    render = settings.model_copy(update={"upstream_curl": old_curl})
+    restarted, model_id = apply_upstream_curl(render)
+    assert restarted.upstream_cookie == new_cookie
+    assert restarted.upstream_user_agent == "NewAgent/2.0"
+    assert restarted.upstream_accept_language == "tr-TR,tr;q=0.9"
+    assert restarted.upstream_mode == "side-by-side"
+    assert restarted.upstream_captured_model_id == "new-upstream-model"
+    assert model_id == "new-upstream-model"
+    assert restarted.upstream_auth_from_cookie is False
 
 
 def page_curl(cookie: str = SECRET_COOKIE) -> str:

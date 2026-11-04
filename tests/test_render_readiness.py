@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 from pathlib import Path
 
 import httpx
@@ -191,6 +193,54 @@ async def test_render_env_sync_writes_empty_token_fields_with_cookie_snapshot():
     assert updates["UPSTREAM_ACCESS_TOKEN"] == ""
     assert updates["UPSTREAM_REFRESH_TOKEN"] == ""
     assert updates["UPSTREAM_EXTRA_HEADERS"] == ""
+
+
+@pytest.mark.asyncio
+async def test_slow_older_render_sync_cannot_overwrite_newer_credentials():
+    """Ağda geç kalan eski snapshot, yeni oturumun üzerine yazılmamalı."""
+    from app.upstream.state_store import sync_render_env
+
+    settings = make_settings(
+        render_api_key="render-secret",
+        render_service_id="srv-free-test",
+        upstream_cookie="session=old",
+        upstream_access_token="old-access",
+        upstream_refresh_token="old-refresh",
+    )
+    old_request_started = asyncio.Event()
+    release_old_request = asyncio.Event()
+    stored: dict[str, str] = {}
+
+    async def async_handler(request: httpx.Request) -> httpx.Response:
+        key = request.url.path.rsplit("/", 1)[-1]
+        value = json.loads(request.read())["value"]
+        if key == "UPSTREAM_COOKIE" and value == "session=old":
+            old_request_started.set()
+            await release_old_request.wait()
+        stored[key] = value
+        return httpx.Response(200, json={"value": "stored"})
+
+    # httpx.MockTransport async handler desteklemediği için küçük bir async
+    # transport kullanıyoruz; amaç gerçek ağ gecikmesini deterministik kurmak.
+    class DelayedTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            return await async_handler(request)
+
+    async with httpx.AsyncClient(transport=DelayedTransport()) as client:
+        older = asyncio.create_task(sync_render_env(settings, client))
+        await asyncio.wait_for(old_request_started.wait(), timeout=1)
+
+        settings.upstream_cookie = "session=new"
+        settings.upstream_access_token = "new-access"
+        settings.upstream_refresh_token = "new-refresh"
+        newer = asyncio.create_task(sync_render_env(settings, client))
+        await asyncio.sleep(0.01)
+        release_old_request.set()
+        await asyncio.gather(older, newer)
+
+    assert stored["UPSTREAM_COOKIE"] == "session=new"
+    assert stored["UPSTREAM_ACCESS_TOKEN"] == "new-access"
+    assert stored["UPSTREAM_REFRESH_TOKEN"] == "new-refresh"
 
 
 def test_render_state_restores_after_target_domain_fallback(monkeypatch, tmp_path):

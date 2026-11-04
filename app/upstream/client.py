@@ -37,6 +37,12 @@ from app.utils.backoff import full_jitter_delay, parse_retry_after
 
 logger = get_logger(__name__)
 
+#: Free Render env yazımı başarısız olduğunda artan aralıkla yeniden deneme.
+#: İlk denemeler hızlıdır (geçici Render 5xx/ağ hatası), üst sınır log ve API
+#: yükünü sınırlar.
+_RENDER_SYNC_RETRY_INITIAL_SECONDS = 15.0
+_RENDER_SYNC_RETRY_MAX_SECONDS = 300.0
+
 #: Yeniden denenebilir HTTP durum kodları.
 #: Not: 429 burada kalır çünkü upstream geçici bir yavaşlatma için de 429 dönebilir;
 #: ancak gövdede kota işareti varsa istek retry edilmez (aşağıda `_is_quota_body`).
@@ -353,21 +359,37 @@ class UpstreamClient:
         )
 
     async def _run_render_env_sync(self) -> None:
-        """Ardışık değişiklikleri sırayla ve en güncel ayarlarla senkronize et."""
+        """Ardışık değişiklikleri sırayla ve en güncel ayarlarla senkronize et.
+
+        Başarısız yazım **tekrar denenir**: Free Render'da disk kalıcı değildir,
+        bu yüzden dönen oturumun env'e yazılamaması restart'ta oturumun
+        kaybolması demektir. Bir sonraki token rotasyonuna (saatler sonra)
+        bırakmak yerine artan aralıkla yeniden denenir; yeni bir Set-Cookie
+        bekleyen bayrağı zaten tazeler ve tekrar deneme en güncel ayarları okur.
+        """
         from app.upstream.state_store import sync_render_env
 
+        delay = _RENDER_SYNC_RETRY_INITIAL_SECONDS
         while self._render_sync_pending:
             self._render_sync_pending = False
+            ok = False
             try:
-                await sync_render_env(self.settings)
+                ok = await sync_render_env(self.settings)
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # pragma: no cover - savunmacı
-                # Senkronizasyon canlı upstream cevabını etkilememeli. Bir
-                # sonraki Set-Cookie değişikliği işçiyi yeniden denetir.
                 logger.warning(
                     "render_env_sync_worker_failed", error_type=type(exc).__name__
                 )
+            if ok:
+                delay = _RENDER_SYNC_RETRY_INITIAL_SECONDS
+                continue
+            self._render_sync_pending = True
+            logger.warning(
+                "render_env_sync_retry_scheduled", delay_seconds=round(delay, 1)
+            )
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, _RENDER_SYNC_RETRY_MAX_SECONDS)
 
     def _ingest_set_cookie(
         self,

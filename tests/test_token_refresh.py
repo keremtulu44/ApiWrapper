@@ -544,6 +544,64 @@ def test_render_restart_prefers_fresher_synced_cookie_over_older_upstream_curl()
     assert extract_refresh_token(updated.upstream_cookie) == "render-synced-refresh"
 
 
+def test_legacy_render_snapshot_does_not_replace_curl_user_agent_with_default():
+    from app.upstream.curl_runtime import apply_upstream_curl
+
+    old_cookie = session_cookie(expires_in=600)
+    fresh_cookie, _ = rewrite_session_cookie(
+        old_cookie,
+        access_token=_jwt(exp=time.time() + 3600),
+        refresh_token="legacy-refresh",
+    )
+    curl = (
+        "curl 'https://upstream.test/nextjs-api/stream/create-evaluation' "
+        f"-H 'cookie: {old_cookie}' "
+        "-H 'user-agent: CapturedAgent/1.0' "
+        "--data-raw '{\"id\":\"1\",\"modelAId\":\"m1\",\"userMessage\":\"hi\"}'"
+    )
+    settings = _settings(
+        upstream_curl=curl,
+        upstream_cookie=fresh_cookie,
+        upstream_user_agent="UnsyncedDefaultAgent/1.0",
+        upstream_snapshot_version=0,
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.upstream_cookie == fresh_cookie
+    assert updated.upstream_user_agent == "CapturedAgent/1.0"
+
+
+def test_full_render_snapshot_clears_stale_curl_authorization_token():
+    from app.upstream.auth import extract_access_token
+    from app.upstream.curl_runtime import apply_upstream_curl
+
+    old_cookie = session_cookie(expires_in=600)
+    old_access = extract_access_token(old_cookie)
+    fresh_cookie, _ = rewrite_session_cookie(
+        old_cookie,
+        access_token=_jwt(exp=time.time() + 3600),
+        refresh_token="cookie-only-refresh",
+    )
+    curl = (
+        "curl 'https://upstream.test/nextjs-api/stream/create-evaluation' "
+        f"-H 'cookie: {old_cookie}' "
+        f"-H 'authorization: Bearer {old_access}' "
+        "--data-raw '{\"id\":\"1\",\"modelAId\":\"m1\",\"userMessage\":\"hi\"}'"
+    )
+    settings = _settings(
+        upstream_curl=curl,
+        upstream_cookie=fresh_cookie,
+        upstream_access_token="",
+        upstream_snapshot_version=1,
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.upstream_cookie == fresh_cookie
+    assert updated.upstream_access_token == ""
+
+
 def test_render_restart_prefers_synced_refresh_when_jwt_expiry_is_equal():
     from app.upstream.auth import extract_access_token
     from app.upstream.curl_runtime import apply_upstream_curl
@@ -745,3 +803,145 @@ async def test_proactive_expired_token_refresh_before_upstream_request(respx_moc
 
 
 
+
+
+@pytest.mark.asyncio
+async def test_apikey_endpoint_refreshes_immediately_and_reports_result():
+    """/apikey yalnız kaydetmemeli; aynı istekte yenilemeyi deneyip sonucu söylemeli."""
+    new_access = _jwt(exp=time.time() + 3600)
+    settings = _settings(
+        upstream_cookie=session_cookie(expires_in=600),
+        upstream_refresh_api_key="",
+        upstream_refresh_url="https://auth.test/auth/v1/token?grant_type=refresh_token",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/auth/v1/token"):
+            assert request.headers.get("apikey") == "anon-key-manual"
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": new_access,
+                    "refresh_token": "rotated-after-apikey",
+                    "expires_in": 3600,
+                },
+            )
+        return httpx.Response(404)
+
+    import respx
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.post("https://auth.test/auth/v1/token").mock(side_effect=handler)
+        with _client(settings) as client:
+            response = client.post(
+                "/v1/admin/upstream/apikey",
+                json={"apikey": "anon-key-manual"},
+                headers={"Authorization": f"Bearer {TEST_API_KEY}"},
+            )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "applied"
+    assert body["refreshed"] is True
+    assert body["expires_in"] == 3600
+    assert settings.upstream_access_token == new_access
+
+
+@pytest.mark.asyncio
+async def test_apikey_endpoint_reports_when_refresh_still_fails():
+    """Yanlış anahtar 'kaydedildi' diye yeşil görünmemeli."""
+    settings = _settings(
+        upstream_cookie=session_cookie(expires_in=600),
+        upstream_refresh_url="https://auth.test/auth/v1/token?grant_type=refresh_token",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "Invalid API key"})
+
+    import respx
+
+    with respx.mock(assert_all_called=False) as mock:
+        mock.post("https://auth.test/auth/v1/token").mock(side_effect=handler)
+        with _client(settings) as client:
+            response = client.post(
+                "/v1/admin/upstream/apikey",
+                json={"apikey": "wrong-key"},
+                headers={"Authorization": f"Bearer {TEST_API_KEY}"},
+            )
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "applied"
+    assert body["refreshed"] is False
+    assert body["refresh_detail"]
+
+
+def test_warning_message_includes_deadline_and_reason():
+    import asyncio
+
+    from app.services.token_refresh import maybe_warn_expiring_token
+
+    settings = _settings(upstream_cookie=session_cookie(expires_in=540))
+    message = asyncio.run(
+        maybe_warn_expiring_token(settings, reason="Upstream `apikey` istiyor")
+    )
+    assert message is not None
+    assert "UTC" in message
+    assert "apikey" in message
+
+
+@pytest.mark.asyncio
+async def test_apikey_discovery_reports_why_it_failed():
+    """Keşif başarısızsa 'bulunamadı' değil, **neden** dönmeli."""
+    from app.upstream.refresh import discover_refresh_api_key_report
+
+    settings = _settings(
+        upstream_refresh_api_key="",
+        target_domain="upstream.test",
+        upstream_cookie="",
+        upstream_access_token="",
+        upstream_refresh_url="https://auth.test/auth/v1/token?grant_type=refresh_token",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(403, text="blocked by bot protection")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        report = await discover_refresh_api_key_report(settings, client)
+
+    assert report.ok is False
+    assert report.home_status == 403
+    assert "403" in report.detail
+    assert "/apikey <anahtar>" in report.detail
+
+
+@pytest.mark.asyncio
+async def test_apikey_discovery_scans_more_than_four_scripts():
+    """Anahtar geç yüklenen chunk'taysa da bulunmalı (eski sınır 4 parçaydı)."""
+    from app.upstream.refresh import discover_refresh_api_key_report
+
+    anon = _anon_jwt()
+    scripts = "".join(
+        f'<script src="/_next/static/chunks/{index}.js"></script>' for index in range(8)
+    )
+    settings = _settings(
+        upstream_refresh_api_key="",
+        target_domain="upstream.test",
+        upstream_cookie="",
+        upstream_access_token="",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/":
+            return httpx.Response(200, text=f"<html><head>{scripts}</head></html>")
+        if request.url.path.endswith("/7.js"):
+            return httpx.Response(200, text=f'anonKey: "{anon}"')
+        return httpx.Response(200, text="// nothing")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        report = await discover_refresh_api_key_report(settings, client)
+
+    assert report.ok is True
+    assert report.key == anon
+    assert report.found_in == "script"
+    assert settings.upstream_refresh_api_key == anon

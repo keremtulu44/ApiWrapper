@@ -38,6 +38,7 @@ Güvenlik kuralları:
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import hashlib
 import json
@@ -71,10 +72,26 @@ PERSISTED_FIELDS: tuple[str, ...] = (
     "upstream_extra_headers",
     "upstream_referer_path",
     "upstream_stream_path",
+    "upstream_captured_model_id",
+    "upstream_auth_scheme",
+    "upstream_user_agent",
+    "upstream_accept_language",
+    "upstream_mode",
+    "upstream_recaptcha_field",
+    "recaptcha_static_token",
 )
+
+# JSON/local state içinde bool türü korunarak saklanan alanlar.
+PERSISTED_BOOL_FIELDS: tuple[str, ...] = ("upstream_auth_from_cookie",)
 
 #: Süreç başında hesaplanan tohum özeti (`id(settings)` -> sha256 hex).
 _SEED_HASHES: dict[int, str] = {}
+
+# Render env yazımları tek bir kalıcı gerçeklik kaynağına giden sıralı işlemlerdir.
+# Paralel sync'lerde eski görevin yavaş PUT isteği yeni oturumdan sonra bitebilir ve
+# restart'ta eski refresh token'ı diriltebilir. Kilit yalnız Render API yazımlarını
+# seriler; canlı sohbet isteklerini veya local state yazımını beklemez.
+_RENDER_SYNC_LOCK = asyncio.Lock()
 
 
 def compute_seed_hash(settings: Settings) -> str:
@@ -135,6 +152,7 @@ def save_runtime_state(settings: Settings, *, source: str = "runtime") -> bool:
 
     payload: dict[str, Any] = {
         "version": _STATE_VERSION,
+        "snapshot_version": 1,
         "target_domain": domain,
         "seed_hash": current_seed(settings),
         "updated_at": time.time(),
@@ -142,6 +160,8 @@ def save_runtime_state(settings: Settings, *, source: str = "runtime") -> bool:
     }
     for field in PERSISTED_FIELDS:
         payload[field] = getattr(settings, field, "") or ""
+    for field in PERSISTED_BOOL_FIELDS:
+        payload[field] = bool(getattr(settings, field, False))
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -262,6 +282,9 @@ def restore_runtime_state(settings: Settings) -> list[str]:
         return []
 
     changed: list[str] = []
+    if saved.get("snapshot_version") == 1 and settings.upstream_snapshot_version != 1:
+        settings.upstream_snapshot_version = 1
+        changed.append("upstream_snapshot_version")
     for field in PERSISTED_FIELDS:
         # Kayıt şemasında bulunan boş string de bilinçli bir durumdur: yeni
         # cURL eski refresh token'ı temizlemiş olabilir. Boşları atlamak,
@@ -275,6 +298,11 @@ def restore_runtime_state(settings: Settings) -> list[str]:
         if getattr(settings, field, "") != val:
             setattr(settings, field, val)
             changed.append(field)
+    for field in PERSISTED_BOOL_FIELDS:
+        val = saved.get(field)
+        if isinstance(val, bool) and getattr(settings, field, False) != val:
+            setattr(settings, field, val)
+            changed.append(field)
 
     if changed:
         logger.info(
@@ -286,6 +314,25 @@ def restore_runtime_state(settings: Settings) -> list[str]:
 
 
 async def sync_render_env(
+    settings: Settings,
+    client: httpx.AsyncClient | None = None,
+) -> bool:
+    """Güncel kimlik snapshot'ını Render'a sırayla ve atomik sırayla yazar.
+
+    Render API her env anahtarını ayrı PUT ile günceller. Kilidin içinde snapshot
+    almak, bekleyen eski bir görevin yeni kimliği tekrar eski değerlerle ezmesini
+    önler; son görev daima o anda `Settings` içindeki en güncel değerleri okur.
+    """
+    if not (
+        (getattr(settings, "render_api_key", "") or "").strip()
+        and (getattr(settings, "render_service_id", "") or "").strip()
+    ):
+        return False
+    async with _RENDER_SYNC_LOCK:
+        return await _sync_render_env_locked(settings, client)
+
+
+async def _sync_render_env_locked(
     settings: Settings,
     client: httpx.AsyncClient | None = None,
 ) -> bool:
@@ -311,20 +358,35 @@ async def sync_render_env(
         updates["UPSTREAM_COOKIE"] = settings.upstream_cookie
         updates["UPSTREAM_REFRESH_TOKEN"] = settings.upstream_refresh_token or ""
         updates["UPSTREAM_ACCESS_TOKEN"] = settings.upstream_access_token or ""
-        updates["UPSTREAM_EXTRA_HEADERS"] = settings.upstream_extra_headers or ""
     else:
         if settings.upstream_refresh_token:
             updates["UPSTREAM_REFRESH_TOKEN"] = settings.upstream_refresh_token
         if settings.upstream_access_token:
             updates["UPSTREAM_ACCESS_TOKEN"] = settings.upstream_access_token
+
+    # Cookie ve tarayıcı parmak izi aynı cURL snapshot'ının parçalarıdır. Yalnız
+    # cookie'yi saklayıp eski UPSTREAM_CURL'deki UA/Authorization/mode/header
+    # değerleriyle birleştirmek restart'ta yarı eski bir istemci üretir. Boş
+    # değerler de yazılır: yeni cURL'de kaldırılan eski header/token dirilmez.
+    snapshot_fields = {
+        "UPSTREAM_EXTRA_HEADERS": settings.upstream_extra_headers or "",
+        "UPSTREAM_AUTH_FROM_COOKIE": (
+            "true" if settings.upstream_auth_from_cookie else "false"
+        ),
+        "UPSTREAM_AUTH_SCHEME": settings.upstream_auth_scheme or "",
+        "UPSTREAM_USER_AGENT": settings.upstream_user_agent or "",
+        "UPSTREAM_ACCEPT_LANGUAGE": settings.upstream_accept_language or "",
+        "UPSTREAM_MODE": settings.upstream_mode or "",
+        "UPSTREAM_RECAPTCHA_FIELD": settings.upstream_recaptcha_field or "",
+        "UPSTREAM_REFERER_PATH": settings.upstream_referer_path or "",
+        "UPSTREAM_STREAM_PATH": settings.upstream_stream_path or "",
+        "UPSTREAM_CAPTURED_MODEL_ID": settings.upstream_captured_model_id or "",
+        "UPSTREAM_SNAPSHOT_VERSION": "1",
+        "RECAPTCHA_STATIC_TOKEN": settings.recaptcha_static_token or "",
+    }
+    updates.update(snapshot_fields)
     if settings.upstream_refresh_api_key:
         updates["UPSTREAM_REFRESH_API_KEY"] = settings.upstream_refresh_api_key
-    if settings.upstream_extra_headers:
-        updates["UPSTREAM_EXTRA_HEADERS"] = settings.upstream_extra_headers
-    if settings.upstream_referer_path:
-        updates["UPSTREAM_REFERER_PATH"] = settings.upstream_referer_path
-    if settings.upstream_stream_path:
-        updates["UPSTREAM_STREAM_PATH"] = settings.upstream_stream_path
     if not updates:
         return False
 

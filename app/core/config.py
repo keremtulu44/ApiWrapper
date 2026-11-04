@@ -51,6 +51,11 @@ class Settings(BaseSettings):
     )
     #: True ise kimlik doğrulama tamamen devre dışı (yalnız güvenli yerel ağda).
     auth_disabled: bool = False
+    #: `/v1/admin/*` uçlarına erişebilecek anahtarlar (virgülle ayrılmış).
+    #: **Boşsa** geriye dönük uyumluluk için tüm `API_KEYS` admin sayılır.
+    #: Doluysa, oturum kimliğini değiştirebilen uçlar yalnız bu anahtarlara açılır:
+    #: normal istemci anahtarı sızdığında upstream oturumu ele geçirilemez.
+    admin_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # ------------------------------------------------------------------ CORS
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
@@ -71,6 +76,11 @@ class Settings(BaseSettings):
     upstream_stream_path: str = "/nextjs-api/stream/post-to-evaluation/{chat_id}"
     #: Tarayıcıdaki sohbet sayfası yolu (referer üretimi için).
     upstream_referer_path: str = "/c/{chat_id}"
+    #: Son uygulanan cURL gövdesindeki modelAId. Ham cURL saklanmaz; yalnızca
+    #: secret olmayan upstream model kimliği Free Render restart'ında korunur.
+    upstream_captured_model_id: str = ""
+    #: 0 = eski, yalnız credential senkronu; 1 = tarayıcı parmak izi dahil tam snapshot.
+    upstream_snapshot_version: int = 0
     #: Gövdeye yazılacak `mode` alanı (örn. "direct"). Boşsa alan gönderilmez.
     upstream_mode: str = ""
     #: Gövdedeki reCAPTCHA alanının adı. Hedefe göre "recaptchaV3Token" veya
@@ -342,6 +352,7 @@ class Settings(BaseSettings):
     # ----------------------------------------------------------- validators
     @field_validator(
         "api_keys",
+        "admin_api_keys",
         "cors_origins",
         "upstream_token_cookie_names",
         "upstream_token_cookie_names_2",
