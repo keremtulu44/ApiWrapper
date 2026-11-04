@@ -309,3 +309,36 @@ için kanıt değildir.
   "request_id": "req_..."
 }
 ```
+
+## 9. Token yenileme `apikey` hatası ve `/apikey` kurtarması
+
+Belirti zinciri (Telegram):
+
+1. `⚠ Sitenin ana sayfasından anon anahtar otomatik keşfedilemedi`
+2. `⚠ erişim token'ının bitmesine ≈N dk kaldı ve otomatik yenilenemedi
+   (Upstream apikey istiyor)`
+3. Bir süre sonra `🔴 upstream_unauthorized (HTTP 401)`
+
+Kök neden: Supabase/GoTrue yenileme ucu `apikey` (anon anahtar) istiyor; anahtar
+yoksa refresh token geçerli olsa bile yenileme reddediliyor ve erişim token'ı
+bitince oturum 401'e düşüyor.
+
+**Artık `/apikey` tek başına kurtarır** — anahtarı kaydettikten sonra yenilemeyi
+aynı istekte dener:
+
+```
+/apikey                # siteden keşfet (başarısızsa NEDENİNİ söyler)
+/apikey <anon-anahtar> # elle ver; cevap "Token yenilendi (~60 dk)" olmalı
+```
+
+- Keşif başarısızsa cevap ana sayfanın HTTP kodunu ve kaç JS parçasının
+  tarandığını söyler (bot koruması `403` ise otomatik keşif zaten çalışmaz;
+  anahtarı elle verin).
+- `Token hâlâ yenilenemedi` derse anahtar yanlıştır; oturum 401'e düşmeden
+  `/cookie` veya `/yenile` ile taze çerez gönderin.
+- Anahtar local state'e ve (yapılandırıldıysa) Render env'ine yazılır; restart'ta
+  korunur.
+
+Uyarı mesajındaki `≈N dk` değeri her kontrolde yeniden hesaplanır; iki bildirim
+arasında farklı görünmesi normaldir. Kesin zaman için mesajdaki
+`bitiş ≈ YYYY-MM-DD HH:MM UTC` alanına bakın.
