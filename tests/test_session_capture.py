@@ -1180,6 +1180,16 @@ def test_inspect_reports_corrupted_base64():
     assert "base64" in problems or "okunamadı" in problems
 
 
+def test_inspect_rejects_truncated_json_when_only_access_token_is_salvaged():
+    # Access token baştaki kısımdan kurtarılabilir; refresh ayıklama ise tam
+    # oturum JSON'unu ister. Bütünlük denetimi bu farkı gizlememeli.
+    report = inspect_cookie(_chunked_cookie()[:-4])
+
+    assert report["access_token_found"] is True
+    assert report["refresh_token_found"] is False
+    assert any("base64" in problem for problem in report["problems"])
+
+
 def test_inspect_never_echoes_cookie_values():
     cookie = _chunked_cookie()
     report = inspect_cookie(cookie)

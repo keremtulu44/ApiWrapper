@@ -782,10 +782,12 @@ def _decodes_to_json(value: str) -> bool:
     body += "=" * (-len(body) % 4)
     try:
         decoded = base64.b64decode(body, validate=False).decode("utf-8", "ignore")
-    except (ValueError, binascii.Error):
+        parsed = json.loads(decoded)
+    except (ValueError, binascii.Error, json.JSONDecodeError):
         return False
-    stripped = decoded.strip()
-    return stripped.startswith(("{", "["))
+    # Yalnızca '{' ile başlamak yeterli değildir: sonu kırpılmış bir oturum da
+    # böyle başlar. Parça bütünlüğü için gövdenin tamamı geçerli JSON olmalı.
+    return isinstance(parsed, (dict, list))
 
 
 def apply_cookie_to_settings(settings: Settings, raw: str) -> list[str]:
