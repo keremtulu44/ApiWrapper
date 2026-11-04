@@ -528,6 +528,11 @@ async def auth_diagnostics(
         if slot is None or slot <= 1
         else ""
     )
+    # `/cookie` dry-run akışında kullanılan mevcut bütünlük denetimini canlı
+    # ayara da uygula. Böylece `/tani`, access token kurtarılabilirken tam
+    # oturum JSON'unun neden refresh üretmediğini (eksik parça/bozuk base64)
+    # tahmin etmek yerine gösterebilir.
+    cookie_inspection = inspect_cookie(settings.upstream_cookie)
     header_value = build_authorization(settings)
     from app.services.token_refresh import refresh_state
 
@@ -581,6 +586,7 @@ async def auth_diagnostics(
         "configured_cookie_names": settings.upstream_token_cookie_names,
         "cookie_names_present": sorted(cookies),
         "cookie_count": len(cookies),
+        "cookie_inspection": cookie_inspection,
         "session_cookie_candidates": _session_cookie_candidates(cookies),
         "token": {
             "found": bool(effective),

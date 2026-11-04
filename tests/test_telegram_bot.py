@@ -452,6 +452,80 @@ async def test_curl_command_explains_when_same_settings_are_already_loaded():
     assert "0 alan güncellendi" not in text
 
 
+@pytest.mark.asyncio
+async def test_long_curl_is_buffered_and_applied_only_after_finish():
+    sent: list[dict[str, Any]] = []
+    uploaded: list[str] = []
+    full_curl = (
+        "curl --url 'https://upstream.test/nextjs-api/stream/create-evaluation' "
+        "-H 'accept: */*' "
+        "-b 'arena-auth-prod-v1.0=base64-part-one; arena-auth-prod-v1.1=part-two' "
+        "--data-raw '{\"id\":\"chat-1\",\"userMessage\":{\"content\":\"Merhaba\"}}'"
+    )
+    # Bir sınır özellikle iki bayrak arasındaki boşluğun içinde: birleştirme
+    # ne bu boşluğu kaybetmeli ne de token içine ek boşluk koymalı.
+    cuts = [0, 95, 180, len(full_curl)]
+    parts = [full_curl[cuts[i] : cuts[i + 1]] for i in range(len(cuts) - 1)]
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        uploaded.append(json.loads(request.content)["curl"])
+        return httpx.Response(
+            200,
+            json={
+                "status": "applied",
+                "fields": ["upstream_cookie"],
+                "accounts_updated": {"hesap-1": True},
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl"})
+        for part in parts:
+            await bot.handle_message({"chat": {"id": 42}, "text": "/curl " + part})
+            assert not uploaded, "parçalar bitmeden cURL uygulanmamalı"
+        assert "parça modunu" in sent[0]["text"]
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl bitir"})
+
+    assert uploaded == [full_curl]
+    assert "cURL uygulandı" in sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_curl_chunk_mode_can_be_cancelled():
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(lambda request: httpx.Response(200, json={})),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl"})
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl curl 'https://x'"})
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl iptal"})
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl bitir"})
+
+    assert "temizlendi" in sent[-2]["text"]
+    assert "Bekleyen cURL parçası yok" in sent[-1]["text"]
+
+
 def _auth_payload(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "cookie_count": 3,
@@ -504,6 +578,53 @@ async def test_diagnose_reports_healthy_identity():
     assert "Çerezde token: var" in text
     assert "Kullanılan token: var" in text
     assert "sağlam" in text
+
+
+@pytest.mark.asyncio
+async def test_diagnose_does_not_claim_cookie_extraction_failed_when_auth_is_disabled():
+    payload = _auth_payload(
+        token={"found": False, "expired": False},
+        cookie_token={
+            "found": True,
+            "is_jwt": True,
+            "expired": False,
+            "expires_in_seconds": 3480,
+            "used_for_authorization": False,
+        },
+        extract_from_cookie_enabled=False,
+        refresh_token={"found": True, "length": 12},
+        authorization_header_will_be_sent=False,
+        cookie_inspection={
+            "chunked_families": {"arena-auth-prod-v1": 2},
+            "problems": [],
+        },
+    )
+
+    text = await _run_diagnose(payload)
+    advice = TelegramBot._diagnose_advice(payload, "BAŞARISIZ (HTTP 401)")
+
+    assert "Parçalı oturum: arena-auth-prod-v1: 2 parça" in text
+    assert "Refresh token: var (12 karakter)" in text
+    assert "ayıklanamadı" not in advice
+    assert "access token başarıyla okunabiliyor" in advice
+    assert "cookie-only" in advice
+
+
+@pytest.mark.asyncio
+async def test_diagnose_shows_live_cookie_integrity_problem():
+    text = await _run_diagnose(
+        _auth_payload(
+            cookie_inspection={
+                "chunked_families": {"arena-auth-prod-v1": 2},
+                "problems": [
+                    "`arena-auth-prod-v1` parçalarının birleşimi çözülemedi (base64 bozuk)"
+                ],
+            }
+        )
+    )
+
+    assert "arena-auth-prod-v1: 2 parça" in text
+    assert "birleşimi çözülemedi" in text
 
 
 @pytest.mark.asyncio

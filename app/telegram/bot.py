@@ -167,6 +167,10 @@ class TelegramBot:
         self.wrapper = wrapper
         #: Sohbet başına birleştirilen çerez parçaları (uzun JSON 4 KB'a sığmaz).
         self._cookie_buffers: dict[int, list[str]] = {}
+        #: Uzun cURL için açık parça modu. Tek mesajlık mevcut `/curl <cURL>`
+        #: davranışı korunur; parametresiz `/curl` parça modunu başlatır.
+        self._curl_buffers: dict[int, list[str]] = {}
+        self._curl_chunk_mode: set[int] = set()
 
     @staticmethod
     def _cookie_complete(text: str) -> bool:
@@ -212,7 +216,8 @@ class TelegramBot:
         chat_id = chat.get("id")
         if not isinstance(chat_id, int):
             return
-        text = text.strip()
+        raw_text = text
+        text = raw_text.strip()
         if not text:
             return
 
@@ -247,7 +252,9 @@ class TelegramBot:
             await self.diagnose(chat_id)
             return
         if command in {"/curl", "/setcurl"}:
-            await self.set_upstream_curl(chat_id, text)
+            # Parça sınırlarındaki boşlukları da korumak için komuta normalize
+            # edilmiş metin yerine yalnızca sol boşluğu atılan ham metni ver.
+            await self.set_upstream_curl(chat_id, raw_text.lstrip())
             return
         if command in {"/yenile", "/refresh", "/capture"}:
             await self.capture_upstream_session(chat_id)
@@ -415,6 +422,21 @@ class TelegramBot:
                 lines.append(f"Refresh token: var ({refresh.get('length', 0)} karakter)")
             else:
                 lines.append("Refresh token: **yok**")
+        inspection_raw = payload.get("cookie_inspection")
+        inspection: dict[str, Any] = (
+            inspection_raw if isinstance(inspection_raw, dict) else {}
+        )
+        families_raw = inspection.get("chunked_families")
+        families: dict[str, Any] = families_raw if isinstance(families_raw, dict) else {}
+        if families:
+            summary = ", ".join(
+                f"{name}: {count} parça" for name, count in list(families.items())[:3]
+            )
+            lines.append("Parçalı oturum: " + summary)
+        problems = inspection.get("problems") or []
+        if isinstance(problems, list):
+            for problem in problems[:3]:
+                lines.append("⚠ " + str(problem))
         auto_raw = payload.get("auto_refresh")
         auto: dict[str, Any] = auto_raw if isinstance(auto_raw, dict) else {}
         if auto:
@@ -492,11 +514,11 @@ class TelegramBot:
                 "Elde çerez yok. Giriş yapmış tarayıcıda Cookie-Editor → Export → "
                 "Header String → /cookie <çerez>."
             )
-        if not token.get("found"):
+        if not cookie_token.get("found") and not token.get("found"):
             if candidates:
                 return (
-                    "Çerez var ama oturum token'ı ayıklanamadı: /yenile deneyin; "
-                    "olmazsa tam çerez setini /cookie ile gönderin."
+                    "Çerez var ama oturum token'ı ayıklanamadı: yukarıdaki parça "
+                    "bütünlüğü uyarıları, hangi oturum ailesinin okunamadığını gösterir."
                 )
             return (
                 "Çerezlerde oturum izi yok (muhtemelen eksik set). Giriş yapmış "
@@ -508,12 +530,24 @@ class TelegramBot:
                 "/yenile ölü oturumu diriltmez."
             )
         if "401" in probe:
+            if cookie_token.get("found") and not token.get("found"):
+                return (
+                    "Çerezdeki access token başarıyla okunabiliyor. Authorization "
+                    "kapalı olduğu için istek cookie-only gidiyor ve "
+                    "upstream onu 401 ile reddediyor."
+                )
             return (
-                "Kimlik var ama upstream 401 veriyor: damga/referer eski olabilir → "
-                "/yenile; sürerse taze çerez."
+                "Etkin kimlik var ama upstream 401 veriyor. Kimliğin bulunması ile "
+                "upstream'in kabul etmesi farklı durumlar; ret nedenini upstream "
+                "cevap gövdesi ve gönderilen istek karşılaştırması göstermeli."
             )
         if "409" in probe:
             return "Kimlik sağlam; 409 damga eskimesi → /yenile."
+        if cookie_token.get("found") and not token.get("found"):
+            return (
+                "Çerezde token okunabiliyor; Authorization kapalı. Tarayıcı cURL'ünde "
+                "de bu başlık yoksa cookie-only yapılandırma normaldir."
+            )
         return "Kimlik görünüşte sağlam. Test için bir mesaj gönderin."
 
     async def send_cookie(self, chat_id: int, text: str, *, force: bool = False) -> None:
@@ -766,17 +800,41 @@ class TelegramBot:
         Ham cURL hiçbir log/yanıt içine yazılmaz.
         """
         parts = text.split(maxsplit=1)
-        body = parts[1].strip() if len(parts) > 1 else ""
+        raw_body = parts[1] if len(parts) > 1 else ""
+        body = raw_body.strip()
+        lowered = body.lower()
+        buffer = self._curl_buffers.setdefault(chat_id, [])
         if not body:
+            buffer.clear()
+            self._curl_chunk_mode.add(chat_id)
             await self.send_text(
                 chat_id,
                 "Kullanım: /curl <cURL>\n"
-                "Tarayıcıda Network → create-evaluation isteği → Copy as cURL, "
-                "ardından komutun yanına yapıştırın.\n"
-                "İstek listede görünmüyorsa: sayfayı yenileyip **ilk** mesajı "
-                "gönderin (sonraki mesajlar açık akıştan gider, yeni istek "
-                "oluşmaz) ya da Cookie-Editor → Export → Header String → "
-                "/cookie <çerez>.",
+                "Uzun cURL için önce bu parametresiz komutla parça modunu açın; "
+                "ardından her parçayı `/curl <parça>` ile gönderin. Tamamını "
+                "gönderince **/curl bitir**, vazgeçmek için **/curl iptal** "
+                "yazın. Parçalar birleştirilmeden servise uygulanmaz.\n"
+                "Tek mesaja sığan cURL'ü doğrudan `/curl <cURL>` ile gönderebilirsiniz.",
+            )
+            return
+        if lowered in {"iptal", "vazgec", "vazgeç"}:
+            buffer.clear()
+            self._curl_chunk_mode.discard(chat_id)
+            await self.send_text(chat_id, "Bekleyen cURL parçaları temizlendi.")
+            return
+        if lowered in {"bitir", "bitti", "tamam"}:
+            if not buffer:
+                await self.send_text(chat_id, "Bekleyen cURL parçası yok.")
+                return
+            body = "".join(buffer)
+            buffer.clear()
+            self._curl_chunk_mode.discard(chat_id)
+        elif chat_id in self._curl_chunk_mode:
+            buffer.append(raw_body)
+            await self.send_text(
+                chat_id,
+                f"cURL parçası alındı ({len(buffer)}). Servise henüz uygulanmadı; "
+                "tamamı bitince /curl bitir yazın.",
             )
             return
         if "curl" not in body.lower():

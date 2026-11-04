@@ -478,6 +478,10 @@ def test_admin_auth_reports_refresh_token_without_exposing_it():
     refresh = response.json()["refresh_token"]
     assert refresh["found"] is True
     assert refresh["length"] == len("secret-refresh")
+    inspection = response.json()["cookie_inspection"]
+    assert inspection["access_token_found"] is True
+    assert inspection["refresh_token_found"] is True
+    assert inspection["problems"] == []
     assert "secret-refresh" not in response.text
     assert second_response.status_code == 200
     assert second_response.json()["slot"] == 2
