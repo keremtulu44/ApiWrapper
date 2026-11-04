@@ -12,6 +12,8 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from app.upstream.header_store import parse_extra_headers
+
 UnsupportedParamPolicy = Literal["ignore", "hint", "error"]
 RecaptchaProviderName = Literal["static", "noop", "browser", "external"]
 RecaptchaVersion = Literal["v3", "enterprise"]
@@ -421,16 +423,7 @@ class Settings(BaseSettings):
         return self._join_url(self.base_url, self.upstream_referer_path, chat_id)
 
     def parsed_extra_headers(self) -> dict[str, str]:
-        out: dict[str, str] = {}
-        for part in self.upstream_extra_headers.split(";"):
-            part = part.strip()
-            if not part or "=" not in part:
-                continue
-            key, _, value = part.partition("=")
-            key, value = key.strip(), value.strip()
-            if key:
-                out[key] = value
-        return out
+        return parse_extra_headers(self.upstream_extra_headers)
 
 
 @lru_cache(maxsize=1)

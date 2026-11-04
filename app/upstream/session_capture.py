@@ -40,6 +40,7 @@ from app.upstream.auth import (
     token_seconds_remaining,
 )
 from app.upstream.curl_import import looks_like_stream_path, stream_path_template
+from app.upstream.header_store import format_extra_headers
 from app.upstream.headers import DEPLOYMENT_HEADERS
 from app.upstream.state_store import save_runtime_state
 from app.utils.ids import new_chat_id
@@ -911,17 +912,13 @@ def apply_capture_to_settings(
                 headers[name] = value
                 updated = True
         if updated:
-            settings.upstream_extra_headers = ";".join(
-                f"{key}={value}" for key, value in headers.items()
-            )
+            settings.upstream_extra_headers = format_extra_headers(headers)
             changed.append("upstream_extra_headers")
     if result.cx:
         headers = settings.parsed_extra_headers()
         if headers.get("cx") != result.cx:
             headers["cx"] = result.cx
-            settings.upstream_extra_headers = ";".join(
-                f"{key}={value}" for key, value in headers.items()
-            )
+            settings.upstream_extra_headers = format_extra_headers(headers)
             changed.append("upstream_cx")
     if (
         result.stream_path

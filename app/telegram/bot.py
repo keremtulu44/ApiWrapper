@@ -828,10 +828,17 @@ class TelegramBot:
             payload = {}
         fields = payload.get("fields") or []
         accounts = payload.get("accounts_updated") or {}
-        lines = [
-            f"✓ cURL uygulandı: {len(fields)} alan güncellendi.",
-            "Hesap: " + (", ".join(sorted(accounts)) if accounts else "değişmedi"),
-        ]
+        if fields:
+            lines = [
+                f"✓ cURL uygulandı: {len(fields)} alan güncellendi.",
+                "Hesap: " + (", ".join(sorted(accounts)) if accounts else "mevcut hesap"),
+            ]
+        else:
+            lines = [
+                "✓ cURL alındı: çıkarılan ayarlar zaten yüklü; 0 alan değişti.",
+                "Hesap: mevcut kimlik korundu. Aynı cURL'ü tekrar gönderdiyseniz "
+                "bu normaldir; 401 sürüyorsa yeni tarayıcı oturumundan cURL gerekir.",
+            ]
         if payload.get("upstream_model"):
             lines.append(f"Upstream model: {payload['upstream_model']}")
         lines.append(

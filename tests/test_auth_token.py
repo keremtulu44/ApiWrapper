@@ -20,7 +20,12 @@ from app.upstream.auth import (
     resolve_bearer_token,
     token_seconds_remaining,
 )
-from app.upstream.headers import build_authorization, build_stream_headers, sec_ch_ua
+from app.upstream.headers import (
+    build_authorization,
+    build_page_headers,
+    build_stream_headers,
+    sec_ch_ua,
+)
 from tests.conftest import make_settings
 
 
@@ -284,6 +289,34 @@ def test_extra_headers_can_override_authorization():
     )
     headers = build_stream_headers(settings, "c")
     assert headers["authorization"] == "Bearer manual-override"
+
+
+def test_captured_mobile_fingerprint_is_not_replaced_with_desktop_chrome():
+    settings = make_settings(
+        upstream_user_agent=(
+            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
+        ),
+        upstream_extra_headers=(
+            '{"sec-ch-ua":"\\"Chromium\\";v=\\"154\\", \\"Lemur\\";v=\\"154\\"",'
+            '"sec-ch-ua-mobile":"?1","sec-ch-ua-platform":"\\"Android\\"",'
+            '"sec-fetch-mode":"cors","accept":"*/*"}'
+        ),
+    )
+
+    headers = build_stream_headers(settings, "chat-1")
+
+    assert headers["sec-ch-ua"] == '"Chromium";v="154", "Lemur";v="154"'
+    assert headers["sec-ch-ua-mobile"] == "?1"
+    assert headers["sec-ch-ua-platform"] == '"Android"'
+    assert headers["sec-fetch-mode"] == "cors"
+    assert headers["accept"] == "*/*"
+
+    # Aynı saklanan değerler HTML ısıtma isteğinin navigasyon kimliğini bozmamalı.
+    page = build_page_headers(settings)
+    assert page["sec-ch-ua-mobile"] == "?1"
+    assert page["sec-fetch-mode"] == "navigate"
+    assert page["accept"].startswith("text/html")
 
 
 def test_configured_cookie_name_setting_is_honoured():

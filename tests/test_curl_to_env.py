@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+from app.upstream.header_store import parse_extra_headers
 from scripts.compare_curl import parse_curl
 from scripts.curl_to_env import (
     build_settings,
@@ -103,18 +104,36 @@ def test_extracts_only_safe_static_extra_headers(sample):
     curl = (
         "curl 'https://example-llm.ai/nextjs-api/stream/create-evaluation' "
         f"-H 'cookie: {sample['cookie']}' "
+        "-H 'accept: */*' "
+        "-H 'cache-control: no-cache' "
         "-H 'dnt: 1' "
+        "-H 'pragma: no-cache' "
+        "-H 'priority: u=1, i' "
+        "-H 'sec-ch-ua: \"Chromium\";v=\"154\", \"Lemur\";v=\"154\"' "
+        "-H 'sec-ch-ua-mobile: ?1' "
+        "-H 'sec-ch-ua-platform: \"Android\"' "
+        "-H 'sec-fetch-dest: empty' "
+        "-H 'sec-fetch-mode: cors' "
+        "-H 'sec-fetch-site: same-origin' "
         "-H 'x-arena-web-deployment: dpl_test' "
         "-H 'x-deployment-id: dpl_test' "
         "-H 'traceparent: dynamic-value' "
         f"--data-raw '{json.dumps(sample['body'])}'"
     )
     env, _, _ = build_settings(parse_curl(curl))
-    extra = dict(
-        part.split("=", 1) for part in env["UPSTREAM_EXTRA_HEADERS"].split(";")
-    )
+    extra = parse_extra_headers(env["UPSTREAM_EXTRA_HEADERS"])
     assert extra == {
+        "accept": "*/*",
+        "cache-control": "no-cache",
         "dnt": "1",
+        "pragma": "no-cache",
+        "priority": "u=1, i",
+        "sec-ch-ua": '"Chromium";v="154", "Lemur";v="154"',
+        "sec-ch-ua-mobile": "?1",
+        "sec-ch-ua-platform": '"Android"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
         "x-arena-web-deployment": "dpl_test",
         "x-deployment-id": "dpl_test",
     }
