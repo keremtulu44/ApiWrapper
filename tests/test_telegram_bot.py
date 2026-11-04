@@ -531,7 +531,7 @@ def _export_json(chunk_count: int = 2) -> list[dict[str, Any]]:
     """Cookie-Editor JSON dışa aktarımına benzeyen gerçek biçim (parçalı çerez)."""
     payload = {
         "access_token": _jwt(exp=time.time() + 3000),
-        "refresh_token": "l6lb6efhioff",
+        "refresh_token": "test-refresh-token",
         "expires_in": 3600,
     }
     value = "base64-" + base64.b64encode(json.dumps(payload).encode()).decode()

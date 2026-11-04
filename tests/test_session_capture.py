@@ -1131,7 +1131,7 @@ def _chunked_cookie(chunks: int = 2, *, corrupt: bool = False) -> str:
     """Gerçek biçime benzeyen parçalı `base64-` oturum çerezi."""
     import base64 as _b64
 
-    payload = {"access_token": _jwt(), "refresh_token": "l6lb6efhioff"}
+    payload = {"access_token": _jwt(), "refresh_token": "test-refresh-token"}
     value = "base64-" + _b64.b64encode(json.dumps(payload).encode()).decode()
     if corrupt:  # kopyalama sırasında karakter kaybı
         value = value[:120] + value[121:]
@@ -1163,7 +1163,7 @@ def test_apply_cookie_reports_refresh_token_only_change():
     )
     changed = apply_cookie_to_settings(settings, cookie)
     assert changed == ["upstream_refresh_token"]
-    assert settings.upstream_refresh_token == "l6lb6efhioff"
+    assert settings.upstream_refresh_token == "test-refresh-token"
 
 
 def test_inspect_reports_missing_chunk():
@@ -1185,7 +1185,7 @@ def test_inspect_never_echoes_cookie_values():
     report = inspect_cookie(cookie)
     serialized = json.dumps(report)
     assert "refresh_token" not in serialized.replace("refresh_token_found", "")
-    assert "l6lb6efhioff" not in serialized
+    assert "test-refresh-token" not in serialized
     assert _jwt() not in serialized
 
 

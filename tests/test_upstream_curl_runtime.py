@@ -62,6 +62,7 @@ def test_runtime_curl_replaces_upstream_fields_and_preserves_browser_captcha():
         target_domain="old.test",
         upstream_cookie="old-cookie",
         upstream_access_token="old-token",
+        upstream_refresh_token="stale-refresh",
         upstream_cookie_2="stale-cookie-2",
         upstream_access_token_3="stale-token-3",
         upstream_account_2_name="eski-hesap",
@@ -79,6 +80,7 @@ def test_runtime_curl_replaces_upstream_fields_and_preserves_browser_captcha():
     assert updated.upstream_mode == "direct-battle"
     assert updated.upstream_cookie == "sb-auth-token=test-cookie-secret"
     assert updated.upstream_access_token == ""
+    assert updated.upstream_refresh_token == ""
     assert updated.upstream_auth_from_cookie is False
     assert updated.upstream_user_agent == "RuntimeTest/1.0"
     assert updated.upstream_accept_language == "tr-TR,tr;q=0.9"
@@ -98,12 +100,15 @@ def test_runtime_curl_replaces_upstream_fields_and_preserves_browser_captcha():
 
 def test_runtime_curl_accepts_authorization_only_and_validates_boolean():
     settings = make_settings(
-        upstream_curl=_curl(cookie=None, authorization="Bearer test-access-token")
+        upstream_curl=_curl(cookie=None, authorization="Bearer test-access-token"),
+        upstream_cookie="session=previous-account",
+        upstream_refresh_token="previous-account-refresh",
     )
 
     updated, _ = apply_upstream_curl(settings)
 
     assert updated.upstream_cookie == ""
+    assert updated.upstream_refresh_token == "", "önceki hesabın refresh'i karışmamalı"
     assert updated.upstream_access_token == "test-access-token"
     assert updated.upstream_auth_scheme == "Bearer"
     assert updated.upstream_auth_from_cookie is False

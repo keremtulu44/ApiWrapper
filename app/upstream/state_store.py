@@ -263,8 +263,14 @@ def restore_runtime_state(settings: Settings) -> list[str]:
 
     changed: list[str] = []
     for field in PERSISTED_FIELDS:
+        # Kayıt şemasında bulunan boş string de bilinçli bir durumdur: yeni
+        # cURL eski refresh token'ı temizlemiş olabilir. Boşları atlamak,
+        # aynı tohumla restart'ta eski secret'ı yeniden diriltir. Şemada hiç
+        # bulunmayan alanlar ise geriye uyumluluk için korunur.
+        if field not in saved:
+            continue
         val = saved.get(field)
-        if not isinstance(val, str) or not val.strip():
+        if not isinstance(val, str):
             continue
         if getattr(settings, field, "") != val:
             setattr(settings, field, val)
@@ -297,11 +303,20 @@ async def sync_render_env(
 
     updates: dict[str, str] = {}
     if settings.upstream_cookie:
+        # Cookie bir oturum anlık görüntüsüyse token alanları da onunla birlikte
+        # yazılır — **boş değerler dahil**. Aksi halde yeni cURL refresh token
+        # taşımazken Render'daki eski değer durur ve restart'ta iki farklı
+        # oturumun kimlikleri birleşir. Cookie'siz, yalnız token kullanan
+        # kurulumların davranışı aşağıdaki bağımsız alanlarla korunur.
         updates["UPSTREAM_COOKIE"] = settings.upstream_cookie
-    if settings.upstream_refresh_token:
-        updates["UPSTREAM_REFRESH_TOKEN"] = settings.upstream_refresh_token
-    if settings.upstream_access_token:
-        updates["UPSTREAM_ACCESS_TOKEN"] = settings.upstream_access_token
+        updates["UPSTREAM_REFRESH_TOKEN"] = settings.upstream_refresh_token or ""
+        updates["UPSTREAM_ACCESS_TOKEN"] = settings.upstream_access_token or ""
+        updates["UPSTREAM_EXTRA_HEADERS"] = settings.upstream_extra_headers or ""
+    else:
+        if settings.upstream_refresh_token:
+            updates["UPSTREAM_REFRESH_TOKEN"] = settings.upstream_refresh_token
+        if settings.upstream_access_token:
+            updates["UPSTREAM_ACCESS_TOKEN"] = settings.upstream_access_token
     if settings.upstream_refresh_api_key:
         updates["UPSTREAM_REFRESH_API_KEY"] = settings.upstream_refresh_api_key
     if settings.upstream_extra_headers:

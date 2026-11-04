@@ -170,7 +170,11 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
     )
     env_exp = token_expiry(env_token) if env_token else None
     curl_exp = token_expiry(curl_token) if curl_token else None
-    if env_exp is not None and (curl_exp is None or env_exp > curl_exp):
+    if env_exp is not None and (curl_exp is None or env_exp >= curl_exp):
+        # Eşit `exp`, aynı access token ile yalnız refresh token'ın döndüğü
+        # hızlı restart'ta görülür. Render env, çalışma sırasında yazılan son
+        # anlık görüntüdür; eşitlikte eski UPSTREAM_CURL'e dönmek tek kullanımlık
+        # eski refresh token'ı diriltir.
         if settings.upstream_cookie:
             updates["upstream_cookie"] = settings.upstream_cookie
         if settings.upstream_access_token:
@@ -188,9 +192,13 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
                 f"{k}={v}" for k, v in curl_extra.items()
             )
         logger.info("upstream_curl_kept_fresher_env_cookie", env_exp=env_exp, curl_exp=curl_exp)
-    winning_cookie = str(updates.get("upstream_cookie") or settings.upstream_cookie or "")
-    if winning_refresh := extract_refresh_token(winning_cookie):
-        updates["upstream_refresh_token"] = winning_refresh
+    winning_cookie = str(
+        updates.get("upstream_cookie", settings.upstream_cookie or "")
+    )
+    # cURL tam oturum anlık görüntüsüdür. Yeni set refresh token taşımıyorsa
+    # önceki hesabın değeri fallback olarak kullanılmamalı; runtime cURL
+    # uygulaması da aynı şekilde bu alanı boşaltır.
+    updates["upstream_refresh_token"] = extract_refresh_token(winning_cookie) or ""
     # İsteğe bağlı alanlar cURL'de yoksa önceki secret/env'den özel değer
     # taşıma; sınıfın güvenli varsayılanına dön. Özellikle eski statik CAPTCHA
     # token'ının yeni oturumda kullanılmasını önler.

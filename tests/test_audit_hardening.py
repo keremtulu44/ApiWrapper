@@ -133,6 +133,25 @@ def test_redact_secrets_keeps_normal_text_intact():
     assert redact_secrets(text) == text
 
 
+def test_log_mask_processor_covers_nested_lists_and_named_credentials():
+    from app.core.logging import _mask_processor
+
+    token = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiJ1In0.c2lnbmF0dXJl"
+    masked = _mask_processor(
+        None,
+        "test",
+        {
+            "event": "test",
+            "nested": [[f"invalid token {token}"]],
+            "upstream_refresh_token": "very-secret-refresh",
+        },
+    )
+
+    assert token not in str(masked)
+    assert "very-secret-refresh" not in str(masked)
+    assert "***" in masked["upstream_refresh_token"]
+
+
 # ------------------------------------------- 4) metrik kardinalitesi
 def test_metric_path_collapses_unknown_routes():
     assert metric_path("/v1/chat/completions") == "/v1/chat/completions"

@@ -164,6 +164,35 @@ async def test_free_render_persists_rotated_credentials_through_env_api():
     assert all("render-secret" not in value for value in updates.values())
 
 
+@pytest.mark.asyncio
+async def test_render_env_sync_writes_empty_token_fields_with_cookie_snapshot():
+    import json
+
+    from app.upstream.state_store import sync_render_env
+
+    settings = make_settings(
+        render_api_key="render-secret",
+        render_service_id="srv-free-test",
+        upstream_cookie="session=opaque",
+        upstream_access_token="",
+        upstream_refresh_token="",
+    )
+    updates: dict[str, object] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.url.path.rsplit("/", 1)[-1]
+        updates[key] = json.loads(request.read())["value"]
+        return httpx.Response(200, json={"value": "stored"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await sync_render_env(settings, client) is True
+
+    assert updates["UPSTREAM_COOKIE"] == "session=opaque"
+    assert updates["UPSTREAM_ACCESS_TOKEN"] == ""
+    assert updates["UPSTREAM_REFRESH_TOKEN"] == ""
+    assert updates["UPSTREAM_EXTRA_HEADERS"] == ""
+
+
 def test_render_state_restores_after_target_domain_fallback(monkeypatch, tmp_path):
     from app.core.config import get_settings
     from app.upstream.state_store import remember_seed, save_runtime_state

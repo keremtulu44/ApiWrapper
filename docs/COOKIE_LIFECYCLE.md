@@ -81,7 +81,7 @@ oturum adı yok, ya da token süresi dolmuş. Üçü de **tarayıcıdan çerez**
 ```
 base64-eyJhY2Nlc3NfdG9rZW4i...   →  {"access_token": "eyJ...", "expires_in": 3600,
                                      "expires_at": 1793630815,
-                                     "refresh_token": "l6lb6efhioff",
+                                     "refresh_token": "test-refresh-token",
                                      "user": {...}, "provider_token": "..."}
 ```
 
@@ -122,7 +122,11 @@ tohumuna dönülür ve dönen refresh token geçersiz kalabilir. Docker Compose'
 named volume yalnız yerel Docker kullanımında aynı dosyayı korur.
 
 Token yenilemesi yeni istekleri taze client/cookie jar'ına geçirir; açık SSE
-akışlarının client'ı akış bitene kadar kapatılmaz.
+akışlarının client'ı akış bitene kadar kapatılmaz. Upstream'in cevap
+`Set-Cookie` başlıklarıyla döndürdüğü ana hesap kimliği de tekil bir arka plan
+işçisiyle Render env'e yazılır; cevabın ilk token'ı bu yazımı beklemez. Boş
+refresh/token/header alanları da anlık görüntüye dahildir ki restart'ta önceki
+hesabın secret'ı yeniden dirilmesin.
 
 ## 6. Kerem'in 2026-11-02 vakası — okuma
 

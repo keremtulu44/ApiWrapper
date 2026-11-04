@@ -6,7 +6,7 @@ import asyncio
 import json
 import re
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 
 import httpx
 
@@ -125,6 +125,11 @@ class UpstreamClient:
         # kapatırken mevcut isteklerin güvenle bitmesini sağlar.
         self._client_use_counts: dict[int, int] = {}
         self._retiring_clients: set[httpx.AsyncClient] = set()
+        # Set-Cookie ile dönen kimlikleri Free Render env'ine yazan tekil işçi.
+        # İlk token gecikmesini uzatmamak için cevap akışını bekletmez; ardışık
+        # değişiklikleri birleştirir ve eski/yeni yazımların yarışmasını önler.
+        self._render_sync_pending = False
+        self._render_sync_task: asyncio.Task[None] | None = None
         # Sürüm damgası (x-deployment-id / x-arena-web-deployment) kanaryası.
         self.deployment = DeploymentIdResolver(settings)
 
@@ -180,6 +185,13 @@ class UpstreamClient:
         return client
 
     async def shutdown(self) -> None:
+        sync_task = self._render_sync_task
+        self._render_sync_task = None
+        self._render_sync_pending = False
+        if sync_task is not None and not sync_task.done():
+            sync_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await sync_task
         clients = list(self._account_clients.values())
         clients.extend(self._retiring_clients)
         if self._client is not None:
@@ -322,6 +334,41 @@ class UpstreamClient:
             settings.upstream_cookie
         )
 
+    def _schedule_render_env_sync(self) -> None:
+        """Değişen ana hesap kimliğini Free Render'a tekil işçiyle kaydet."""
+        if not (
+            self.settings.render_api_key.strip()
+            and self.settings.render_service_id.strip()
+        ):
+            return
+        self._render_sync_pending = True
+        if self._render_sync_task is not None and not self._render_sync_task.done():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - yalnız savunmacı/test çağrısı
+            return
+        self._render_sync_task = loop.create_task(
+            self._run_render_env_sync(), name="upstream-render-credential-sync"
+        )
+
+    async def _run_render_env_sync(self) -> None:
+        """Ardışık değişiklikleri sırayla ve en güncel ayarlarla senkronize et."""
+        from app.upstream.state_store import sync_render_env
+
+        while self._render_sync_pending:
+            self._render_sync_pending = False
+            try:
+                await sync_render_env(self.settings)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # pragma: no cover - savunmacı
+                # Senkronizasyon canlı upstream cevabını etkilememeli. Bir
+                # sonraki Set-Cookie değişikliği işçiyi yeniden denetir.
+                logger.warning(
+                    "render_env_sync_worker_failed", error_type=type(exc).__name__
+                )
+
     def _ingest_set_cookie(
         self,
         response: httpx.Response,
@@ -384,6 +431,7 @@ class UpstreamClient:
             if new_refresh and new_refresh != self.settings.upstream_refresh_token:
                 self.settings.upstream_refresh_token = new_refresh
             save_runtime_state(self.settings, source="upstream_set_cookie")
+            self._schedule_render_env_sync()
 
     async def _retry_with_fresh_stamp(
         self,
