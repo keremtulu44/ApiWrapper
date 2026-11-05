@@ -15,7 +15,8 @@ büyük resim ve 3 çerez katmanı: **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.m
 Render kurulumu: **[`docs/RENDER.md`](docs/RENDER.md)** ·
 mobilden çerez/cURL alma: **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** ·
 arıza/teşhis için: **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** ·
-son uçtan uca denetim kaydı: **[`docs/AUDIT_2026_11.md`](docs/AUDIT_2026_11.md)**
+son uçtan uca denetim kaydı: **[`docs/AUDIT_2026_11.md`](docs/AUDIT_2026_11.md)** ·
+**oturum devir dosyası (dosya/satır konumları): [`docs/HANDOFF.md`](docs/HANDOFF.md)**
 
 > **Dağıtım notu:** Render, servis ayarlarında seçili production dalı deploy eder;
 > `render.yaml` dal seçmez. Canlı servisin hangi dalı izlediğini Render panelinden
@@ -34,6 +35,7 @@ Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damg
 | **Free Render Kurulumu** | **[`docs/RENDER.md`](docs/RENDER.md)** | `UPSTREAM_CURL`, `RENDER_API_KEY` ile restart sonrası kalıcılık, uyku davranışı ve gömülü Telegram botu |
 | **Telefondan Yönetim** | **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** | Bilgisayar yokken `/tani`, `/token`, `/apikey`, `/yenile`, `/cookie` ve `/curl` komutları |
 | **Arıza & Teşhis Sözlüğü** | **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** | 401 / 403 / 409 / 429 hata kodlarının anlamı ve otomatik kurtarma kademeleri |
+| **Oturum Devri (dosya/satır haritası)** | **[`docs/HANDOFF.md`](docs/HANDOFF.md)** | Hangi davranış hangi dosyada, hangi satırda; doğrulanmış konum listesi |
 
 ---
 
