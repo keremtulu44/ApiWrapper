@@ -437,6 +437,13 @@ def build_settings(
     if isinstance(mode, str) and mode.strip():
         env["UPSTREAM_MODE"] = mode.strip()
 
+    # --- gövde `cx` (istemci bağlamı)
+    # cURL gövdesinde `cx` var ama kodda hiç okunmuyordu; istek onsuz
+    # gönderildiği için hedef istemciyi eksik görebiliyordu.
+    cx = body.get("cx")
+    if isinstance(cx, str) and cx.strip():
+        env["UPSTREAM_CX"] = cx.strip()
+
     # --- reCAPTCHA site key (tarayıcı sağlayıcısı için kritik)
     # Site key public'tir; cURL'ün başlıklarında/gövdesinde görünüyorsa doğru
     # anahtar budur. Render blueprint'indeki sabit değer başka bir siteye aitse

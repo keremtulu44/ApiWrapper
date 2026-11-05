@@ -537,3 +537,62 @@ def test_list_accounts_flags_unusable_slots(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "2 kullanılabilir hesap var" in out
     assert "KULLANILAMIYOR" in out
+
+
+def test_curl_body_cx_field_is_captured_and_sent():
+    """cURL gövdesindeki `cx` alanı okunmalı ve canlı istekte gönderilmeli.
+
+    Canlı cURL'de `cx` gövdede geliyordu ama kod hiç okumuyordu; istek onsuz
+    gidiyordu.
+    """
+    import json
+
+    from app.adapters.openai_to_upstream import build_upstream_request
+    from app.schemas.openai import ChatCompletionRequest
+    from app.upstream.curl_import import build_settings, parse_curl
+
+    body = {
+        "id": "chat-1",
+        "modelAId": "model-1",
+        "userMessageId": "u1",
+        "modelAMessageId": "m1",
+        "modality": "chat",
+        "cx": "AibRul-WjekSN8tE0xEE",
+        "userMessage": {"content": "selam"},
+    }
+    curl = (
+        "curl --url 'https://arena.ai/nextjs-api/stream/create-evaluation' "
+        "-b '_ga=1; arena-auth-prod-v1="
+        "base64-eyJhY2Nlc3NfdG9rZW4iOiJleUpoYkdjaU9pSkZVekkxTmlKOSJ9' "
+        f"--data-raw '{json.dumps(body)}'"
+    )
+
+    env, _, _ = build_settings(parse_curl(curl))
+    assert env.get("UPSTREAM_CX") == "AibRul-WjekSN8tE0xEE"
+
+    from tests.conftest import make_settings
+
+    settings = make_settings(upstream_cx=env["UPSTREAM_CX"])
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "merhaba"}],
+    )
+    built = build_upstream_request(
+        request,
+        settings=settings,
+        upstream_model_id="model-1",
+        chat_id="chat-1",
+        recaptcha_token="token",
+    )
+    wire = built.payload.to_wire(settings.upstream_recaptcha_field)
+    assert wire["cx"] == "AibRul-WjekSN8tE0xEE"
+
+
+def test_empty_cx_is_not_sent():
+    from app.schemas.upstream import UpstreamPayload, UserMessage
+
+    payload = UpstreamPayload(
+        id="c", modelAId="m", userMessageId="u", modelAMessageId="a",
+        userMessage=UserMessage(content="x"), mode="direct-battle",
+    )
+    assert "cx" not in payload.to_wire()

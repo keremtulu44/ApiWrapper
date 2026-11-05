@@ -82,6 +82,7 @@ PERSISTED_FIELDS: tuple[str, ...] = (
     # Public değer (secret değil): yanlış site key ile üretilen token hedefte
     # `recaptcha_rejected` olur, bu yüzden cURL'den öğrenilen değer korunur.
     "recaptcha_site_key",
+    "upstream_cx",
 )
 
 # JSON/local state içinde bool türü korunarak saklanan alanlar.
