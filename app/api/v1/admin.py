@@ -644,6 +644,22 @@ async def auth_diagnostics(
             "static_token_configured": bool(
                 (settings.recaptcha_static_token or "").strip()
             ),
+            # Üretim geçmişi: "token üretilemiyor" ile "token reddediliyor"
+            # arasındaki farkı operatörün görebilmesi için. Token'ın kendisi
+            # (sır) hiçbir zaman dönmez.
+            "production": {
+                **(getattr(getattr(request.app.state, "recaptcha", None), "stats", {}) or {}),
+                "cached": bool(
+                    getattr(
+                        getattr(request.app.state, "recaptcha", None), "_cache", None
+                    )
+                    and getattr(
+                        request.app.state.recaptcha._cache, "_value", None
+                    )
+                ),
+                "token_ttl_seconds": settings.recaptcha_token_ttl,
+            },
+            "origin": settings.base_url,
             "hint": (
                 "Tarayıcı sağlayıcısı site key ile token üretir; anahtar hedefin "
                 "sitesine ait değilse hedef token'ı reddeder (recaptcha_rejected). "
