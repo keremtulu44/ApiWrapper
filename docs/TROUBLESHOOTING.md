@@ -140,10 +140,11 @@ Kalıcı çözüm yukarıdaki otomatik kurtarma kademeleridir; ikisi de tutmazsa
 
 **409 gövdesinde `cx` geçiyorsa**
 
-Canlı cURL'lerde stabil bir `cx` değeri var; wrapper şimdilik göndermiyor ve
-istekler çalışıyor. Bir 4xx gövdesi `cx` alanına atıfta bulunmaya başlarsa logda
-`upstream_cx_flag` + `apiwrapper_upstream_cx_flags_total` metriği görünür: bu,
-alanın zorunlu hâle geldiği anlamına gelir.
+Canlı cURL'lerde stabil bir `cx` değeri var; wrapper yakalıyor ama varsayılan
+olarak göndermiyor, istekler çalışıyor. Bir 4xx gövdesi `cx` alanına atıfta
+bulunmaya başlarsa logda `upstream_cx_flag` +
+`apiwrapper_upstream_cx_flags_total` metriği görünür: bu, alanın zorunlu hâle
+geldiği anlamına gelir. O anda `UPSTREAM_CX_SEND=true` yapmak yeterlidir.
 
 ---
 

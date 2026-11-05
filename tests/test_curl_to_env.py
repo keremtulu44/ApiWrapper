@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+from app.upstream.header_store import parse_extra_headers
 from scripts.compare_curl import parse_curl
 from scripts.curl_to_env import (
     build_settings,
@@ -103,18 +104,36 @@ def test_extracts_only_safe_static_extra_headers(sample):
     curl = (
         "curl 'https://example-llm.ai/nextjs-api/stream/create-evaluation' "
         f"-H 'cookie: {sample['cookie']}' "
+        "-H 'accept: */*' "
+        "-H 'cache-control: no-cache' "
         "-H 'dnt: 1' "
+        "-H 'pragma: no-cache' "
+        "-H 'priority: u=1, i' "
+        "-H 'sec-ch-ua: \"Chromium\";v=\"154\", \"Lemur\";v=\"154\"' "
+        "-H 'sec-ch-ua-mobile: ?1' "
+        "-H 'sec-ch-ua-platform: \"Android\"' "
+        "-H 'sec-fetch-dest: empty' "
+        "-H 'sec-fetch-mode: cors' "
+        "-H 'sec-fetch-site: same-origin' "
         "-H 'x-arena-web-deployment: dpl_test' "
         "-H 'x-deployment-id: dpl_test' "
         "-H 'traceparent: dynamic-value' "
         f"--data-raw '{json.dumps(sample['body'])}'"
     )
     env, _, _ = build_settings(parse_curl(curl))
-    extra = dict(
-        part.split("=", 1) for part in env["UPSTREAM_EXTRA_HEADERS"].split(";")
-    )
+    extra = parse_extra_headers(env["UPSTREAM_EXTRA_HEADERS"])
     assert extra == {
+        "accept": "*/*",
+        "cache-control": "no-cache",
         "dnt": "1",
+        "pragma": "no-cache",
+        "priority": "u=1, i",
+        "sec-ch-ua": '"Chromium";v="154", "Lemur";v="154"',
+        "sec-ch-ua-mobile": "?1",
+        "sec-ch-ua-platform": '"Android"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
         "x-arena-web-deployment": "dpl_test",
         "x-deployment-id": "dpl_test",
     }
@@ -518,3 +537,70 @@ def test_list_accounts_flags_unusable_slots(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "2 kullanılabilir hesap var" in out
     assert "KULLANILAMIYOR" in out
+
+
+def test_curl_body_cx_field_is_captured_and_sent():
+    """cURL gövdesindeki `cx` alanı okunmalı ve canlı istekte gönderilmeli.
+
+    Canlı cURL'de `cx` gövdede geliyordu ama kod hiç okumuyordu; istek onsuz
+    gidiyordu.
+    """
+    import json
+
+    from app.adapters.openai_to_upstream import build_upstream_request
+    from app.schemas.openai import ChatCompletionRequest
+    from app.upstream.curl_import import build_settings, parse_curl
+
+    body = {
+        "id": "chat-1",
+        "modelAId": "model-1",
+        "userMessageId": "u1",
+        "modelAMessageId": "m1",
+        "modality": "chat",
+        "cx": "AibRul-WjekSN8tE0xEE",
+        "userMessage": {"content": "selam"},
+    }
+    curl = (
+        "curl --url 'https://arena.ai/nextjs-api/stream/create-evaluation' "
+        "-b '_ga=1; arena-auth-prod-v1="
+        "base64-eyJhY2Nlc3NfdG9rZW4iOiJleUpoYkdjaU9pSkZVekkxTmlKOSJ9' "
+        f"--data-raw '{json.dumps(body)}'"
+    )
+
+    env, _, _ = build_settings(parse_curl(curl))
+    assert env.get("UPSTREAM_CX") == "AibRul-WjekSN8tE0xEE"
+
+    from tests.conftest import make_settings
+
+    # Varsayılan: yakalanır ama gönderilmez (canlıda bu alan olmadan çalıştı).
+    settings = make_settings(upstream_cx=env["UPSTREAM_CX"])
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "merhaba"}],
+    )
+
+    def wire_for(cfg):
+        built = build_upstream_request(
+            request,
+            settings=cfg,
+            upstream_model_id="model-1",
+            chat_id="chat-1",
+            recaptcha_token="token",
+        )
+        return built.payload.to_wire(cfg.upstream_recaptcha_field)
+
+    assert "cx" not in wire_for(settings)
+
+    # Açıkça istenirse gönderilir.
+    enabled = make_settings(upstream_cx=env["UPSTREAM_CX"], upstream_cx_send=True)
+    assert wire_for(enabled)["cx"] == "AibRul-WjekSN8tE0xEE"
+
+
+def test_empty_cx_is_not_sent():
+    from app.schemas.upstream import UpstreamPayload, UserMessage
+
+    payload = UpstreamPayload(
+        id="c", modelAId="m", userMessageId="u", modelAMessageId="a",
+        userMessage=UserMessage(content="x"), mode="direct-battle",
+    )
+    assert "cx" not in payload.to_wire()

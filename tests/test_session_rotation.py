@@ -7,6 +7,8 @@ yeni upstream sohbetine geçilir.
 
 from __future__ import annotations
 
+import asyncio
+
 import httpx
 import pytest
 import respx
@@ -76,6 +78,30 @@ async def test_reuse_overrides_stateless_flag():
     first = await manager.acquire(None, "cli_1")
     second = await manager.acquire(None, "cli_1")
     assert first.chat_id == second.chat_id
+
+
+@pytest.mark.asyncio
+async def test_concurrent_first_requests_share_one_chat_and_one_warmup():
+    """Aynı anahtarın ilk iki isteği iki ayrı upstream sohbeti açmamalı."""
+    release_warmup = asyncio.Event()
+    warmup_calls = 0
+
+    async def warmup(_chat_id: str) -> None:
+        nonlocal warmup_calls
+        warmup_calls += 1
+        await release_warmup.wait()
+
+    manager = SessionManager(make_settings(session_reuse=True), warmup=warmup)
+    first = asyncio.create_task(manager.acquire("shared-conversation"))
+    second = asyncio.create_task(manager.acquire("shared-conversation"))
+    await asyncio.sleep(0)
+    release_warmup.set()
+    sessions = await asyncio.gather(first, second)
+
+    assert warmup_calls == 1
+    assert sessions[0] is sessions[1]
+    assert sessions[0].chat_id == sessions[1].chat_id
+    assert sessions[0].message_count == 2
 
 
 @pytest.mark.asyncio

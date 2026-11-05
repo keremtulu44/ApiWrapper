@@ -4,8 +4,9 @@ Bu belge sistemi dağıtımdan cevaba kadar sırayla yürütür. Amaç yalnızca
 açmak değil, **hangi aşamanın çalıştığını ve hatanın nerede başladığını** ayırt
 edebilmektir.
 
-> **Hangi dal?** Servis **`arena/c55e601b-apiwrapper`** dalını deploy eder. Tüm
-> merge'ler oraya yapılır; `main` dokunulmaz. Bkz. [`MERGE_TARGET.md`](MERGE_TARGET.md).
+> **Hangi dal?** `render.yaml` dal seçmez; Render servis ayarlarındaki production
+> dal kullanılır. Canlı servisin izlediği dalı Render panelinden doğrulayın.
+> Geçmiş merge kayıtları [`MERGE_TARGET.md`](MERGE_TARGET.md) içindedir.
 
 ## 1. Dağıtım nasıl ilerler?
 
@@ -21,8 +22,12 @@ edebilmektir.
 7. Render blueprint'i healthcheck olarak `/readyz` kullanır. Eksik ayarlar varsa
    cevap gövdesinde yalnızca güvenli hata kodları görünür; secret değerler görünmez.
 
-`plan: starter` sleep etmeyen ücretli plandır. `numInstances: 1` bilinçlidir: hesap
+`plan: free` ücretli kaynak gerektirmez. `numInstances: 1` bilinçlidir: hesap
 kotaları, cookie jar'lar, öğrenilen limitler ve sohbetler bellek içindedir.
+Free planda kalıcı disk yoktur; dönen refresh token ve çerezler `RENDER_API_KEY`
+ile Render environment değişkenlerine senkronize edilir. `RENDER_SERVICE_ID`
+Render tarafından otomatik sağlanır. Sohbet geçmişi ve öğrenilen kota sayaçları
+restart'ta sıfırlanır; bunlar upstream istek mantığını bozmaz.
 
 ## 2. Bir tamamlama isteği nasıl yürür?
 
@@ -55,8 +60,13 @@ kotaları, cookie jar'lar, öğrenilen limitler ve sohbetler bellek içindedir.
 
 - `config/models.yaml` içinde varsayılan modelin `upstream_id` değeri gerçek olmalı;
   `REPLACE_WITH_...` bırakılırsa `/readyz` servisi hazır kabul etmez.
-- Render'da sleep etmeyen plan kullanılmalı. Blueprint bunu `starter` olarak tanımlar.
+- Blueprint `free` plan kullanır. Servis hareketsizlikte uyuyabilir; bu durum hata
+  değildir, gelen HTTP isteğiyle uyanır ancak ilk cevap gecikebilir.
 - Güçlü, varsayılandan farklı bir `API_KEYS` değeri seçilmeli.
+- Free planda refresh token kalıcılığı için Render hesabından bir API key üretilip
+  `RENDER_API_KEY` secret'ına yazılmalı. `RENDER_SERVICE_ID` otomatik olduğundan
+  elle servis ID'si eklenmez. Bu anahtar yoksa servis yine çalışır fakat restart
+  sonrası `/cookie` ile kimlik tazeleme gerekebilir.
 - `UPSTREAM_CURL` için Max'teki tamamlanmış `create-evaluation` POST isteğinin tamamı
   kullanılmalı; telemetri, RUM, analytics veya yarım kopyalanmış istek kullanılmamalı.
   cURL'deki URL'nin şeması olabilir; wrapper hedef domain'i kendisi çıkarır.
@@ -68,17 +78,21 @@ kotaları, cookie jar'lar, öğrenilen limitler ve sohbetler bellek içindedir.
 
 1. Render'da **New → Blueprint** seçin ve bu depoyu bağlayın.
 2. `API_KEYS` için güçlü, varsayılandan farklı bir değer girin.
-3. `UPSTREAM_CURL` secret'ına Max'teki tamamlanmış `create-evaluation` isteğinin normal
+3. Render hesabınızın API key'ini `RENDER_API_KEY` secret'ına girin. Bu değer
+   token/çerez rotasyonunu Free planda restart dayanıklı yapar; repo'ya veya
+   Telegram'a yazılmamalıdır. Servis ID'sini kopyalamanız gerekmez.
+4. `UPSTREAM_CURL` secret'ına Max'teki tamamlanmış `create-evaluation` isteğinin normal
    cURL'ünü yapıştırın. Bunu sohbete, README'ye, `render.yaml` dosyasına veya loglara
    kopyalamayın. Eski ayrı `TARGET_DOMAIN`/`UPSTREAM_COOKIE`/token alanları bırakılırsa
    bile dolu `UPSTREAM_CURL` önceliklidir; tek hesap için eski `_2`/`_3`/`_4` değerlerini
    silmek en temiz seçenektir.
-4. `RECAPTCHA_PROVIDER=browser`, public site key, Enterprise sürümü ve action blueprint'te
+5. `RECAPTCHA_PROVIDER=browser`, public site key, Enterprise sürümü ve action blueprint'te
    hazırdır. cURL'deki kısa ömürlü CAPTCHA token'ı bu seçimi static'e çevirmez.
-5. Deploy loglarında Chromium kurulumu ve application startup aşamalarını izleyin.
+6. Deploy loglarında Chromium kurulumu ve application startup aşamalarını izleyin.
    `upstream_curl_loaded` yalnız uygulanan alan adlarını ve model bulunup bulunmadığını
-   gösterir; ham cURL veya secret taşımaz.
-6. Aşağıdaki kontrolleri yapın.
+   gösterir; ham cURL veya secret taşımaz. İlk başarılı yenilemeden sonra
+   `render_env_synced` olayı Free kalıcılığının çalıştığını gösterir.
+7. Aşağıdaki kontrolleri yapın.
 
 Blueprint secret değerleri depoda tutmaz; `sync: false` alanları Render tarafından
 istenir. cURL'den domain, akış yolu, mode, referer, kullanıcı ajanı, ek header'lar,
@@ -138,7 +152,9 @@ Bu ayrım, geçici upstream arızalarının Render restart döngüsü oluşturma
 | SSE HTTP 200 ama metin/usage yok | Akış içinde upstream hatası | SSE `error.code` ve aynı `request_id` altındaki `stream_failed` |
 | 502 ağ/TLS/proxy | Upstream bağlantısı | Domain, TLS, outbound erişim |
 | 504 | Idle veya toplam deadline | Upstream yanıt süresi ve timeout ayarları |
-| Restart sonrası sohbet/kota sıfırlandı | Bellek içi durum | Beklenen davranış; kalıcı state yok |
+| Restart sonrası sohbet/kota sıfırlandı | Bellek içi çalışma durumu | Free planda beklenen davranış |
+| Restart sonrası refresh token eskiye döndü | Render env sync | `RENDER_API_KEY` ve `render_env_synced`/`render_env_sync_failed` loglarını doğrulayın |
+| İstek uzun süre bekliyor, sonra cevap geliyor | Free sleep/cold start | Servis uyanıyor; açılış ve token denetimi loglarını izleyin |
 | İkinci hesap birincinin cookie'sini kullanıyor | Eski davranış/regresyon | Hesap client/cookie testlerini çalıştırın |
 
 Yönetim uçları API anahtarı ister. Token değerleri değil, maskeli teşhis kullanın:
@@ -185,8 +201,9 @@ python -m app.telegram.bot
 3. `/ping` wrapper `/healthz` kontrolünü, normal metin gerçek non-streaming tamamlamayı
    test eder. `/help` kullanım bilgisini gösterir.
 
-İsteğe bağlı ayrı/always-on bot için Render'da aynı repo/branch ile **Background Worker**
-oluşturun:
+Ayrı bot ancak Free kapsamı dışında bir **Background Worker** kullanılacaksa gerekir;
+bu Blueprint worker oluşturmaz ve Free kullanım için gömülü bot yeterlidir. Ayrı worker
+kullanılacaksa aynı repo/branch ile şu ayarlar seçilir:
 
 | Alan | Değer |
 |---|---|
@@ -203,11 +220,18 @@ key'i hiçbir zaman Telegram mesajına veya depoya yazılmaz. Bot tek turluktur,
 geçmişi tutmaz; stream testi için `test_client.py` kullanılır. Gerçek Telegram/Render
 bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamıştır.
 
-## 7. 7/24 çalışma sınırları
+## 7. Free planda çalışma sınırları
 
+- Free Web Service hareketsizlikte uyur; harici bir HTTP isteği gelince uyanır.
+  Cold start sırasında gecikme normaldir. İçeriden çalışan keepalive veya Render
+  healthcheck'i always-on garantisi değildir. Telegram long polling de uyku
+  sırasında çalışmaz; Telegram mesajları servis uyandıktan sonra işlenebilir.
 - Render'ın aktif kalması, upstream oturumunun sonsuza kadar geçerli olması demek değildir.
-- Gerçek refresh HTTP sözleşmesi henüz uygulanmamıştır. `refresh_token` ayrıştırma ve
-  hesap bazlı cookie altyapısı hazırdır; tahmini refresh endpoint'i kullanılmamalıdır.
+- Refresh HTTP akışı uygulanmıştır: refresh token varsa erişim token'ı açılışta
+  hemen ve sonrasında 60 sn'de bir denetlenir, bitmesine 10 dk kala Supabase/GoTrue
+  `grant_type=refresh_token` isteğiyle yenilenir. İstek anında süresi dolmuş token
+  ve 401 için de kurtarma denenir. Refresh token yoksa/iptal edildiyse giriş yapmış
+  tarayıcıdan yeni çerez gerekir; wrapper parola/OTP ile giriş yapamaz.
 - `static` CAPTCHA token'ı kısa ömürlüdür; unattended kullanım için `browser` veya
   uygun `external` sağlayıcı gerekir.
 - Browser sağlayıcı CAPTCHA bootstrap belgesini Playwright route ile hedef origin'de
@@ -216,8 +240,13 @@ bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamı
   Chromium RAM/CPU kullanır; kaynak sınırını Render loglarından izleyin.
 - Tek instance/tek worker sınırını kaldırmak, bellek içi hesap ve sohbet durumunu
   instance'lar arasında senkronize etmez.
-- Her deploy/restart cookie jar'ı environment'taki başlangıç değerlerinden kurar ve
-  öğrenilen kota/sohbet durumunu sıfırlar.
+- Her deploy/restart'ta öğrenilen kota ve sohbet durumu sıfırlanır. Cookie/token
+  tarafında önce environment/cURL tohumu okunur, ardından varsa yerel durum dosyası
+  uzlaştırılır. Free planda asıl kalıcı katman Render env senkronizasyonudur
+  (`RENDER_API_KEY` + otomatik `RENDER_SERVICE_ID`); `/app/.cache` kalıcı değildir.
+- Token yenilemesi eski hesap client'larını yeni isteklere hemen kapatır; açık
+  upstream akışları ise eski client üzerinde tamamlanır. Böylece saatlik yenileme
+  devam eden SSE cevabını kesmez.
 - `UPSTREAM_KEEPALIVE_INTERVAL_SECONDS=10800` süreç ayaktayken üç saatte bir kısa
   non-stream completion gönderir; varsayılan `0` kapalıdır. Bu kota kullanan bir
   hareketsizlik deneyidir, auth refresh uygulaması değildir. Aralık
@@ -237,6 +266,9 @@ bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamı
   değil) ve wrapper bu alan olmadan başarılı istek atıyor. Bu yüzden zorunlu kabul
   edilmez; bir 4xx gövdesi `cx` alanına atıfta bulunursa logda `upstream_cx_flag`
   ve `apiwrapper_upstream_cx_flags_total` metriği görünür.
+- `cx` artık cURL gövdesinden **yakalanır** (`UPSTREAM_CX`) ama varsayılan olarak
+  **gönderilmez**. Gönderimi `UPSTREAM_CX_SEND=true` ile açılır: 4xx gövdesi bu
+  alana atıfta bulunmaya başlarsa tek değişiklik bu bayraktır.
 
 ## 8. JSON logları ve SSE hata ayıklama
 
@@ -280,3 +312,36 @@ için kanıt değildir.
   "request_id": "req_..."
 }
 ```
+
+## 9. Token yenileme `apikey` hatası ve `/apikey` kurtarması
+
+Belirti zinciri (Telegram):
+
+1. `⚠ Sitenin ana sayfasından anon anahtar otomatik keşfedilemedi`
+2. `⚠ erişim token'ının bitmesine ≈N dk kaldı ve otomatik yenilenemedi
+   (Upstream apikey istiyor)`
+3. Bir süre sonra `🔴 upstream_unauthorized (HTTP 401)`
+
+Kök neden: Supabase/GoTrue yenileme ucu `apikey` (anon anahtar) istiyor; anahtar
+yoksa refresh token geçerli olsa bile yenileme reddediliyor ve erişim token'ı
+bitince oturum 401'e düşüyor.
+
+**Artık `/apikey` tek başına kurtarır** — anahtarı kaydettikten sonra yenilemeyi
+aynı istekte dener:
+
+```
+/apikey                # siteden keşfet (başarısızsa NEDENİNİ söyler)
+/apikey <anon-anahtar> # elle ver; cevap "Token yenilendi (~60 dk)" olmalı
+```
+
+- Keşif başarısızsa cevap ana sayfanın HTTP kodunu ve kaç JS parçasının
+  tarandığını söyler (bot koruması `403` ise otomatik keşif zaten çalışmaz;
+  anahtarı elle verin).
+- `Token hâlâ yenilenemedi` derse anahtar yanlıştır; oturum 401'e düşmeden
+  `/cookie` veya `/yenile` ile taze çerez gönderin.
+- Anahtar local state'e ve (yapılandırıldıysa) Render env'ine yazılır; restart'ta
+  korunur.
+
+Uyarı mesajındaki `≈N dk` değeri her kontrolde yeniden hesaplanır; iki bildirim
+arasında farklı görünmesi normaldir. Kesin zaman için mesajdaki
+`bitiş ≈ YYYY-MM-DD HH:MM UTC` alanına bakın.

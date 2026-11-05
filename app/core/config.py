@@ -12,6 +12,8 @@ from typing import Annotated, Literal
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
+from app.upstream.header_store import parse_extra_headers
+
 UnsupportedParamPolicy = Literal["ignore", "hint", "error"]
 RecaptchaProviderName = Literal["static", "noop", "browser", "external"]
 RecaptchaVersion = Literal["v3", "enterprise"]
@@ -49,6 +51,11 @@ class Settings(BaseSettings):
     )
     #: True ise kimlik doğrulama tamamen devre dışı (yalnız güvenli yerel ağda).
     auth_disabled: bool = False
+    #: `/v1/admin/*` uçlarına erişebilecek anahtarlar (virgülle ayrılmış).
+    #: **Boşsa** geriye dönük uyumluluk için tüm `API_KEYS` admin sayılır.
+    #: Doluysa, oturum kimliğini değiştirebilen uçlar yalnız bu anahtarlara açılır:
+    #: normal istemci anahtarı sızdığında upstream oturumu ele geçirilemez.
+    admin_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # ------------------------------------------------------------------ CORS
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
@@ -69,6 +76,17 @@ class Settings(BaseSettings):
     upstream_stream_path: str = "/nextjs-api/stream/post-to-evaluation/{chat_id}"
     #: Tarayıcıdaki sohbet sayfası yolu (referer üretimi için).
     upstream_referer_path: str = "/c/{chat_id}"
+    #: Son uygulanan cURL gövdesindeki modelAId. Ham cURL saklanmaz; yalnızca
+    #: secret olmayan upstream model kimliği Free Render restart'ında korunur.
+    upstream_captured_model_id: str = ""
+    #: 0 = eski, yalnız credential senkronu; 1 = tarayıcı parmak izi dahil tam snapshot.
+    upstream_snapshot_version: int = 0
+    #: cURL gövdesindeki `cx` alanı (oturum/istemci bağlamı işareti).
+    #: Varsayılan olarak **gönderilmez**: canlı gözlemlerde wrapper bu alan
+    #: olmadan başarılı istek atıyordu (docs/RENDER.md §7, docs/TROUBLESHOOTING.md).
+    #: Gönderimi `UPSTREAM_CX_SEND=true` ile açılır.
+    upstream_cx: str = ""
+    upstream_cx_send: bool = False
     #: Gövdeye yazılacak `mode` alanı (örn. "direct"). Boşsa alan gönderilmez.
     upstream_mode: str = ""
     #: Gövdedeki reCAPTCHA alanının adı. Hedefe göre "recaptchaV3Token" veya
@@ -229,9 +247,9 @@ class Settings(BaseSettings):
     #: Refresh token (çerezden okunamıyorsa). Yenilemede dönen yeni değer
     #: bellekte buraya yazılır.
     upstream_refresh_token: str = ""
-    #: Dönen refresh/access token ve türev değerlerin süreç yeniden başladığında
-    #: kaybolmaması için atomik olarak yazılacağı yerel durum dosyası
-    #: (örn. ".cache/upstream_state.json"). Boşsa diske yazılmaz.
+    #: Dönen refresh/access token ve türev değerlerin atomik yazılacağı yerel
+    #: durum dosyası (örn. ".cache/upstream_state.json"). Kalıcılığı dosya
+    #: sisteminin ömrüyle sınırlıdır; Free Render'da Render env sync gerekir.
     upstream_state_file: str = ""
     #: Render gibi geçici diskli ortamlarda dönen oturum bilgilerini servis env
     #: değişkenlerine sessizce yazmak için opsiyonel Render API bilgileri.
@@ -340,6 +358,7 @@ class Settings(BaseSettings):
     # ----------------------------------------------------------- validators
     @field_validator(
         "api_keys",
+        "admin_api_keys",
         "cors_origins",
         "upstream_token_cookie_names",
         "upstream_token_cookie_names_2",
@@ -421,16 +440,7 @@ class Settings(BaseSettings):
         return self._join_url(self.base_url, self.upstream_referer_path, chat_id)
 
     def parsed_extra_headers(self) -> dict[str, str]:
-        out: dict[str, str] = {}
-        for part in self.upstream_extra_headers.split(";"):
-            part = part.strip()
-            if not part or "=" not in part:
-                continue
-            key, _, value = part.partition("=")
-            key, value = key.strip(), value.strip()
-            if key:
-                out[key] = value
-        return out
+        return parse_extra_headers(self.upstream_extra_headers)
 
 
 @lru_cache(maxsize=1)

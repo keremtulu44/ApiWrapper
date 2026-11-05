@@ -28,6 +28,22 @@ _WARNED_NO_TOKEN = False
 #: (`app/upstream/deployment.py`).
 DEPLOYMENT_HEADERS: tuple[str, ...] = ("x-deployment-id", "x-arena-web-deployment")
 
+#: Stream cURL'ünden korunan bu başlıklar HTML ısıtma/anon-key keşif isteğine
+#: aynen taşınmamalıdır. Örneğin akışın `sec-fetch-mode: cors` değeri sayfa
+#: navigasyonunda `navigate` olarak kalmalıdır. Client Hint başlıkları ise iki
+#: istekte de aynı tarayıcıyı temsil ettiği için korunur.
+_STREAM_ONLY_EXTRA_HEADERS = frozenset(
+    {
+        "accept",
+        "cache-control",
+        "pragma",
+        "priority",
+        "sec-fetch-dest",
+        "sec-fetch-mode",
+        "sec-fetch-site",
+    }
+)
+
 _CHROME_VERSION_RE = re.compile(r"Chrome/(\d+)")
 _EDGE_VERSION_RE = re.compile(r"(?:Edg|Edge|EdgA|EdgiOS)/(\d+)")
 
@@ -182,5 +198,11 @@ def build_page_headers(settings: Settings, *, include_cookie: bool = True) -> di
     }
     if include_cookie and settings.upstream_cookie:
         headers["cookie"] = settings.upstream_cookie
-    headers.update(settings.parsed_extra_headers())
+    headers.update(
+        {
+            name: value
+            for name, value in settings.parsed_extra_headers().items()
+            if name.lower() not in _STREAM_ONLY_EXTRA_HEADERS
+        }
+    )
     return headers

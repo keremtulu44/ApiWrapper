@@ -81,7 +81,7 @@ oturum adı yok, ya da token süresi dolmuş. Üçü de **tarayıcıdan çerez**
 ```
 base64-eyJhY2Nlc3NfdG9rZW4i...   →  {"access_token": "eyJ...", "expires_in": 3600,
                                      "expires_at": 1793630815,
-                                     "refresh_token": "l6lb6efhioff",
+                                     "refresh_token": "test-refresh-token",
                                      "user": {...}, "provider_token": "..."}
 ```
 
@@ -100,7 +100,7 @@ döngüsüyle yenilenir:
 
 | Parça | Davranış |
 |---|---|
-| Zamanlayıcı | 60 sn'de bir bakar; yalnız token'ın bitmesine **10 dk** kalınca istek atar |
+| Zamanlayıcı | Açılışta hemen, sonra 60 sn'de bir bakar; yalnız token'ın bitmesine **10 dk** kalınca istek atar |
 | İstek | `POST {iss}/auth/v1/token?grant_type=refresh_token` · gövde `{"refresh_token": "..."}` |
 | `apikey` | Upstream istiyorsa sitenin HTML/JS'inden **otomatik keşfedilir** (veya `UPSTREAM_REFRESH_API_KEY` / `/apikey`) |
 | Başarı | Yeni `access_token` + dönen yeni `refresh_token` (rotation) **bellekte**, **oturum çerezinde**, **`AccountPool` + `UpstreamClient` cookie jar'larında** ve **süreç dışı durum deposunda (`UPSTREAM_STATE_FILE`)** güncellenir |
@@ -114,22 +114,19 @@ Ayarlar: `UPSTREAM_REFRESH_ENABLED`, `UPSTREAM_REFRESH_LEEWAY_SECONDS` (600),
 çerezdeki JWT `iss` alanından türetilir), `UPSTREAM_REFRESH_API_KEY`,
 `UPSTREAM_REFRESH_TOKEN`.
 
-**Not:** yeni token'lar bellekte tutulur; süreç yeniden başlarsa Render'daki
-`UPSTREAM_CURL`/çerez ile başlar ve ilk denetimde kendini yine yeniler. Kalıcı
-olması için Render'daki çerezi de ara ara güncellemek iyi olur.
+**Free Render kalıcılığı:** Yeni token'lar `UPSTREAM_STATE_FILE` atomik dosyasına
+yazılır ancak Free Render dosya sistemi kalıcı değildir. Asıl restart/deploy
+koruması `RENDER_API_KEY` + otomatik `RENDER_SERVICE_ID` ile yapılan Render env
+senkronizasyonudur. API key yoksa container restart'ında eski environment/cURL
+tohumuna dönülür ve dönen refresh token geçersiz kalabilir. Docker Compose'daki
+named volume yalnız yerel Docker kullanımında aynı dosyayı korur.
 
-## 5. Refresh token: kalıcı çözüm
-
-Oturum çerezinde `refresh_token` varsa, erişim token'ı **elle** değil
-`grant_type=refresh_token` ile yenilenebilir (Supabase/Auth.js ailesi bunu
-destekler). Bu akış eklenirse:
-
-* Erişim token'ı saatlik ölmez → 401 döngüsü biter,
-* Her yenilemede refresh token **döner** (rotation), yeni değer saklanmalı,
-* Yalnız refresh token da öldüğünde (haftalar) tarayıcıdan çerez gerekir.
-
-`/tani` çıktısında `Refresh token: var (N karakter)` görünüyorsa bu yol açıktır;
-`yok` ise elle çerez tek çözümdür.
+Token yenilemesi yeni istekleri taze client/cookie jar'ına geçirir; açık SSE
+akışlarının client'ı akış bitene kadar kapatılmaz. Upstream'in cevap
+`Set-Cookie` başlıklarıyla döndürdüğü ana hesap kimliği de tekil bir arka plan
+işçisiyle Render env'e yazılır; cevabın ilk token'ı bu yazımı beklemez. Boş
+refresh/token/header alanları da anlık görüntüye dahildir ki restart'ta önceki
+hesabın secret'ı yeniden dirilmesin.
 
 ## 6. Kerem'in 2026-11-02 vakası — okuma
 

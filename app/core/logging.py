@@ -25,6 +25,15 @@ SENSITIVE_KEYS = frozenset(
         "recaptcha_static_token",
         "recaptcha_external_api_key",
         "token",
+        "access_token",
+        "refresh_token",
+        "upstream_cookie",
+        "upstream_access_token",
+        "upstream_refresh_token",
+        "upstream_curl",
+        "render_api_key",
+        "telegram_bot_token",
+        "bot_token",
         "password",
         "secret",
     }
@@ -58,19 +67,26 @@ def redact_secrets(text: str) -> str:
     return _BEARER_RE.sub(lambda m: "Bearer " + mask_value(m.group(0).split(None, 1)[1]), redacted)
 
 
+def _mask_item(value: Any) -> Any:
+    """İç içe listelerdeki serbest metni de aynı kurallarla maskeler."""
+    if isinstance(value, dict):
+        return _mask_mapping(value)
+    if isinstance(value, str):
+        return redact_secrets(value)
+    if isinstance(value, list):
+        return [_mask_item(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_mask_item(item) for item in value)
+    return value
+
+
 def _mask_mapping(data: dict[str, Any]) -> dict[str, Any]:
     out: dict[str, Any] = {}
     for key, value in data.items():
         if isinstance(key, str) and key.lower() in SENSITIVE_KEYS:
             out[key] = mask_value(value)
-        elif isinstance(value, str):
-            out[key] = redact_secrets(value)
-        elif isinstance(value, dict):
-            out[key] = _mask_mapping(value)
-        elif isinstance(value, list):
-            out[key] = [_mask_mapping(i) if isinstance(i, dict) else i for i in value]
         else:
-            out[key] = value
+            out[key] = _mask_item(value)
     return out
 
 

@@ -1,5 +1,8 @@
 name: CI
 
+permissions:
+  contents: read
+
 on:
   push:
     branches: ["**"]
@@ -8,6 +11,7 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -26,11 +30,10 @@ jobs:
           pip install -e ".[dev,tokens]"
 
       - name: Lint
-        run: ruff check app tests
+        run: ruff check app tests scripts
+
+      - name: Type check
+        run: mypy app
 
       - name: Test
         run: pytest -q
-
-# NOT: Bu dosya, GitHub App'in `workflows` izni bulunmadığı için
-# `.github/workflows/` altına push edilemedi. Etkinleştirmek için:
-#   mkdir -p .github/workflows && git mv ci/github-actions-ci.yml .github/workflows/ci.yml

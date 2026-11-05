@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from typing import Any
 from urllib.parse import urlsplit
 
 from app.core.config import MAX_ACCOUNT_SLOTS, Settings
 from app.core.logging import get_logger
 from app.upstream.auth import extract_access_token, extract_refresh_token, token_expiry
 from app.upstream.curl_import import build_settings, looks_like_stream_path, parse_curl
+from app.upstream.header_store import format_extra_headers
 from app.upstream.state_store import save_runtime_state
 
 logger = get_logger(__name__)
@@ -30,12 +32,18 @@ _CURL_FIELDS: dict[str, str] = {
     "UPSTREAM_AUTH_SCHEME": "upstream_auth_scheme",
     "RECAPTCHA_PROVIDER": "recaptcha_provider",
     "RECAPTCHA_STATIC_TOKEN": "recaptcha_static_token",
+    "RECAPTCHA_SITE_KEY": "recaptcha_site_key",
+    "UPSTREAM_CX": "upstream_cx",
 }
 
 
 def _runtime_fields() -> tuple[str, ...]:
     """Canlı `Settings` nesnesine yazılabilecek alan adları (allowlist)."""
-    fields: list[str] = list(_CURL_FIELDS.values())
+    fields: list[str] = [
+        *_CURL_FIELDS.values(),
+        "upstream_captured_model_id",
+        "upstream_snapshot_version",
+    ]
     for slot in range(2, MAX_ACCOUNT_SLOTS + 1):
         fields.extend(
             [
@@ -104,6 +112,9 @@ def apply_curl_to_settings(
         if getattr(settings, field, None) != new_value:
             setattr(settings, field, new_value)
             changed.append(field)
+    # Model kimliği de cURL snapshot'ının parçasıdır; aksi halde restart'ta
+    # yeni cookie/header'lar eski UPSTREAM_CURL modeliyle birleşir.
+    settings.upstream_captured_model_id = model_id.strip() if model_id else ""
     # Yeni cURL ile gelen çerezin refresh token'ını da hizala (eski dönmüş
     # token yeni oturumu ezmesin).
     settings.upstream_refresh_token = (
@@ -153,11 +164,15 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
             "siteye giriş yapmışken tamamlanmış sohbet isteğini kopyalayın."
         )
 
-    updates = {
+    updates: dict[str, Any] = {
         field: env[key]
         for key, field in _CURL_FIELDS.items()
         if key in env
     }
+    updates["upstream_captured_model_id"] = (
+        model_id.strip() if isinstance(model_id, str) else ""
+    )
+    updates["upstream_snapshot_version"] = 1
     # Render'da `UPSTREAM_CURL` sabit kalırken `sync_render_env` dönen taze
     # çerezi `UPSTREAM_COOKIE` / `UPSTREAM_REFRESH_TOKEN` ortam değişkenine
     # yazar. Restart sonrası `UPSTREAM_COOKIE` içindeki JWT `exp` süresi
@@ -170,12 +185,36 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
     )
     env_exp = token_expiry(env_token) if env_token else None
     curl_exp = token_expiry(curl_token) if curl_token else None
-    if env_exp is not None and (curl_exp is None or env_exp > curl_exp):
-        if settings.upstream_cookie:
-            updates["upstream_cookie"] = settings.upstream_cookie
-        if settings.upstream_access_token:
-            updates["upstream_access_token"] = settings.upstream_access_token
-        if settings.upstream_extra_headers:
+    if env_exp is not None and (curl_exp is None or env_exp >= curl_exp):
+        # Eşit `exp`, aynı access token ile yalnız refresh token'ın döndüğü
+        # hızlı restart'ta görülür. Render env, çalışma sırasında yazılan son
+        # anlık görüntüdür; eşitlikte eski UPSTREAM_CURL'e dönmek tek kullanımlık
+        # eski refresh token'ı diriltir.
+        # İki alan da boş değerleriyle kopyalanır: cookie-only yeni snapshot'ın
+        # yanında eski cURL'den ayrı bir Authorization token'ı hayatta kalmaz.
+        updates["upstream_cookie"] = settings.upstream_cookie
+        updates["upstream_access_token"] = settings.upstream_access_token
+        if settings.upstream_snapshot_version >= 1:
+            # Render'a ayrı env anahtarları olarak yazılan güncel tam snapshot,
+            # eski UPSTREAM_CURL'nin bütün istemci kimliğini ezer. Merge yapılmaz:
+            # yeni cURL'den kaldırılan eski header yeniden dirilmez.
+            for field in (
+                "upstream_extra_headers",
+                "upstream_auth_from_cookie",
+                "upstream_auth_scheme",
+                "upstream_user_agent",
+                "upstream_accept_language",
+                "upstream_mode",
+                "upstream_recaptcha_field",
+                "upstream_referer_path",
+                "upstream_stream_path",
+                "upstream_captured_model_id",
+                "recaptcha_static_token",
+            ):
+                updates[field] = getattr(settings, field)
+        elif settings.upstream_extra_headers:
+            # Geriye uyumluluk: eski sürüm yalnız credential ve birleşik extra
+            # header senkronu yapmıştı; varsayılan UA/mode değerleri cURL'ü ezmez.
             curl_extra = settings.model_copy(
                 update={
                     "upstream_extra_headers": str(
@@ -184,26 +223,33 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
                 }
             ).parsed_extra_headers()
             curl_extra.update(settings.parsed_extra_headers())
-            updates["upstream_extra_headers"] = ";".join(
-                f"{k}={v}" for k, v in curl_extra.items()
-            )
+            updates["upstream_extra_headers"] = format_extra_headers(curl_extra)
         logger.info("upstream_curl_kept_fresher_env_cookie", env_exp=env_exp, curl_exp=curl_exp)
-    winning_cookie = str(updates.get("upstream_cookie") or settings.upstream_cookie or "")
-    if winning_refresh := extract_refresh_token(winning_cookie):
-        updates["upstream_refresh_token"] = winning_refresh
+    winning_cookie = str(
+        updates.get("upstream_cookie", settings.upstream_cookie or "")
+    )
+    # cURL tam oturum anlık görüntüsüdür. Yeni set refresh token taşımıyorsa
+    # önceki hesabın değeri fallback olarak kullanılmamalı; runtime cURL
+    # uygulaması da aynı şekilde bu alanı boşaltır.
+    updates["upstream_refresh_token"] = extract_refresh_token(winning_cookie) or ""
     # İsteğe bağlı alanlar cURL'de yoksa önceki secret/env'den özel değer
-    # taşıma; sınıfın güvenli varsayılanına dön. Özellikle eski statik CAPTCHA
-    # token'ının yeni oturumda kullanılmasını önler.
+    # taşıma; sınıfın güvenli varsayılanına dön.
+    #
+    # `RECAPTCHA_STATIC_TOKEN` bilinçli olarak **bu listede değil**: cURL'ün
+    # gövdesinde captcha alanı bulunmaması, operatörün elle girdiği statik
+    # token'ı silmek için gerekçe değildir. Buradaki sıfırlama yüzünden yeni
+    # cURL uygulandığında token boşalıyor ve statik kipte her istek
+    # `recaptcha_rejected` ile düşüyordu. Alan yalnızca cURL'de yeni bir
+    # captcha değeri varsa değişir (aşağıdaki CAPTCHA bloğu).
     for key in (
         "UPSTREAM_MODE",
         "UPSTREAM_RECAPTCHA_FIELD",
         "UPSTREAM_ACCEPT_LANGUAGE",
         "UPSTREAM_USER_AGENT",
         "UPSTREAM_REFERER_PATH",
-        "RECAPTCHA_STATIC_TOKEN",
     ):
-        if key not in env:
-            field = _CURL_FIELDS[key]
+        field = _CURL_FIELDS[key]
+        if key not in env and field not in updates:
             default = Settings.model_fields[field].default
             updates[field] = default if isinstance(default, str) else ""
     # Bu secret tek-hesap Max kurulumunun tam anlık görüntüsüdür. Render'da
@@ -225,11 +271,16 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
     merged.update(updates)
     updated = Settings(**merged)
 
+    # Yaşam döngüsüne dönen model kimliği de **kazanan** snapshot'tan gelmeli:
+    # tam snapshot eski UPSTREAM_CURL'ü ezdiğinde eski `modelAId` yeni oturuma
+    # taşınırsa istek yanlış modele gider.
+    loaded_model_id = str(updates.get("upstream_captured_model_id") or "").strip()
+
     for item in warnings:
         logger.warning("upstream_curl_warning", detail=item)
     logger.info(
         "upstream_curl_loaded",
         fields=sorted(updates),
-        model_id_detected=bool(model_id),
+        model_id_detected=bool(loaded_model_id),
     )
-    return updated, model_id.strip() if isinstance(model_id, str) else None
+    return updated, loaded_model_id or None

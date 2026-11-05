@@ -17,7 +17,7 @@ from app.core.config import Settings
 from app.core.errors import InvalidRequestError
 from app.core.logging import mask_value
 from app.core.metrics import metrics
-from app.core.security import api_key_dependency
+from app.core.security import api_key_dependency, require_admin
 from app.services.account import AccountPool
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
@@ -111,7 +111,11 @@ class UpstreamCookiePayload(BaseModel):
     cookie: str = Field(min_length=10, max_length=30000)
 
 
-@router.post("/upstream/cookie", summary="Swap upstream cookies without a cURL")
+@router.post(
+    "/upstream/cookie",
+    summary="Swap upstream cookies without a cURL",
+    dependencies=[Depends(require_admin)],
+)
 async def update_upstream_cookie(
     payload: UpstreamCookiePayload,
     request: Request,
@@ -187,7 +191,11 @@ class UpstreamCurlPayload(BaseModel):
     allow_path_change: bool = False
 
 
-@router.post("/upstream/refresh", summary="Refresh the upstream access token")
+@router.post(
+    "/upstream/refresh",
+    summary="Refresh the upstream access token",
+    dependencies=[Depends(require_admin)],
+)
 async def refresh_upstream_credentials(
     request: Request,
     settings: Settings = Depends(get_settings_dep),
@@ -237,51 +245,89 @@ class UpstreamApiKeyPayload(BaseModel):
     apikey: str = Field(default="", max_length=4096)
 
 
-@router.post("/upstream/apikey", summary="Set or auto-discover upstream refresh apikey")
+@router.post(
+    "/upstream/apikey",
+    summary="Set or auto-discover upstream refresh apikey",
+    dependencies=[Depends(require_admin)],
+)
 async def update_upstream_apikey(
     payload: UpstreamApiKeyPayload,
     settings: Settings = Depends(get_settings_dep),
+    upstream: UpstreamClient = Depends(get_upstream),
+    accounts: AccountPool = Depends(get_accounts),
+    sessions: SessionManager = Depends(get_sessions),
 ) -> dict[str, Any]:
     """Token yenileme için gereken `apikey` (Supabase anon anahtarı) değerini ayarlar
     veya boş gönderilirse sitenin HTML/JS'inden otomatik keşfeder.
+
+    Anahtar kaydedildikten sonra yenileme **hemen** denenir. Eski davranışta
+    `/apikey` yalnız anahtarı yazıyordu; operatör "kaydedildi" cevabını alıp
+    oturumun 401'e düşmesini bekliyordu. Artık cevap gerçek sonucu söyler:
+    anahtar doğruysa token tazelenir, değilse hata nedeni döner.
     """
-    from app.upstream.refresh import discover_refresh_api_key
+    from app.services.token_refresh import record_refresh
+    from app.upstream.refresh import (
+        discover_refresh_api_key_report,
+        refresh_upstream_token,
+    )
     from app.upstream.state_store import save_runtime_state, sync_render_env
 
+    discovery_detail = ""
     provided = (payload.apikey or "").strip()
     if provided:
         settings.upstream_refresh_api_key = provided
+        source = "manual"
+        status = "applied"
         save_runtime_state(settings, source="apikey_manual")
-        await sync_render_env(settings)
-        return {
-            "status": "applied",
-            "source": "manual",
-            "has_api_key": True,
-            "length": len(provided),
-        }
-
-    discovered = await discover_refresh_api_key(settings)
-    if discovered:
+    else:
+        report = await discover_refresh_api_key_report(settings)
+        if not report.ok:
+            return {
+                "status": "not_found",
+                "source": None,
+                "has_api_key": bool(
+                    (settings.upstream_refresh_api_key or "").strip()
+                ),
+                "home_status": report.home_status,
+                "scripts_seen": report.scripts_seen,
+                "scripts_fetched": report.scripts_fetched,
+                "detail": report.detail,
+            }
+        source = "auto"
+        status = "discovered"
+        discovery_detail = report.detail
         save_runtime_state(settings, source="apikey_discovered")
-        await sync_render_env(settings)
-        return {
-            "status": "discovered",
-            "source": "auto",
-            "has_api_key": True,
-            "length": len(discovered),
-        }
+
+    await sync_render_env(settings)
+
+    # Anahtarın gerçekten işe yarayıp yaramadığını aynı cevapta göster.
+    outcome = await refresh_upstream_token(settings)
+    record_refresh(ok=outcome.ok, detail=outcome.detail)
+    refreshed = False
+    if outcome.ok:
+        refreshed = True
+        accounts.reload_credentials(settings)
+        await upstream.reset_account_clients()
+        upstream.breaker.reset()
+        await sessions.clear()
+
     return {
-        "status": "not_found",
-        "source": None,
-        "has_api_key": bool((settings.upstream_refresh_api_key or "").strip()),
-        "detail": (
-            "Sitenin ana sayfasından anon anahtar otomatik keşfedilemedi. "
-            "Anahtarı biliyorsanız /apikey <anahtar> ile doğrudan verebilirsiniz."
-        ),
+        "status": status,
+        "source": source,
+        "has_api_key": True,
+        "length": len(settings.upstream_refresh_api_key or ""),
+        "refreshed": refreshed,
+        "refresh_detail": outcome.detail,
+        "expires_in": outcome.expires_in,
+        "discovery_detail": discovery_detail,
     }
 
 
-@router.post("/upstream/curl", summary="Swap upstream credentials from a fresh cURL")
+@router.post(
+    "/upstream/curl",
+    summary="Swap upstream credentials from a fresh cURL",
+    dependencies=[Depends(require_admin)],
+)
 async def update_upstream_curl(
     payload: UpstreamCurlPayload,
     request: Request,
@@ -297,8 +343,9 @@ async def update_upstream_curl(
     beklemek yerine bu uç nokta alanları yerinde değiştirir, hesap cookie
     jar'larını kapatır ve oturum önbelleğini temizler.
 
-    Not: bu değişiklik **bellekte**dir; süreç yeniden başlarsa Render'daki
-    `UPSTREAM_CURL` değerine döner. Kalıcı olması için secret'ı da güncelleyin.
+    Kimlik ve türev alanları kalıcı durum dosyasına, yapılandırıldıysa Render
+    env'e de yazılır. Dağıtım tohumunu da güncel tutmak için Render'daki
+    `UPSTREAM_CURL` secret'ını yenilemek yine önerilir.
     """
     from app.core.logging import get_logger
 
@@ -334,13 +381,17 @@ async def update_upstream_curl(
         "upstream_model": result["model_id"],
         "warnings": warnings,
         "note": (
-            "Değişiklik bellekte uygulandı; kalıcı olması için Render'daki "
-            "UPSTREAM_CURL secret'ını da aynı cURL ile güncelleyin."
+            "Değişiklik uygulandı; yerel durum dosyasına ve yapılandırılmışsa "
+            "Render env'e kaydedildi. UPSTREAM_CURL secret'ını da güncellemeniz önerilir."
         ),
     }
 
 
-@router.post("/upstream/capture", summary="Capture a fresh session with the server browser")
+@router.post(
+    "/upstream/capture",
+    summary="Capture a fresh session with the server browser",
+    dependencies=[Depends(require_admin)],
+)
 async def capture_upstream_session(
     request: Request,
     settings: Settings = Depends(get_settings_dep),
@@ -394,7 +445,13 @@ async def capture_upstream_session(
     applied_cookie = "upstream_cookie" in changed
     stream_path_found = bool(result.stream_path)
     captured = applied_cookie or stream_path_found
-    if not stream_path_found and result.logged_in:
+    if result.bot_challenge_detected:
+        next_step = (
+            "Çerez/sürüm damgası alındı ancak bot doğrulaması nedeniyle sohbet "
+            "arayüzü doğrulanamadı; UPSTREAM_STREAM_PATH değişmedi. Önce normal "
+            "bir mesajla test edin. 401/403 sürerse taze çerezleri /cookie ile gönderin."
+        )
+    elif not stream_path_found and result.logged_in:
         next_step = (
             "Oturum yakalandı ancak sohbet akış isteği yakalanmadı; "
             "UPSTREAM_STREAM_PATH değişmedi. 404 sürerse güncel sohbet cURL'ünü "
@@ -422,6 +479,9 @@ async def capture_upstream_session(
         "stream_path_found": stream_path_found,
         "triggered_request": result.triggered_request,
         "injected_cookies": result.injected_cookies,
+        "cookie_injection_error": result.cookie_injection_error,
+        "navigation_status": result.navigation_status,
+        "bot_challenge_detected": result.bot_challenge_detected,
         "cookie_names": result.cookie_names,
         "session_cookie_found": result.session_cookie_found,
         "login_redirect": result.login_redirect,
@@ -518,6 +578,11 @@ async def auth_diagnostics(
         if slot is None or slot <= 1
         else ""
     )
+    # `/cookie` dry-run akışında kullanılan mevcut bütünlük denetimini canlı
+    # ayara da uygula. Böylece `/tani`, access token kurtarılabilirken tam
+    # oturum JSON'unun neden refresh üretmediğini (eksik parça/bozuk base64)
+    # tahmin etmek yerine gösterebilir.
+    cookie_inspection = inspect_cookie(settings.upstream_cookie)
     header_value = build_authorization(settings)
     from app.services.token_refresh import refresh_state
 
@@ -568,9 +633,45 @@ async def auth_diagnostics(
             "expired": (cookie_remaining is not None and cookie_remaining <= 0),
             "used_for_authorization": effective == cookie_token and bool(cookie_token),
         },
+        "recaptcha": {
+            "provider": settings.recaptcha_provider,
+            # Site key public'tir; sır değildir ve yanlış anahtar doğrudan
+            # `recaptcha_rejected` ürettiği için teşhiste görünmesi gerekir.
+            "site_key": settings.recaptcha_site_key or None,
+            "version": settings.recaptcha_version,
+            "action": settings.recaptcha_action,
+            "field": settings.upstream_recaptcha_field or None,
+            "static_token_configured": bool(
+                (settings.recaptcha_static_token or "").strip()
+            ),
+            # Üretim geçmişi: "token üretilemiyor" ile "token reddediliyor"
+            # arasındaki farkı operatörün görebilmesi için. Token'ın kendisi
+            # (sır) hiçbir zaman dönmez.
+            "production": {
+                **(getattr(getattr(request.app.state, "recaptcha", None), "stats", {}) or {}),
+                "cached": bool(
+                    getattr(
+                        getattr(request.app.state, "recaptcha", None), "_cache", None
+                    )
+                    and getattr(
+                        request.app.state.recaptcha._cache, "_value", None
+                    )
+                ),
+                "token_ttl_seconds": settings.recaptcha_token_ttl,
+            },
+            "origin": settings.base_url,
+            "hint": (
+                "Tarayıcı sağlayıcısı site key ile token üretir; anahtar hedefin "
+                "sitesine ait değilse hedef token'ı reddeder (recaptcha_rejected). "
+                "Doğru anahtar cURL'de görünüyorsa /curl ile yeniden yükleyin."
+                if settings.recaptcha_provider in {"browser", "external"}
+                else None
+            ),
+        },
         "configured_cookie_names": settings.upstream_token_cookie_names,
         "cookie_names_present": sorted(cookies),
         "cookie_count": len(cookies),
+        "cookie_inspection": cookie_inspection,
         "session_cookie_candidates": _session_cookie_candidates(cookies),
         "token": {
             "found": bool(effective),

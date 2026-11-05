@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import time
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
@@ -117,9 +118,19 @@ async def maybe_warn_expiring_token(
 
     if remaining <= 0:
         time_part = "süresi doldu"
+        deadline_part = ""
     else:
         minutes = max(1, int(round(remaining / 60)))
         time_part = f"bitmesine ≈{minutes} dk kaldı"
+        # "9 dk" ifadesi her kontrolde yeniden hesaplandığı için iki bildirim
+        # arasında farklı görünebiliyor ve saat kayması gibi okunuyordu. Kesin
+        # UTC bitiş saati, kalan süreden daha az yanıltıcı.
+        try:
+            deadline = datetime.fromtimestamp(time.time() + remaining, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):  # pragma: no cover - bozuk exp
+            deadline_part = ""
+        else:
+            deadline_part = f" (bitiş ≈ {deadline:%Y-%m-%d %H:%M} UTC)"
 
     why = reason or (
         "otomatik yenileme kapalı"
@@ -127,8 +138,8 @@ async def maybe_warn_expiring_token(
         else "çerezde refresh_token yok"
     )
     message = (
-        f"⚠️ ApiWrapper — erişim token'ının {time_part} ve otomatik yenilenemedi "
-        f"({why}).\n"
+        f"⚠️ ApiWrapper — erişim token'ının {time_part}{deadline_part} ve "
+        f"otomatik yenilenemedi ({why}).\n"
         "Yapılacak: Oturum 401'e düşmeden önce /cookie veya /yenile ile tazeleyin."
     )
     logger.warning(
@@ -214,9 +225,9 @@ async def run_token_refresher(
     logger.info("token_refresher_started", interval_seconds=interval)
     async with httpx.AsyncClient() as client:
         while True:
-            # `CancelledError` burada yutulmaz: yutulursa iptal edilen görev
-            # sonsuz döner ve uygulama kapanışı kilitlenir.
-            await asyncio.sleep(interval)
+            # İlk kontrolü hemen yap: restart sonrası süresi dolmak üzere olan
+            # token için kullanıcıyı gereksiz yere bir aralık bekletme. Token
+            # tazeyse `refresh_if_needed` ağ isteği atmadan döner.
             try:
                 result = await refresh_if_needed(
                     settings,
@@ -235,3 +246,6 @@ async def run_token_refresher(
                 raise
             except Exception as exc:  # pragma: no cover - savunmacı
                 logger.warning("token_refresher_error", error_type=type(exc).__name__)
+            # `CancelledError` sleep'te de yutulmaz; uygulama kapanışı
+            # bir sonraki aralığı beklemeden tamamlanır.
+            await asyncio.sleep(interval)

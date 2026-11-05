@@ -107,6 +107,11 @@ class FakeContext:
     async def cookies(self, _url: str) -> list[dict[str, str]]:
         return self._cookies
 
+    async def add_cookies(self, _cookies: list[dict[str, Any]]) -> None:
+        # Gerçek bağlamda yüklenen çerezler daha sonra sayfa tarafından
+        # değiştirilebilir; bu sahte, önceden verilen son jar görünümünü korur.
+        return None
+
 
 def _jwt(*, expired: bool = False) -> str:
     """Testler için biçimsel olarak geçerli bir JWT (imza önemsiz)."""
@@ -164,6 +169,57 @@ def test_try_send_message_prefers_visible_submit_button():
     assert _run(_try_send_message(page, "merhaba", 0)) is True
     assert page.clicked == ['textarea:not([disabled])', 'button[type="submit"]']
     assert page.keyboard.pressed == []
+
+
+def test_try_send_message_searches_rich_text_editor_inside_frame():
+    from app.upstream.session_capture import _try_send_message
+
+    class Element:
+        def __init__(self, frame: Frame, selector: str) -> None:
+            self.frame = frame
+            self.selector = selector
+            self.first = self
+
+        async def count(self) -> int:
+            return int(self.selector == ".ProseMirror")
+
+        async def is_visible(self) -> bool:
+            return True
+
+        async def is_enabled(self) -> bool:
+            return True
+
+        async def click(self, **_kwargs: Any) -> None:
+            self.frame.clicked = self.selector
+
+        async def fill(self, value: str, **_kwargs: Any) -> None:
+            self.frame.filled = value
+
+    class Frame:
+        def __init__(self) -> None:
+            self.clicked = ""
+            self.filled = ""
+
+        def locator(self, selector: str) -> Element:
+            return Element(self, selector)
+
+    class Page:
+        def __init__(self, frame: Frame) -> None:
+            self.frames = [frame]
+            self.keyboard = FakeKeyboard()
+
+        def locator(self, _selector: str) -> FakeLocator:
+            return FakeLocator(False)
+
+        async def wait_for_timeout(self, _ms: int) -> None:
+            return None
+
+    frame = Frame()
+    page = Page(frame)
+    assert _run(_try_send_message(page, "merhaba", 0)) is True
+    assert frame.clicked == ".ProseMirror"
+    assert frame.filled == "merhaba"
+    assert page.keyboard.pressed == ["Enter"]
 
 
 def test_capture_collects_cookies_stamp_and_referer():
@@ -269,6 +325,74 @@ def test_capture_reports_missing_session_instead_of_failing():
     assert result.deployment_id is None
 
 
+def test_capture_records_http_fallback_and_bot_challenge_without_html_leak():
+    class Navigation:
+        def __init__(self, status: int) -> None:
+            self.status = status
+
+    class ChallengePage(FakePage):
+        def __init__(self) -> None:
+            super().__init__(
+                url="https://upstream.test/",
+                html="<html>Verify you are human — private-page-marker</html>",
+                has_textarea=False,
+            )
+            self.statuses = iter((503, 200))
+
+        async def goto(self, url: str, **_kwargs: Any) -> Navigation:
+            self.visited_urls.append(url)
+            return Navigation(next(self.statuses))
+
+    page = ChallengePage()
+    result = _run(
+        capture_session(FakeContext(page, []), make_settings(), wait_ms=0)
+    )
+
+    assert len(page.visited_urls) == 2
+    assert result.navigation_status == 200
+    assert result.bot_challenge_detected is True
+    assert "bot koruması" in result.reason
+    assert "private-page-marker" not in " ".join(result.notes)
+
+
+def test_bot_challenge_detection_ignores_normal_cloudflare_script_names():
+    from app.upstream.session_capture import _is_bot_challenge
+
+    normal_page = """
+    <html><head><script src="/cdn-cgi/challenge-platform/h/b/orchestrate.js">
+    </script><script>const cf-chl = 'verify you are human';</script></head>
+    <body><textarea placeholder="Mesaj"></textarea></body></html>
+    """
+    assert _is_bot_challenge(normal_page) is False
+    assert _is_bot_challenge('<form id="challenge-form"></form>') is True
+    assert _is_bot_challenge("<html>Verify you are human</html>") is True
+
+
+def test_capture_retries_editor_once_before_reporting_challenge(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    import app.upstream.session_capture as capture_module
+
+    calls = 0
+
+    async def delayed_editor(_page: Any, _prompt: str, _wait_ms: int) -> bool:
+        nonlocal calls
+        calls += 1
+        return calls == 2
+
+    monkeypatch.setattr(capture_module, "_try_send_message", delayed_editor)
+    page = FakePage(url="https://upstream.test/text/direct", has_textarea=False)
+    context = FakeContext(
+        page, [{"name": "arena-auth-prod-v1.0", "value": "fresh-session"}]
+    )
+
+    result = _run(capture_session(context, make_settings(), wait_ms=1))
+
+    assert calls == 2
+    assert result.triggered_request is True
+    assert "ikinci bekleme denemesi" in " ".join(result.notes)
+
+
 def test_capture_falls_back_to_html_stamp():
     page = FakePage(html=f'<script>window.__dpl="{STAMP}"</script>')
     context = FakeContext(page, [{"name": "sb-token", "value": "x"}])
@@ -277,6 +401,22 @@ def test_capture_falls_back_to_html_stamp():
 
     assert result.deployment_id == STAMP
     assert "damga HTML'den okundu" in result.notes
+
+
+def test_capture_falls_back_to_deployment_stamp_in_vcrr_cookie():
+    page = FakePage(url="https://upstream.test/text/direct")
+    context = FakeContext(
+        page,
+        [
+            {"name": "arena-auth-prod-v1.0", "value": "fresh-session"},
+            {"name": "_vcrr", "value": f"vercel-cache;deployment={STAMP};other=1"},
+        ],
+    )
+
+    result = _run(capture_session(context, make_settings(), wait_ms=0))
+
+    assert result.deployment_id == STAMP
+    assert "damga tarayıcı çerezinden okundu" in result.notes
 
 
 def test_cookie_header_from_playwright_cookie_list():
@@ -335,7 +475,8 @@ def test_apply_capture_keeps_existing_stamp_when_capture_has_none():
         upstream_extra_headers=f"x-deployment-id={STAMP}",
     )
     changed = apply_capture_to_settings(
-        settings, CaptureResult(cookies=FRESH_COOKIE, logged_in=True)
+        settings,
+        CaptureResult(cookies=FRESH_COOKIE, logged_in=True, injected_cookies=2),
     )
 
     assert settings.upstream_cookie == FRESH_COOKIE
@@ -417,6 +558,9 @@ def test_admin_capture_endpoint_applies_session_without_secrets_in_response():
     assert "arena-auth-prod-v1.0" in body["cookie_names"]
     assert body["session_cookie_found"] is True
     assert body["login_redirect"] is False
+    assert body["cookie_injection_error"] == ""
+    assert "navigation_status" in body
+    assert body["bot_challenge_detected"] is False
     assert "upstream_cookie" in body["fields"]
     assert "fresh-session" not in response.text, "çerez yanıta sızmamalı"
     assert settings.upstream_cookie.startswith("arena-auth-prod-v1.0=fresh-session")
@@ -495,6 +639,10 @@ async def test_telegram_yenile_reports_capture_result():
                 "deployment_found": True,
                 "cx_found": False,
                 "stream_path_found": True,
+                "injected_cookies": 2,
+                "cookie_injection_error": "",
+                "navigation_status": 200,
+                "bot_challenge_detected": False,
                 "fields": ["upstream_cookie", "upstream_stream_path"],
                 "next": "Bir mesaj atarak test edin.",
             },
@@ -525,6 +673,69 @@ async def test_telegram_yenile_reports_capture_result():
     assert "Oturum yakalandı" in sent[-1]["text"]
     assert "upstream_cookie" in sent[-1]["text"]
     assert "Akış yolu: yakalandı" in sent[-1]["text"]
+    assert "Tarayıcıya yüklenen çerez: 2" in sent[-1]["text"]
+    assert "Sayfa HTTP: 200" in sent[-1]["text"]
+    assert "cx: yok (isteğe bağlı)" in sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_telegram_yenile_shows_why_zero_cookie_capture_failed():
+    from app.telegram.bot import TelegramBot, TelegramSettings
+
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return httpx.Response(200, json={"ok": True, "result": True})
+
+    def wrapper_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "status": "not_captured",
+                "logged_in": False,
+                "cookie_found": True,
+                "deployment_found": False,
+                "cx_found": False,
+                "stream_path_found": False,
+                "triggered_request": False,
+                "injected_cookies": 0,
+                "cookie_injection_error": "domain:RuntimeError;url:ValueError",
+                "navigation_status": 403,
+                "bot_challenge_detected": True,
+                "cookie_names": ["arena-auth-prod-v1.0"],
+                "session_cookie_found": True,
+                "fields": [],
+                "next": "Taze çerezleri /cookie ile gönderin.",
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(
+            TelegramSettings(
+                _env_file=None,
+                telegram_bot_token="test-bot-token",
+                wrapper_api_key="test-wrapper-key",
+                wrapper_base_url="https://wrapper.test",
+                telegram_allowed_chat_ids="42",
+            ),
+            telegram,
+            wrapper,
+        )
+        await bot.capture_upstream_session(42)
+
+    message = sent[-1]["text"]
+    assert "Oturum yakalanamadı" in message
+    assert "Tarayıcıya yüklenen çerez: 0" in message
+    assert "domain:RuntimeError;url:ValueError" in message
+    assert "Sayfa HTTP: 403" in message
+    assert "Bot doğrulaması: algılandı" in message
 
 
 # ------------------------------------- yakalama hatası çalışan oturumu bozmamalı
@@ -563,6 +774,99 @@ def test_capture_injects_the_existing_cookie_before_navigation():
     assert result.injected_cookies == 2
     assert {c["name"] for c in added[0]} == {"arena-auth-prod-v1.0", "other"}
     assert all(c["domain"] == "upstream.test" for c in added[0])
+
+
+def test_zero_injection_and_stale_auth_name_are_not_a_captured_session():
+    """Canlı yanlış-pozitif: 0 yükleme + istek yok, ama auth adı jar'da kaldı."""
+    page = FakePage(url="https://upstream.test/", has_textarea=False)
+    context = FakeContext(
+        page, [{"name": "arena-auth-prod-v1.0", "value": "stale-session"}]
+    )
+    settings = make_settings(upstream_cookie="")
+
+    result = _run(capture_session(context, settings, wait_ms=0))
+
+    assert result.injected_cookies == 0
+    assert result.stream_path is None
+    assert result.triggered_request is False
+    assert result.logged_in is False
+    assert result.cookie_application_safe is False
+    assert result.cookie_injection_error == "upstream_cookie_empty"
+
+    settings.upstream_cookie = OLD_COOKIE
+    changed = apply_capture_to_settings(settings, result)
+    assert settings.upstream_cookie == OLD_COOKIE
+    assert "upstream_cookie" not in changed
+
+
+def test_cookie_injection_clears_shared_jar_and_retries_with_url():
+    page = FakePage(url="https://upstream.test/text/direct")
+
+    class FallbackContext(FakeContext):
+        def __init__(self) -> None:
+            super().__init__(
+                page, [{"name": "arena-auth-prod-v1.0", "value": "fresh-session"}]
+            )
+            self.events: list[str] = []
+
+        async def clear_cookies(self) -> None:
+            self.events.append("clear")
+
+        async def add_cookies(self, cookies: list[dict[str, Any]]) -> None:
+            self.events.append("domain" if "domain" in cookies[0] else "url")
+            if "domain" in cookies[0]:
+                raise RuntimeError("domain rejected; secret-must-not-leak")
+
+    context = FallbackContext()
+    result = _run(
+        capture_session(
+            context,
+            make_settings(upstream_cookie="arena-auth-prod-v1.0=fresh-session"),
+            wait_ms=0,
+        )
+    )
+
+    assert context.events == ["clear", "domain", "url"]
+    assert result.injected_cookies == 1
+    assert result.cookie_injection_error == ""
+    assert result.logged_in is True
+    assert "secret-must-not-leak" not in " ".join(result.notes)
+
+
+def test_failed_injection_never_overwrites_cookie_or_leaks_browser_error():
+    page = FakePage(url="https://upstream.test/", has_textarea=False)
+
+    class RejectingContext(FakeContext):
+        def __init__(self) -> None:
+            super().__init__(
+                page, [{"name": "arena-auth-prod-v1.0", "value": "stale-session"}]
+            )
+            self.cleared = False
+
+        async def clear_cookies(self) -> None:
+            self.cleared = True
+
+        async def add_cookies(self, cookies: list[dict[str, Any]]) -> None:
+            secret = "browser-error-secret-must-not-leak"
+            if "domain" in cookies[0]:
+                raise RuntimeError(secret)
+            raise ValueError(secret)
+
+    context = RejectingContext()
+    settings = make_settings(upstream_cookie=OLD_COOKIE)
+    result = _run(capture_session(context, settings, wait_ms=0))
+
+    assert context.cleared is True
+    assert result.injected_cookies == 0
+    assert result.cookie_injection_error == "domain:RuntimeError;url:ValueError"
+    assert result.logged_in is False
+    assert result.cookie_application_safe is False
+    assert "browser-error-secret" not in result.cookie_injection_error
+    assert "browser-error-secret" not in " ".join(result.notes)
+
+    changed = apply_capture_to_settings(settings, result)
+    assert settings.upstream_cookie == OLD_COOKIE
+    assert "upstream_cookie" not in changed
 
 
 def test_capture_detects_a_working_session_from_the_access_token():
@@ -827,7 +1131,7 @@ def _chunked_cookie(chunks: int = 2, *, corrupt: bool = False) -> str:
     """Gerçek biçime benzeyen parçalı `base64-` oturum çerezi."""
     import base64 as _b64
 
-    payload = {"access_token": _jwt(), "refresh_token": "l6lb6efhioff"}
+    payload = {"access_token": _jwt(), "refresh_token": "test-refresh-token"}
     value = "base64-" + _b64.b64encode(json.dumps(payload).encode()).decode()
     if corrupt:  # kopyalama sırasında karakter kaybı
         value = value[:120] + value[121:]
@@ -847,6 +1151,21 @@ def test_inspect_reports_chunked_cookies_and_refresh_token():
     assert report["problems"] == []
 
 
+def test_apply_cookie_reports_refresh_token_only_change():
+    from app.upstream.auth import extract_access_token
+    from app.upstream.session_capture import apply_cookie_to_settings
+
+    cookie = _chunked_cookie()
+    settings = make_settings(
+        upstream_cookie=cookie,
+        upstream_access_token=extract_access_token(cookie) or "",
+        upstream_refresh_token="",
+    )
+    changed = apply_cookie_to_settings(settings, cookie)
+    assert changed == ["upstream_refresh_token"]
+    assert settings.upstream_refresh_token == "test-refresh-token"
+
+
 def test_inspect_reports_missing_chunk():
     cookie = _chunked_cookie().split("; ")[0]  # yalnız .0 parçası
     report = inspect_cookie(cookie)
@@ -861,12 +1180,22 @@ def test_inspect_reports_corrupted_base64():
     assert "base64" in problems or "okunamadı" in problems
 
 
+def test_inspect_rejects_truncated_json_when_only_access_token_is_salvaged():
+    # Access token baştaki kısımdan kurtarılabilir; refresh ayıklama ise tam
+    # oturum JSON'unu ister. Bütünlük denetimi bu farkı gizlememeli.
+    report = inspect_cookie(_chunked_cookie()[:-4])
+
+    assert report["access_token_found"] is True
+    assert report["refresh_token_found"] is False
+    assert any("base64" in problem for problem in report["problems"])
+
+
 def test_inspect_never_echoes_cookie_values():
     cookie = _chunked_cookie()
     report = inspect_cookie(cookie)
     serialized = json.dumps(report)
     assert "refresh_token" not in serialized.replace("refresh_token_found", "")
-    assert "l6lb6efhioff" not in serialized
+    assert "test-refresh-token" not in serialized
     assert _jwt() not in serialized
 
 

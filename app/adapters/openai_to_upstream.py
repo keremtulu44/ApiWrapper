@@ -134,6 +134,9 @@ def build_upstream_request(
         modality="chat",
         recaptchaV3Token=recaptcha_token,
         mode=settings.upstream_mode.strip() or None,
+        # `cx` yalnızca açıkça istendiğinde gönderilir; varsayılan davranış
+        # (alan yok) canlıda çalıştığı gözlendi, gereksiz risk alınmaz.
+        cx=(settings.upstream_cx.strip() or None) if settings.upstream_cx_send else None,
     )
 
     return BuiltRequest(
