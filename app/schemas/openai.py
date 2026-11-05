@@ -93,12 +93,38 @@ class ChatMessage(BaseModel):
                 content_type = href[5:].split(";", 1)[0] or content_type
             out.append(
                 {
-                    "name": f"attachment-{len(out) + 1}",
+                    "name": _attachment_name(href, len(out) + 1),
                     "contentType": content_type,
                     "url": href,
                 }
             )
         return out
+
+
+def _attachment_name(href: str, fallback_index: int) -> str:
+    """URL veya data URI'den anlamlı bir dosya adı türetir; türetilemezse indis kullanır."""
+    from urllib.parse import unquote, urlsplit
+
+    # data URI: content-type'dan uzantı üret.
+    if href.startswith("data:"):
+        media_type = href[5:].split(";", 1)[0].strip().lower()
+        ext = media_type.rsplit("/", 1)[-1] or "png"
+        # "jpeg" -> "jpg" kısaltması yaygın.
+        if ext == "jpeg":
+            ext = "jpg"
+        return f"image-{fallback_index}.{ext}"
+
+    # Normal URL: yolun son segmentini al, soru işaretini/fragmanı at.
+    try:
+        path = urlsplit(href).path or ""
+        segment = unquote(path.rsplit("/", 1)[-1]).strip()
+        # Basit geçerlilik kontrolü: uzantı ya da makul uzunlukta bir isim.
+        if segment and len(segment) <= 120 and "/" not in segment and "\\" not in segment:
+            # Bazı imza/CDN URL'leri segmenti boş veya yalnız uzantısız bırakır.
+            return segment
+    except Exception:  # noqa: BLE001 — ad çözümlemesi güvenli biçimde düşmeli.
+        pass
+    return f"attachment-{fallback_index}"
 
 
 class StreamOptions(BaseModel):
