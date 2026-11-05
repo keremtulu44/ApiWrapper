@@ -569,11 +569,12 @@ def test_curl_body_cx_field_is_captured_and_sent():
 
     env, _, _ = build_settings(parse_curl(curl))
     assert env.get("UPSTREAM_CX") == "AibRul-WjekSN8tE0xEE"
+    # cURL'de cx gövdesi mevcutsa otomatik olarak gönderim de açılır: kullanıcı
+    # tarayıcıdan kopyaladığı istekte bu alan varsa hedef doğruluyor demektir.
+    assert env.get("UPSTREAM_CX_SEND") == "true"
 
     from tests.conftest import make_settings
 
-    # Varsayılan: yakalanır ama gönderilmez (canlıda bu alan olmadan çalıştı).
-    settings = make_settings(upstream_cx=env["UPSTREAM_CX"])
     request = ChatCompletionRequest(
         model="test-model",
         messages=[{"role": "user", "content": "merhaba"}],
@@ -589,10 +590,14 @@ def test_curl_body_cx_field_is_captured_and_sent():
         )
         return built.payload.to_wire(cfg.upstream_recaptcha_field)
 
-    assert "cx" not in wire_for(settings)
+    # cx ayarlanmamışsa alan gönderilmez (eski varsayılan davranış korunur).
+    plain = make_settings()
+    assert "cx" not in wire_for(plain)
 
-    # Açıkça istenirse gönderilir.
-    enabled = make_settings(upstream_cx=env["UPSTREAM_CX"], upstream_cx_send=True)
+    # cURL'den uygulanan ayar (UPSTREAM_CX_SEND=true) cx'i gövdeye koyar.
+    enabled = make_settings(
+        upstream_cx=env["UPSTREAM_CX"], upstream_cx_send=True
+    )
     assert wire_for(enabled)["cx"] == "AibRul-WjekSN8tE0xEE"
 
 

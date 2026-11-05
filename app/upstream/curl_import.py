@@ -438,11 +438,13 @@ def build_settings(
         env["UPSTREAM_MODE"] = mode.strip()
 
     # --- gövde `cx` (istemci bağlamı)
-    # cURL gövdesinde `cx` var ama kodda hiç okunmuyordu; istek onsuz
-    # gönderildiği için hedef istemciyi eksik görebiliyordu.
+    # cURL gövdesinde `cx` varsa alanı da otomatik olarak aç: kullanıcı
+    # tarayıcısından kopyaladığı istekte bu alan bulunduysa hedef onu
+    # doğruluyor demektir; sessizce çıkarmak istemci bağlamını eksiltir.
     cx = body.get("cx")
     if isinstance(cx, str) and cx.strip():
         env["UPSTREAM_CX"] = cx.strip()
+        env["UPSTREAM_CX_SEND"] = "true"
 
     # --- reCAPTCHA site key (tarayıcı sağlayıcısı için kritik)
     # Site key public'tir; cURL'ün başlıklarında/gövdesinde görünüyorsa doğru
