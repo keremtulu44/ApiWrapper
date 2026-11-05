@@ -467,14 +467,27 @@ class TelegramBot:
                 if isinstance(site_key, str) and len(site_key) > 12
                 else ("yok" if not site_key else str(site_key))
             )
+            version = captcha.get("version")
             lines.append(
                 f"CAPTCHA: {provider} · site key: {site_part}"
+                + (f" · {version}" if version else "")
                 + (
                     f" · aksiyon: {captcha.get('action')}"
                     if captcha.get("action")
                     else ""
                 )
             )
+            production = captcha.get("production") or {}
+            if isinstance(production, dict) and production:
+                generated = int(production.get("generated") or 0)
+                rejected = int(production.get("rejected") or 0)
+                line = f"CAPTCHA üretimi: {generated} token · {rejected} red"
+                last_error = production.get("last_error")
+                if last_error:
+                    line += f" · son hata: {str(last_error)[:60]}"
+                elif generated == 0:
+                    line += " · henüz token üretilmedi"
+                lines.append(line)
             hint = captcha.get("hint")
             if hint:
                 lines.append("⚠ " + str(hint))
