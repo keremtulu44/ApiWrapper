@@ -81,9 +81,12 @@ class Settings(BaseSettings):
     upstream_captured_model_id: str = ""
     #: 0 = eski, yalnız credential senkronu; 1 = tarayıcı parmak izi dahil tam snapshot.
     upstream_snapshot_version: int = 0
-    #: cURL gövdesindeki `cx` alanı (oturum/istemci bağlamı işareti). Canlı
-    #: isteklerde gövdede bulunuyor; gönderilmezse hedef isteği reddedebilir.
+    #: cURL gövdesindeki `cx` alanı (oturum/istemci bağlamı işareti).
+    #: Varsayılan olarak **gönderilmez**: canlı gözlemlerde wrapper bu alan
+    #: olmadan başarılı istek atıyordu (docs/RENDER.md §7, docs/TROUBLESHOOTING.md).
+    #: Gönderimi `UPSTREAM_CX_SEND=true` ile açılır.
     upstream_cx: str = ""
+    upstream_cx_send: bool = False
     #: Gövdeye yazılacak `mode` alanı (örn. "direct"). Boşsa alan gönderilmez.
     upstream_mode: str = ""
     #: Gövdedeki reCAPTCHA alanının adı. Hedefe göre "recaptchaV3Token" veya

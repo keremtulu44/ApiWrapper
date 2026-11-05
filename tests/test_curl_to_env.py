@@ -572,20 +572,28 @@ def test_curl_body_cx_field_is_captured_and_sent():
 
     from tests.conftest import make_settings
 
+    # Varsayılan: yakalanır ama gönderilmez (canlıda bu alan olmadan çalıştı).
     settings = make_settings(upstream_cx=env["UPSTREAM_CX"])
     request = ChatCompletionRequest(
         model="test-model",
         messages=[{"role": "user", "content": "merhaba"}],
     )
-    built = build_upstream_request(
-        request,
-        settings=settings,
-        upstream_model_id="model-1",
-        chat_id="chat-1",
-        recaptcha_token="token",
-    )
-    wire = built.payload.to_wire(settings.upstream_recaptcha_field)
-    assert wire["cx"] == "AibRul-WjekSN8tE0xEE"
+
+    def wire_for(cfg):
+        built = build_upstream_request(
+            request,
+            settings=cfg,
+            upstream_model_id="model-1",
+            chat_id="chat-1",
+            recaptcha_token="token",
+        )
+        return built.payload.to_wire(cfg.upstream_recaptcha_field)
+
+    assert "cx" not in wire_for(settings)
+
+    # Açıkça istenirse gönderilir.
+    enabled = make_settings(upstream_cx=env["UPSTREAM_CX"], upstream_cx_send=True)
+    assert wire_for(enabled)["cx"] == "AibRul-WjekSN8tE0xEE"
 
 
 def test_empty_cx_is_not_sent():
