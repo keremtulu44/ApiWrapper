@@ -124,7 +124,9 @@ def test_complete_curl_snapshot_survives_local_and_render_restart(tmp_path):
     assert local.upstream_accept_language == "tr-TR,tr;q=0.9"
     assert local.upstream_mode == "side-by-side"
     assert local.upstream_captured_model_id == "new-upstream-model"
-    assert local.upstream_auth_from_cookie is False
+    # Çerezdeki oturum JSON'u gerçek bir JWT taşıyor; içe aktarma artık bu
+    # durumda Authorization'ı çerezden üretir (aksi hâlde başlık hiç gitmezdi).
+    assert local.upstream_auth_from_cookie is True
 
     # Free Render restart: eski UPSTREAM_CURL durur, ayrı env alanlarındaki yeni
     # tam snapshot daha yeni JWT exp sayesinde kazanır.
@@ -136,7 +138,7 @@ def test_complete_curl_snapshot_survives_local_and_render_restart(tmp_path):
     assert restarted.upstream_mode == "side-by-side"
     assert restarted.upstream_captured_model_id == "new-upstream-model"
     assert model_id == "new-upstream-model"
-    assert restarted.upstream_auth_from_cookie is False
+    assert restarted.upstream_auth_from_cookie is True
 
 
 def page_curl(cookie: str = SECRET_COOKIE) -> str:

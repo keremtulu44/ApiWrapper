@@ -144,8 +144,15 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
 def merge_chunked_cookies(cookies: dict[str, str]) -> dict[str, str]:
     """`ad.0`, `ad.1` biçimindeki parçalı çerezleri sayısal sıraya göre birleştirir.
 
-    Orijinal parçalar da korunur; yalnızca birleştirilmiş `ad` girdisi eklenir
-    (zaten mevcutsa üzerine yazılmaz).
+    Orijinal parçalar da korunur; birleştirilmiş `ad` girdisi eklenir.
+
+    **Aynı ad hem tek parça hem parçalı geldiğinde** (ör. eski bir denemeden
+    kalmış kısa `arena-auth-prod-v1` + yeni `arena-auth-prod-v1.0/.1`) kök değer
+    her zaman oturumun tamamı **değildir**: eski kök yalnız bir access token
+    taşırken yeni parçalar refresh token da taşıyordu ve "kök varsa parçaları
+    yok say" kuralı yüzünden refresh token kaybolup otomatik yenileme sessizce
+    devre dışı kalıyordu. Bu yüzden kök korunur ama parçalardan çözülebilen
+    **daha zengin** (refresh token içeren) JSON varsa o tercih edilir.
     """
     chunks: dict[str, dict[int, str]] = {}
     for name, value in cookies.items():
@@ -156,10 +163,27 @@ def merge_chunked_cookies(cookies: dict[str, str]) -> dict[str, str]:
 
     merged = dict(cookies)
     for base, parts in chunks.items():
-        if base in merged:
-            continue
-        merged[base] = "".join(parts[idx] for idx in sorted(parts))
+        joined = "".join(parts[idx] for idx in sorted(parts))
+        existing = merged.get(base)
+        if existing is None or _session_cookie_is_richer(joined, existing):
+            merged[base] = joined
     return merged
+
+
+def _session_cookie_is_richer(candidate: str, current: str) -> bool:
+    """`candidate`, `current`'ta olmayan bir refresh token taşıyor mu?
+
+    Yalnız **refresh token** farkına bakılır: bu, oturumun tamamını taşıyan
+    değeri seçmek için güvenilir bir işarettir ve access token'ı olan kısa bir
+    kök değeri rastgele ezmez.
+    """
+    if not candidate:
+        return False
+    if not current:
+        return True
+    return bool(_refresh_from_value(candidate, allow_raw=False)) and not _refresh_from_value(
+        current, allow_raw=False
+    )
 
 
 def looks_like_jwt(value: str) -> bool:

@@ -503,3 +503,56 @@ def test_undecodable_session_blob_is_not_sent_as_token():
     Aksi hâlde upstream'e kilobaytlarca anlamsız bir Bearer değeri gider.
     """
     assert extract_access_token("-auth-prod-v1.0=base64-" + "Zm9vYmFy" * 600) is None
+
+
+def _chunked_session_cookie(*, chunks: int = 2) -> str:
+    import base64
+    import json
+
+    def jwt() -> str:
+        head = base64.urlsafe_b64encode(b'{"alg":"ES256"}').decode().rstrip("=")
+        body = (
+            base64.urlsafe_b64encode(json.dumps({"exp": 9999999999}).encode())
+            .decode()
+            .rstrip("=")
+        )
+        return f"{head}.{body}.sig"
+
+    payload = {"access_token": jwt(), "refresh_token": "rt-fresh", "expires_in": 3600}
+    value = "base64-" + base64.b64encode(json.dumps(payload).encode()).decode()
+    size = len(value) // chunks + 1
+    return "; ".join(
+        f"arena-auth-prod-v1.{i}={value[i * size : (i + 1) * size]}" for i in range(chunks)
+    )
+
+
+def test_merge_prefers_chunked_value_when_base_lacks_refresh_token():
+    """Eski kök çerez, yeni parçalı oturumun refresh token'ını gizlememeli.
+
+    Canlı belirti: `/tani` "Çerezde token: var" + "Refresh token: yok" diyordu;
+    otomatik yenileme bu yüzden hiç devreye girmiyordu.
+    """
+    stale_base = "base64-" + __import__("base64").b64encode(
+        b'{"access_token":"eyJhbGciOiJFUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig"}'
+    ).decode()
+    combined = f"arena-auth-prod-v1={stale_base}; {_chunked_session_cookie()}"
+
+    assert extract_refresh_token(combined) == "rt-fresh"
+    assert extract_access_token(combined) is not None
+
+
+def test_merge_keeps_base_when_it_already_has_refresh_token():
+    """Kök zaten refresh token taşıyorsa parçalı değer onu ezmez."""
+    import base64
+    import json
+
+    full = "base64-" + base64.b64encode(
+        json.dumps(
+            {"access_token": "eyJhbGciOiJFUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig",
+             "refresh_token": "rt-from-base"}
+        ).encode()
+    ).decode()
+    combined = f"arena-auth-prod-v1={full}; {_chunked_session_cookie()}"
+
+    # Kök değer refresh token taşıdığı için parçalar onun yerine geçmez.
+    assert extract_refresh_token(combined) == "rt-from-base"

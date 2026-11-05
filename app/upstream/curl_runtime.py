@@ -32,6 +32,7 @@ _CURL_FIELDS: dict[str, str] = {
     "UPSTREAM_AUTH_SCHEME": "upstream_auth_scheme",
     "RECAPTCHA_PROVIDER": "recaptcha_provider",
     "RECAPTCHA_STATIC_TOKEN": "recaptcha_static_token",
+    "RECAPTCHA_SITE_KEY": "recaptcha_site_key",
 }
 
 
@@ -231,15 +232,20 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
     # uygulaması da aynı şekilde bu alanı boşaltır.
     updates["upstream_refresh_token"] = extract_refresh_token(winning_cookie) or ""
     # İsteğe bağlı alanlar cURL'de yoksa önceki secret/env'den özel değer
-    # taşıma; sınıfın güvenli varsayılanına dön. Özellikle eski statik CAPTCHA
-    # token'ının yeni oturumda kullanılmasını önler.
+    # taşıma; sınıfın güvenli varsayılanına dön.
+    #
+    # `RECAPTCHA_STATIC_TOKEN` bilinçli olarak **bu listede değil**: cURL'ün
+    # gövdesinde captcha alanı bulunmaması, operatörün elle girdiği statik
+    # token'ı silmek için gerekçe değildir. Buradaki sıfırlama yüzünden yeni
+    # cURL uygulandığında token boşalıyor ve statik kipte her istek
+    # `recaptcha_rejected` ile düşüyordu. Alan yalnızca cURL'de yeni bir
+    # captcha değeri varsa değişir (aşağıdaki CAPTCHA bloğu).
     for key in (
         "UPSTREAM_MODE",
         "UPSTREAM_RECAPTCHA_FIELD",
         "UPSTREAM_ACCEPT_LANGUAGE",
         "UPSTREAM_USER_AGENT",
         "UPSTREAM_REFERER_PATH",
-        "RECAPTCHA_STATIC_TOKEN",
     ):
         field = _CURL_FIELDS[key]
         if key not in env and field not in updates:

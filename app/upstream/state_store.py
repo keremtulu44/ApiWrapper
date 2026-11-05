@@ -79,6 +79,9 @@ PERSISTED_FIELDS: tuple[str, ...] = (
     "upstream_mode",
     "upstream_recaptcha_field",
     "recaptcha_static_token",
+    # Public değer (secret değil): yanlış site key ile üretilen token hedefte
+    # `recaptcha_rejected` olur, bu yüzden cURL'den öğrenilen değer korunur.
+    "recaptcha_site_key",
 )
 
 # JSON/local state içinde bool türü korunarak saklanan alanlar.
@@ -383,6 +386,7 @@ async def _sync_render_env_locked(
         "UPSTREAM_CAPTURED_MODEL_ID": settings.upstream_captured_model_id or "",
         "UPSTREAM_SNAPSHOT_VERSION": "1",
         "RECAPTCHA_STATIC_TOKEN": settings.recaptcha_static_token or "",
+        "RECAPTCHA_SITE_KEY": settings.recaptcha_site_key or "",
     }
     updates.update(snapshot_fields)
     if settings.upstream_refresh_api_key:

@@ -144,7 +144,11 @@ def test_missing_optional_curl_fields_do_not_reuse_old_custom_values():
     assert updated.upstream_mode == ""
     assert updated.upstream_referer_path == "/c/{chat_id}"
     assert updated.upstream_user_agent != "OldAgent/1.0"
-    assert updated.recaptcha_static_token == ""
+    # `RECAPTCHA_STATIC_TOKEN` bilinçli istisnadır: gövdede captcha alanı yoksa
+    # operatörün elle girdiği statik token korunur. Silinmesi, statik kipte her
+    # isteği `recaptcha_rejected` ile düşürüyordu (canlı arıza). Token yine de
+    # ~2 dk ömürlüdür; kalıcı çözüm browser/external sağlayıcıdır.
+    assert updated.recaptcha_static_token == "old-captcha"
 
 
 def test_app_lifespan_uses_curl_model_id_for_default_max_model():
@@ -176,3 +180,75 @@ def test_runtime_logs_do_not_contain_raw_curl_secrets(capfd):
     assert "test-cookie-secret" not in output
     assert "short-lived-captcha-token" not in output
     assert "sb-auth-token=test" not in output
+
+
+def test_cookie_only_curl_enables_cookie_token_extraction():
+    """Çerez-only cURL'de oturum JWT'si varsa Authorization çerezden üretilmeli.
+
+    Canlı belirti: `/tani` "Çerezden token okuma: kapalı" diyordu; çerezde taze
+    oturum olmasına rağmen istek Authorization başlığı olmadan gidiyordu.
+    """
+    import base64
+    import json
+
+    head = base64.urlsafe_b64encode(b'{"alg":"ES256"}').decode().rstrip("=")
+    body = base64.urlsafe_b64encode(json.dumps({"exp": 9999999999}).encode()).decode()
+    session = {
+        "access_token": f"{head}.{body.rstrip('=')}.sig",
+        "refresh_token": "rt-cookie-only",
+    }
+    value = "base64-" + base64.b64encode(json.dumps(session).encode()).decode()
+    settings = make_settings(
+        upstream_curl=_curl(cookie=f"arena-auth-prod-v1={value}"),
+        upstream_auth_from_cookie=False,
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.upstream_auth_from_cookie is True
+    assert updated.upstream_refresh_token == "rt-cookie-only"
+
+
+def test_cookie_only_curl_leaves_opaque_cookie_untouched():
+    """`session=opaque` gibi JWT olmayan çerezde bayrak açılmamalı."""
+    settings = make_settings(
+        upstream_curl=_curl(cookie="session=opaque-value"),
+        upstream_auth_from_cookie=False,
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.upstream_auth_from_cookie is False
+    assert updated.upstream_access_token == ""
+
+
+def test_curl_without_captcha_field_keeps_manually_configured_static_token():
+    """Yeni cURL, elle girilen statik CAPTCHA token'ını silmemeli.
+
+    Canlı belirti: yeni cURL yapıştırıldıktan sonra her istek
+    `recaptcha_rejected` (HTTP 503) dönüyordu; sebep token'ın içe aktarma
+    sırasında boşaltılmasıydı.
+    """
+    settings = make_settings(
+        upstream_curl=_curl(include_captcha=False),
+        recaptcha_provider="static",
+        recaptcha_static_token="manual-static-token",
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.recaptcha_provider == "static"
+    assert updated.recaptcha_static_token == "manual-static-token"
+
+
+def test_curl_with_captcha_field_updates_static_token():
+    """cURL gerçekten captcha değeri taşıyorsa token ondan yenilenir."""
+    settings = make_settings(
+        upstream_curl=_curl(include_captcha=True),
+        recaptcha_provider="static",
+        recaptcha_static_token="old-static-token",
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.recaptcha_static_token == "short-lived-captcha-token"
