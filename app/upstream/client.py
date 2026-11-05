@@ -558,10 +558,35 @@ class UpstreamClient:
         finally:
             await self._release_client(client)
 
+    #: Cloudflare'in bot/oturum duvarı imzaları. Bunlar reCAPTCHA reddi
+    #: **değildir**: `cf_clearance`/`__cf_bm` eskimişse hedef HTML hata sayfası
+    #: döner. Bu ayrım yapılmadığında operatör yanlış yöne (CAPTCHA token'ı)
+    #: bakıyordu.
+    _CLOUDFLARE_MARKERS: tuple[str, ...] = (
+        "just a moment",
+        "cf-browser-verification",
+        "cf_chl_",
+        "cloudflare",
+        "attention required",
+        "enable javascript and cookies to continue",
+    )
+
+    @classmethod
+    def _is_cloudflare_challenge(cls, status: int, body: str) -> bool:
+        """403/503 gövdesi Cloudflare bot/oturum duvarı mı?"""
+        if status not in {403, 503} or not body:
+            return False
+        lowered = body.lower()
+        return any(marker in lowered for marker in cls._CLOUDFLARE_MARKERS)
+
     @staticmethod
     def _is_captcha_body(status: int, body: str) -> bool:
         """403/401 yanıtının reCAPTCHA reddi olup olmadığını ayırt eder."""
         if status not in CAPTCHA_STATUS:
+            return False
+        # Cloudflare sayfası "forbidden"/"bot" kelimelerini içerir; onu
+        # reCAPTCHA reddiyle karıştırmamak için önce onu ayır.
+        if UpstreamClient._is_cloudflare_challenge(status, body):
             return False
         lowered = body.lower()
         return any(
@@ -978,6 +1003,18 @@ class UpstreamClient:
                             )
                             if session_dead
                             else "Upstream rejected the session credentials.",
+                            status_code=status,
+                            body=error_body,
+                            url=url,
+                        )
+
+                    if self._is_cloudflare_challenge(status, error_body):
+                        # `cf_clearance`/`__cf_bm` eskimiş demektir; CAPTCHA
+                        # token'ı suçlu değil.
+                        raise UpstreamAuthRejected(
+                            "Upstream returned a Cloudflare bot/clearance challenge; "
+                            "the captured Cloudflare cookies (cf_clearance, __cf_bm) "
+                            "have expired. Capture a fresh browser cURL.",
                             status_code=status,
                             body=error_body,
                             url=url,

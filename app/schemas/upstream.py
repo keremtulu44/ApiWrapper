@@ -36,6 +36,9 @@ class UpstreamPayload(BaseModel):
     #: Hedef servisin beklediği `mode`. Tarayıcı cURL'ündeki gerçek değer
     #: `UPSTREAM_MODE` ile ezilir; boş bırakılırsa bu varsayılan gönderilir.
     mode: str | None = "direct-battle"
+    #: Hedef istemci bağlamı. Tarayıcı cURL'ünde gövdede gelir; boşsa alan
+    #: hiç gönderilmez (uydurulmuş bir değer göndermek isteği bozar).
+    cx: str | None = None
 
     def to_wire(self, recaptcha_field: str = "recaptchaV3Token") -> dict[str, Any]:
         """Upstream'in beklediği alan adlarıyla (camelCase) sözlük döndürür.
@@ -44,6 +47,9 @@ class UpstreamPayload(BaseModel):
         `recaptchaV2Token`); varsayılan alan adı buna göre yeniden adlandırılır.
         """
         data = self.model_dump(by_alias=True, exclude_none=True)
+        # Boş `cx` alanı gönderilmez: tarayıcı isteğinde değer her zaman doluydu.
+        if not str(data.get("cx") or "").strip():
+            data.pop("cx", None)
         token = data.pop("recaptchaV3Token", "")
         field = (recaptcha_field or "recaptchaV3Token").strip()
         data[field] = token

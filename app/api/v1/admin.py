@@ -633,6 +633,25 @@ async def auth_diagnostics(
             "expired": (cookie_remaining is not None and cookie_remaining <= 0),
             "used_for_authorization": effective == cookie_token and bool(cookie_token),
         },
+        "recaptcha": {
+            "provider": settings.recaptcha_provider,
+            # Site key public'tir; sır değildir ve yanlış anahtar doğrudan
+            # `recaptcha_rejected` ürettiği için teşhiste görünmesi gerekir.
+            "site_key": settings.recaptcha_site_key or None,
+            "version": settings.recaptcha_version,
+            "action": settings.recaptcha_action,
+            "field": settings.upstream_recaptcha_field or None,
+            "static_token_configured": bool(
+                (settings.recaptcha_static_token or "").strip()
+            ),
+            "hint": (
+                "Tarayıcı sağlayıcısı site key ile token üretir; anahtar hedefin "
+                "sitesine ait değilse hedef token'ı reddeder (recaptcha_rejected). "
+                "Doğru anahtar cURL'de görünüyorsa /curl ile yeniden yükleyin."
+                if settings.recaptcha_provider in {"browser", "external"}
+                else None
+            ),
+        },
         "configured_cookie_names": settings.upstream_token_cookie_names,
         "cookie_names_present": sorted(cookies),
         "cookie_count": len(cookies),

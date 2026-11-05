@@ -455,6 +455,29 @@ class TelegramBot:
         if isinstance(problems, list):
             for problem in problems[:3]:
                 lines.append("⚠ " + str(problem))
+        captcha_raw = payload.get("recaptcha")
+        captcha: dict[str, Any] = (
+            captcha_raw if isinstance(captcha_raw, dict) else {}
+        )
+        if captcha:
+            provider = str(captcha.get("provider") or "?")
+            site_key = captcha.get("site_key")
+            site_part = (
+                f"{str(site_key)[:6]}…{str(site_key)[-4:]}"
+                if isinstance(site_key, str) and len(site_key) > 12
+                else ("yok" if not site_key else str(site_key))
+            )
+            lines.append(
+                f"CAPTCHA: {provider} · site key: {site_part}"
+                + (
+                    f" · aksiyon: {captcha.get('action')}"
+                    if captcha.get("action")
+                    else ""
+                )
+            )
+            hint = captcha.get("hint")
+            if hint:
+                lines.append("⚠ " + str(hint))
         auto_raw = payload.get("auto_refresh")
         auto: dict[str, Any] = auto_raw if isinstance(auto_raw, dict) else {}
         if auto:
