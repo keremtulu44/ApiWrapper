@@ -31,7 +31,7 @@ Kritik kural: merge = Render deploy, kullanıcı o turda açıkça onaylamadan m
 
 | # | Dosya | Satır | İçerik |
 |---|---|---|---|
-| 1 | `README.md` | 586 | Genel bakış; §27 "Hızlı Belge ve Operasyon Rehberi"; §380 "reCAPTCHA sağlayıcıları" (`### Render / Docker` 403); §282 "UPSTREAM_CURL"; §94 kimlik doğrulama; §165 cURL ayarlama |
+| 1 | `README.md` | 588 | Genel bakış; §28 "Hızlı Belge ve Operasyon Rehberi"; §382 "reCAPTCHA sağlayıcıları" (`### Render / Docker` 405); §284 "UPSTREAM_CURL"; §96 kimlik doğrulama; §167 cURL ayarlama |
 | 2 | `docs/MERGE_TARGET.md` | 82 | Merge/onay kuralları ve merge geçmişi tablosu |
 | 3 | `docs/BIG_PICTURE.md` | 113 | Üç ömür katmanı: oturum kimliği / türev değerler / telemetri |
 | 4 | `docs/COOKIE_LIFECYCLE.md` | 152 | Çerez ömrü; §0 üç katman tablosu; §2 "Token yok" ne demek; §5 refresh token |
