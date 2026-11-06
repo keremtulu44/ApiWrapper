@@ -153,8 +153,7 @@ class CompletionService:
         suffix = "tiktoken" if tiktoken_available() else "estimate"
         return f"fp_{self.settings.app_version.replace('.', '')}_{suffix}"
 
-    @staticmethod
-    def _translate(exc: Exception) -> APIWrapperError:
+    def _translate(self, exc: Exception) -> APIWrapperError:
         """Upstream istisnalarını API hatalarına çevirir."""
         if isinstance(exc, APIWrapperError):
             return exc
@@ -191,9 +190,43 @@ class CompletionService:
                 code="upstream_unauthorized",
             )
         if isinstance(exc, RecaptchaRejected):
+            # Sağlayıcıya göre anlamlı eylem metni:
+            # - static: token elle ayarlanmış/kısa ömürlü cURL'den geliyor, ~2 dk'da ölür
+            # - noop: alan hiç gönderilmiyor ama hedef doğruluyor → captcha gerekiyor
+            # - browser/external: tek denemede başarısız oldu, üretim kendini tekrar
+            #   deneyecek (invalidate + retry zaten yapıldı); yine düşerse sağlayıcı
+            #   tarafında bir sorun var (örn. site-key yanlış, script erişilemiyor).
+            provider = (
+                getattr(exc, "provider", "")
+                or self.settings.recaptcha_provider
+                or ""
+            )
+            if provider == "static":
+                action = (
+                    "The static reCAPTCHA token has expired or is invalid. "
+                    "Re-copy a fresh browser cURL within the last 1–2 minutes and "
+                    "resubmit it via /upstream/curl, or set RECAPTCHA_PROVIDER=browser "
+                    "for automatic token generation."
+                )
+            elif provider == "noop":
+                action = (
+                    "Upstream requires a reCAPTCHA token but RECAPTCHA_PROVIDER=noop "
+                    "is set (no token is being sent). Re-apply a fresh cURL (it will "
+                    "auto-switch to static) or set RECAPTCHA_PROVIDER=browser."
+                )
+            elif provider in {"browser", "external"}:
+                action = (
+                    "The browser/external reCAPTCHA provider produced a rejected "
+                    "token. Re-try once; if it keeps failing verify RECAPTCHA_SITE_KEY, "
+                    "RECAPTCHA_VERSION and RECAPTCHA_ACTION match the upstream site."
+                )
+            else:
+                action = (
+                    "Refresh RECAPTCHA_STATIC_TOKEN or switch RECAPTCHA_PROVIDER to "
+                    "'browser'/'external' for automatic token generation."
+                )
             return RecaptchaError(
-                "The upstream service rejected the reCAPTCHA token. "
-                "Refresh RECAPTCHA_STATIC_TOKEN or use the 'browser'/'external' provider.",
+                "The upstream service rejected the reCAPTCHA token. " + action,
                 code="recaptcha_rejected",
             )
         if isinstance(exc, UpstreamTimeout):
@@ -515,11 +548,29 @@ class CompletionService:
                 continue
             except RecaptchaRejected:
                 self.recaptcha.invalidate()
+                # Statik kipte account'ların kendi captcha_token önbelleği vardır
+                # (`_prepare` içindeki `has_own_captcha_token` dalı). Bu token
+                # reddedildiyse bir sonraki istekte de aynı (süresi dolmuş/yanlış)
+                # token kullanılıp tekrar 503 alınıyordu. Account seviyesindeki eski
+                # token'ı temizle: bir sonraki istek `recaptcha.get_token()` üzerinden
+                # global/ayardaki değeri kullanır (yeni cURL veya yenilenmiş sağlayıcı
+                # oradaysa gelsin). Burada `reload_credentials` ÇAĞRILMAZ: o metot
+                # account.recaptcha_token'ı settings'deki (hâlâ eski/ölü) değerden
+                # tekrar doldurur ve temizlemeyi geri alır.
+                if self.settings.recaptcha_provider == "static" and self.accounts.size:
+                    for acc in self.accounts.accounts:
+                        acc.recaptcha_token = ""
+                # Yalnız gerçekten yeni token üretebilen sağlayıcılar (browser/external)
+                # tekrar denesin. Static/noop'ta retry anlamsızdır: sabit token/boş
+                # değer ile yine aynı sonuç alınır (bkz. test_no_retry_with_same_token).
                 can_refresh = self.settings.recaptcha_provider in {"browser", "external"}
                 if not can_refresh or captcha_retried or emitted > 0:
                     raise
                 captcha_retried = True
-                logger.warning("recaptcha_rejected_retrying")
+                logger.warning(
+                    "recaptcha_rejected_retrying",
+                    provider=self.settings.recaptcha_provider,
+                )
                 continue
 
     # --------------------------------------------------------- non-stream
