@@ -135,15 +135,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await upstream.startup()
 
     recaptcha = create_recaptcha_provider(settings)
-    if recaptcha.name != "browser":
-        try:
-            await recaptcha.startup()
-        except Exception as exc:
-            # Captcha sağlayıcısı başlatılamazsa servis yine ayakta kalsın;
-            # hata ilk istekte anlamlı biçimde raporlanır.
-            logger.error(
-                "recaptcha_startup_failed", provider=recaptcha.name, error=str(exc)
-            )
+    try:
+        await recaptcha.startup()
+    except Exception as exc:
+        # Captcha sağlayıcısı (özellikle browser/Playwright) başlatılamazsa
+        # servis yine ayakta kalsın; hata ilk istekte anlamlı biçimde raporlanır.
+        # (browser.startup() içindeki kaynak temizliği bunu zaten kendi yapar.)
+        logger.error(
+            "recaptcha_startup_failed", provider=recaptcha.name, error=str(exc)
+        )
 
     sessions = SessionManager(settings, warmup=upstream.warmup)
     registry = _load_registry(settings)
