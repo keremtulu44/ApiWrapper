@@ -407,13 +407,17 @@ def build_settings(
     if field and captcha_token:
         env["UPSTREAM_RECAPTCHA_FIELD"] = field
         configured_provider = (existing or {}).get("RECAPTCHA_PROVIDER", "").strip().lower()
-        if configured_provider in {"browser", "external", "noop"}:
-            # Dinamik sağlayıcı seçilmişse kısa ömürlü token'ı kaydedip kipi
-            # static'e geri döndürme. Boş değer, eski statik token kalıntısını da
-            # temizler; gerçek token her istekte sağlayıcıdan alınır.
+        if configured_provider in {"browser", "external"}:
+            # Gerçekten dinamik sağlayıcılar (browser/external) seçiliyse
+            # kısa ömürlü cURL token'ını yok say; gerçek token her istekte
+            # sağlayıcıdan alınır.
             env["RECAPTCHA_PROVIDER"] = configured_provider
             env["RECAPTCHA_STATIC_TOKEN"] = ""
         else:
+            # Varsayılan/static/noop: kullanıcı cURL'ü içinde captcha token'ı
+            # kopyaladıysa hedef alanı doğruluyor demektir. noop modda bile
+            # token'ı statik olarak saklayıp gönder; aksi hâlde boş token ile
+            # her istek `recaptcha_rejected` ile düşer.
             env["RECAPTCHA_PROVIDER"] = "static"
             env["RECAPTCHA_STATIC_TOKEN"] = captcha_token
     else:
@@ -438,11 +442,13 @@ def build_settings(
         env["UPSTREAM_MODE"] = mode.strip()
 
     # --- gövde `cx` (istemci bağlamı)
-    # cURL gövdesinde `cx` var ama kodda hiç okunmuyordu; istek onsuz
-    # gönderildiği için hedef istemciyi eksik görebiliyordu.
+    # cURL gövdesinde `cx` varsa alanı da otomatik olarak aç: kullanıcı
+    # tarayıcısından kopyaladığı istekte bu alan bulunduysa hedef onu
+    # doğruluyor demektir; sessizce çıkarmak istemci bağlamını eksiltir.
     cx = body.get("cx")
     if isinstance(cx, str) and cx.strip():
         env["UPSTREAM_CX"] = cx.strip()
+        env["UPSTREAM_CX_SEND"] = "true"
 
     # --- reCAPTCHA site key (tarayıcı sağlayıcısı için kritik)
     # Site key public'tir; cURL'ün başlıklarında/gövdesinde görünüyorsa doğru

@@ -251,4 +251,39 @@ def test_curl_with_captcha_field_updates_static_token():
 
     updated, _ = apply_upstream_curl(settings)
 
+    assert updated.recaptcha_provider == "static"
     assert updated.recaptcha_static_token == "short-lived-captcha-token"
+
+
+def test_curl_with_captcha_switches_noop_to_static():
+    """noop kipteyken cURL captcha token'ı içeriyorsa static'e dönmeli.
+
+    Canlı arıza: `RECAPTCHA_PROVIDER=noop` iken yeni cURL yapıştırıldığında kod
+    noop'u koruyup token'ı boşaltıyor, böylece her istek boş captcha ile
+    gönderilip `recaptcha_rejected` ile düşüyordu. Kullanıcı cURL'ü kopyaladığında
+    captcha alanı gövde de varsa hedef kesinlikle captcha doğruluyor demektir;
+    noop'tan static'e geçip token'ı kullanmalı.
+    """
+    settings = make_settings(
+        upstream_curl=_curl(include_captcha=True),
+        recaptcha_provider="noop",
+        recaptcha_static_token="",
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.recaptcha_provider == "static"
+    assert updated.recaptcha_static_token == "short-lived-captcha-token"
+
+
+def test_curl_with_captcha_preserves_browser_and_external_providers():
+    """browser/external sağlayıcılar korumalır; cURL token'ı onların yerine geçmez."""
+    for provider in ("browser", "external"):
+        settings = make_settings(
+            upstream_curl=_curl(include_captcha=True),
+            recaptcha_provider=provider,
+            recaptcha_static_token="old",
+        )
+        updated, _ = apply_upstream_curl(settings)
+        assert updated.recaptcha_provider == provider
+        assert updated.recaptcha_static_token == ""

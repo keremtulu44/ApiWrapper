@@ -34,6 +34,7 @@ _CURL_FIELDS: dict[str, str] = {
     "RECAPTCHA_STATIC_TOKEN": "recaptcha_static_token",
     "RECAPTCHA_SITE_KEY": "recaptcha_site_key",
     "UPSTREAM_CX": "upstream_cx",
+    "UPSTREAM_CX_SEND": "upstream_cx_send",
 }
 
 

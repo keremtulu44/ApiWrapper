@@ -48,14 +48,27 @@ _EXECUTE_SCRIPT = """
 })
 """
 
-_BOOTSTRAP_HTML = """<!doctype html>
-<html><head><meta charset="utf-8"><title>recaptcha</title>
-<script>window.__wrapperRecaptchaScriptFailed = false;</script>
+_BOOTSTRAP_HTML_TEMPLATE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>recaptcha</title>
+<script>
+window.__wrapperRecaptchaScriptFailed = false;
+window.__wrapperRecaptchaError = null;
+window.addEventListener('error', function(e){
+  window.__wrapperRecaptchaError = String(e.message || e.error || e);
+});
+</script>
 <script
-  src="https://www.google.com/recaptcha/{script_name}?render={site_key}"
+  src="https://www.google.com/recaptcha/__SCRIPT_NAME__?render=__SITE_KEY__"
   onerror="window.__wrapperRecaptchaScriptFailed = true">
 </script>
-</head><body><div id="root">loading</div></body></html>
+</head>
+<body>
+<div id="root" style="min-height:80vh"></div>
+</body></html>
 """
 
 
@@ -95,18 +108,36 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
 
         try:
             self._playwright = await async_playwright().start()
+            # Free Render 512 MB limiti için mümkün olan en hafif Chromium ayarı:
+            # - single-process (renderer/subprocess ayırmaz; ~50-80 MB tasarruf)
+            # - disable-dev-shm-usage (/dev/shm küçük olduğundan disk tabanlı
+            #   paylaşıma düşer; aksi hâlde /dev/shm dolunca Chromium çöker)
+            # - no-sandbox (container içinde zaten root/yek kullanıcı gerekli)
+            # - memory-pressure, js-flags ile GC sıkılaştırılır.
             self._browser = await self._playwright.chromium.launch(
                 headless=True,
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--single-process",
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
+                    "--disable-dev-tools",
+                    "--no-zygote",
+                    "--disable-extensions",
+                    "--disable-background-networking",
+                    "--disable-sync",
+                    "--disable-default-apps",
+                    "--mute-audio",
+                    "--hide-scrollbars",
                     "--disable-blink-features=AutomationControlled",
+                    "--js-flags=--max-old-space-size=128",
                 ],
             )
             self._context = await self._browser.new_context(
                 user_agent=self.settings.upstream_user_agent,
                 locale=self.settings.upstream_accept_language.split(",", 1)[0] or "en-US",
-                viewport={"width": 1440, "height": 900},
+                viewport={"width": 1024, "height": 768},
             )
         except Exception as exc:
             # Playwright başladıktan sonra Chromium/context açılamazsa yarım
@@ -179,7 +210,31 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                     timeout=self.settings.recaptcha_browser_timeout,
                 )
             except (TimeoutError, asyncio.TimeoutError) as exc:
-                raise RecaptchaError("Timed out while generating a reCAPTCHA token.") from exc
+                # Zaman aşımında sayfadaki teşhis bilgisini topla; hangi aşamada
+                # takıldığını (script yüklenmedi mi, API hazır değil mi, execute
+                # reddedildi mi) operatörün görmesi sorunu kökten çözer.
+                diag = ""
+                with contextlib.suppress(Exception):
+                    diag = str(
+                        await page.evaluate(
+                            """() => JSON.stringify({
+                              has_grecaptcha: typeof grecaptcha !== 'undefined',
+                              has_enterprise: !!(typeof grecaptcha !== 'undefined'
+                                && grecaptcha.enterprise),
+                              script_failed: !!window.__wrapperRecaptchaScriptFailed,
+                              page_error: window.__wrapperRecaptchaError,
+                              readyState: document.readyState,
+                              location: location.href,
+                              scripts: Array.from(document.scripts)
+                                .map(function(s){ return s.src; })
+                                .filter(Boolean)
+                            })"""
+                        )
+                    )[:500]
+                raise RecaptchaError(
+                    "Timed out while generating a reCAPTCHA token."
+                    + (f" Diagnostics: {diag}" if diag else "")
+                ) from exc
             except Exception as exc:
                 raise RecaptchaError(f"Browser captcha generation failed: {exc}") from exc
             finally:
@@ -201,24 +256,56 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
             "enterprise.js" if self.settings.recaptcha_version == "enterprise" else "api.js"
         )
         target_url = f"{self.settings.base_url}/"
-        html = _BOOTSTRAP_HTML.format(
-            script_name=script_name,
-            site_key=self.settings.recaptcha_site_key,
+        html = (
+            _BOOTSTRAP_HTML_TEMPLATE.replace("__SCRIPT_NAME__", script_name).replace(
+                "__SITE_KEY__", self.settings.recaptcha_site_key
+            )
         )
 
         async def serve_bootstrap(route: Any) -> None:
             await route.fulfill(status=200, content_type="text/html", body=html)
 
+        # Canlı tarayıcıyla aynı Accept-Language başlığı bootstrap sayfasına
+        # da ekleniyor; bazı reCAPTCHA bot-risk skorlamalarında buna bakılıyor.
+        if self.settings.upstream_accept_language:
+            await page.set_extra_http_headers({
+                "Accept-Language": self.settings.upstream_accept_language,
+            })
+
         try:
             await page.route(target_url, serve_bootstrap)
             await page.goto(
                 target_url,
-                wait_until="load",
+                wait_until="domcontentloaded",
                 timeout=self.settings.recaptcha_browser_timeout * 1000,
             )
+            # Script yüklenip grecaptcha hazır olana kadar kısa süre bekle:
+            # wait_until="load" statik varlıklar yüzünden takılabiliyordu.
+            await page.wait_for_function(
+                """(version) => {
+                  if (typeof grecaptcha === 'undefined') return false;
+                  const api = version === 'enterprise' ? grecaptcha.enterprise : grecaptcha;
+                  return !!(api && (api.execute || api.ready));
+                }""",
+                arg=self.settings.recaptcha_version,
+                timeout=min(15000, int(self.settings.recaptcha_browser_timeout * 1000)),
+            )
         except Exception as exc:
+            diag = ""
+            with contextlib.suppress(Exception):
+                diag = str(
+                    await page.evaluate(
+                        """() => JSON.stringify({
+                          has_grecaptcha: typeof grecaptcha !== 'undefined',
+                          script_failed: !!window.__wrapperRecaptchaScriptFailed,
+                          page_error: window.__wrapperRecaptchaError,
+                          readyState: document.readyState
+                        })"""
+                    )
+                )[:300]
             raise RecaptchaError(
                 "Could not initialize the isolated reCAPTCHA page or load the Google script."
+                + (f" Diagnostics: {diag}" if diag else "")
             ) from exc
 
         if await page.evaluate("() => window.__wrapperRecaptchaScriptFailed === true"):

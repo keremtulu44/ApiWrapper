@@ -47,9 +47,19 @@ class FakePage:
         self.fulfillments.append(route)
         self.url = url
 
+    async def wait_for_function(self, _script: str, *, arg=None, timeout=None) -> None:
+        # Test ortamında grecaptcha'nın var olduğunu varsay (bootstrap HTML'i
+        # doğru üretilmişse başarılı kabul et).
+        return None
+
+    async def set_extra_http_headers(self, _headers: dict[str, str]) -> None:
+        return None
+
     async def evaluate(self, script: str, *_args: Any) -> Any:
         if "__wrapperRecaptchaScriptFailed" in script:
             return self.script_failed
+        if "has_grecaptcha" in script:
+            return "{}"
         return None
 
 

@@ -616,8 +616,31 @@ def test_static_captcha_rejection_is_not_retried_with_the_same_token(pool_client
     )
     response = pool_client.post("/v1/chat/completions", json=chat_body())
     assert response.status_code == 503
-    assert response.json()["error"]["code"] == "recaptcha_rejected"
+    body = response.json()
+    assert body["error"]["code"] == "recaptcha_rejected"
+    # Sağlayıcı static ise hata mesajı taze cURL eylemini önermeli.
+    assert "fresh browser cURL" in body["error"]["message"]
     assert route.call_count == 1
+
+
+@respx.mock
+def test_static_captcha_rejection_clears_account_level_cached_tokens():
+    """Red sonrası account'ların eski captcha_token'ı temizlenmeli ki sonraki
+    istek / yeni cURL aynı ölü token'ı tekrar kullanmasın."""
+    app = create_app(two_account_settings())
+    with TestClient(app) as client:
+        client.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
+        # Başlangıçta account'lar RT-1 / RT-2 ile dolu olmalı.
+        assert [a.recaptcha_token for a in app.state.accounts.accounts] == ["RT-1", "RT-2"]
+        route = route_by_cookie(
+            respx,
+            {"COOKIE-1": httpx.Response(403, content=b'{"error":"invalid recaptcha"}')},
+        )
+        resp = client.post("/v1/chat/completions", json=chat_body())
+        assert resp.status_code == 503
+        assert route.call_count == 1
+        # Red sonrası account-level token'lar temizlenmiş olmalı.
+        assert [a.recaptcha_token for a in app.state.accounts.accounts] == ["", ""]
 
 
 class SequenceRecaptchaProvider:
