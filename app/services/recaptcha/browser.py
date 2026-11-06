@@ -466,36 +466,23 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                 raise RecaptchaError("Browser returned an empty reCAPTCHA token.")
             return token
 
-    async def _load_page(self, page: Any) -> None:
-        """CAPTCHA'yı hedef origin'de, sohbeti andıran izole bir belgeyle yükle.
+    def _warm_target_url(self) -> str:
+        """Isınma için açılacak gerçek referer URL'ini döndürür."""
+        referer_path = self.settings.upstream_referer_path or "/"
+        placeholder = "captcha-warmup"
+        if "{chat_id}" in referer_path:
+            referer_path = referer_path.replace("{chat_id}", placeholder)
+        if not referer_path.startswith("/"):
+            referer_path = "/" + referer_path
+        return self.settings.base_url.rstrip("/") + referer_path
 
-        - Gerçek upstream_chat_url (veya base_url + /c/...) üzerinde
-          açılırız; böylece token'ın üretildiği path, upstream'in beklediği
-          sohbet path'iyle eşleşir (Enterprise bazı konfigürasyonlarda
-          path/sayfa bağlılığı denetliyor).
-        - Tüm aynı-origin istekleri (favicon, CSS, img, script) bootstrap
-          HTML ile cevaplanır; hiçbir istek askıda kalmaz. Google
-          reCAPTCHA script'i www.google.com'da; o route'a dokunmayız.
-        - Gerçek bir chat sayfasına benzeyen başlık/metin/alan/buton
-          içeren HTML; navigator.webdriver override; sonra ısınma
-          script'inde hafif kullanıcı hareketleri.
-        """
+    async def _install_bootstrap_route(self, page: Any) -> tuple[str, str]:
+        """Tüm aynı-origin istekleri bootstrap HTML ile cevaplayan route'u kurar."""
         script_name = (
             "enterprise.js" if self.settings.recaptcha_version == "enterprise" else "api.js"
         )
-        # Hedef URL: gerçek referer path'i (sohbet/anlık sayfa). Path içinde
-        # {chat_id} placeholder'ı varsa ısınma için uygun bir kimlikle doldur,
-        # yoksa path'i olduğu gibi kullan (örn. "/text/direct").
-        referer_path = self.settings.upstream_referer_path or "/"
-        placeholder_chat_id = "captcha-warmup"
-        if "{chat_id}" in referer_path:
-            referer_path = referer_path.replace("{chat_id}", placeholder_chat_id)
-        target_origin = self.settings.base_url.rstrip("/") + (
-            referer_path if referer_path.startswith("/") else "/" + referer_path
-        )
         parsed = urlparse(self.settings.base_url)
         origin_host = parsed.hostname or (parsed.netloc or "localhost")
-
         html = (
             _BOOTSTRAP_HTML_TEMPLATE.replace("__SCRIPT_NAME__", script_name)
             .replace("__SITE_KEY__", self.settings.recaptcha_site_key)
@@ -507,34 +494,104 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
         )
 
         async def serve_bootstrap(route: Any) -> None:
-            # Tüm aynı-origin istekleri bootstrap HTML'i ile cevapla.
-            # Sadece Google reCAPTCHA ve www.gstatic.com istekleri normal
-            # akışta kalsın (onları route'a dahil etmedik, serbest).
             try:
                 await route.fulfill(
-                    status=200, content_type="text/html; charset=utf-8", body=html,
+                    status=200,
+                    content_type="text/html; charset=utf-8",
+                    body=html,
                 )
             except Exception:
                 with contextlib.suppress(Exception):
                     await route.abort("failed")
 
-        # Wildcard route: origin içindeki HER şeyi bootstrap'le cevapla.
-        # Yalnızca Google/gstatic harici istekler normal ağa çıkar (onlar
-        # zaten farklı origin'de, route'umuz onları yakalamaz).
         route_pattern = f"{self.settings.base_url.rstrip('/')}/**/*"
-        # Ek olarak kök URL'yi de kapsayacak şekilde: route pattern'ı
-        # "**/*" kullandığı için "/" için eşleşmeyebilir; o yüzden ikinci
-        # route da ekleyelim.
         root_pattern = f"{self.settings.base_url}/"
+        await page.route(route_pattern, serve_bootstrap)
+        await page.route(root_pattern, serve_bootstrap)
+        return root_pattern, html
 
+    async def _wait_for_grecaptcha(self, page: Any, timeout_ms: int) -> bool:
+        """Sayfada grecaptcha (istenen sürüm) hazır olana kadar bekler."""
         try:
-            await page.route(route_pattern, serve_bootstrap)
-            await page.route(root_pattern, serve_bootstrap)
-            # Veri: URL'ler boş favicon'a data: ile gidiyor, harici istek yok.
+            await page.wait_for_function(
+                """(version) => {
+                  if (typeof grecaptcha === 'undefined') return false;
+                  const api = version === 'enterprise'
+                    ? grecaptcha.enterprise : grecaptcha;
+                  return !!(api && (api.execute || api.ready));
+                }""",
+                arg=self.settings.recaptcha_version,
+                timeout=timeout_ms,
+            )
+            return True
+        except Exception:
+            return False
+
+    async def _load_page(self, page: Any) -> None:
+        """CAPTCHA üretimi için uygun bir sayfa yükler.
+
+        Strateji:
+        1. ÖNCE canlı hedef sayfayı (referer_url) DOĞRUDAN aç, hiç route
+           takma. Çerezler + cf_clearance varsa sayfa normal yüklenir,
+           Arena'nın kendi reCAPTCHA bootstrap'ı da kendi ayarlarıyla
+           (doğru site-key, action, badge konumu, vb.) gelir ve
+           execute() için en yüksek skoru üretir.
+        2. 8 saniye içinde grecaptcha.enterprise hazır olmazsa veya sayfa
+           Cloudflare/403 ile bloklanırsa, bootstrap fallback'e geç:
+           aynı-origin tüm istekleri sentetik HTML ile cevapla, kendi
+           reCAPTCHA script'imizi yükle. Bu en azından bir token üretir
+           (skor düşebilir ama site-key yanlış değilse çalışır).
+        """
+        target_url = self._warm_target_url()
+
+        # -------- Aşama 1: canlı sayfa --------
+        live_ok = False
+        try:
             await page.goto(
-                target_origin,
+                target_url,
                 wait_until="domcontentloaded",
-                timeout=self.settings.recaptcha_browser_timeout * 1000,
+                timeout=min(
+                    12000, int(self.settings.recaptcha_browser_timeout * 1000)
+                ),
+                referer=self.settings.base_url + "/",
+            )
+            # Canlı sayfada grecaptcha 8sn içinde hazır olmalı.
+            live_ok = await self._wait_for_grecaptcha(page, timeout_ms=8000)
+        except Exception as exc:
+            logger.info(
+                "recaptcha_browser_live_page_failed",
+                url=target_url,
+                error=str(exc)[:200],
+            )
+
+        if live_ok:
+            logger.info(
+                "recaptcha_browser_using_live_page",
+                url=target_url,
+            )
+            # Canlı sayfada script-failed bayrağı yok; navigator.webdriver
+            # init script'te zaten kaldırıldı. Isınma script'i yine de
+            # çalıştırılacak (_ensure_warm_page tarafında).
+            return
+
+        # -------- Aşama 2: bootstrap fallback --------
+        logger.warning(
+            "recaptcha_browser_falling_back_to_bootstrap",
+            url=target_url,
+            hint=(
+                "Canlı sayfada grecaptcha hazır değil (Cloudflare blokluyor "
+                "veya site-key değişmiş olabilir); sentetik bootstrap "
+                "kullanılıyor. Token üretilebilir ama skor düşük olabilir."
+            ),
+        )
+        with contextlib.suppress(Exception):
+            await page.goto("about:blank")  # önceki istekleri temizle
+        try:
+            await self._install_bootstrap_route(page)
+            await page.goto(
+                target_url,
+                wait_until="domcontentloaded",
+                timeout=int(self.settings.recaptcha_browser_timeout * 1000),
                 referer=self.settings.base_url + "/",
             )
         except Exception as exc:
@@ -556,7 +613,28 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                 + (f" Diagnostics: {diag}" if diag else "")
             ) from exc
 
-        if await page.evaluate("() => window.__wrapperRecaptchaScriptFailed === true"):
+        ready = await self._wait_for_grecaptcha(page, timeout_ms=15000)
+        if not ready:
+            diag = ""
+            with contextlib.suppress(Exception):
+                diag = str(
+                    await page.evaluate(
+                        """() => JSON.stringify({
+                          has_grecaptcha: typeof grecaptcha !== 'undefined',
+                          script_failed: !!window.__wrapperRecaptchaScriptFailed,
+                          page_error: window.__wrapperRecaptchaError,
+                          readyState: document.readyState,
+                          location: location.href
+                        })"""
+                    )
+                )[:300]
+            raise RecaptchaError(
+                "reCAPTCHA API did not become ready on the bootstrap page."
+                + (f" Diagnostics: {diag}" if diag else "")
+            )
+        if await page.evaluate(
+            "() => window.__wrapperRecaptchaScriptFailed === true"
+        ):
             raise RecaptchaError(
                 "Google reCAPTCHA script failed to load; "
                 "check outbound access to www.google.com."

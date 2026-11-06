@@ -1037,6 +1037,22 @@ class UpstreamClient:
                         )
 
                     if self._is_captcha_body(status, error_body):
+                        # Operatör tam olarak hangi gövdenin geldiğini
+                        # görsün: "captcha_rejected" diye bildiğimiz şey
+                        # bazen cx alanı, deployment skew veya path
+                        # kaynaklı olabiliyor; gövdenin ilk 400 karakteri
+                        # bunu ayırt etmeye yeter.
+                        logger.warning(
+                            "upstream_recaptcha_rejected_body",
+                            status=status,
+                            # URL'yi operatöre gösterirken host'u maskeleme
+                            # zaten log sistemi yapıyor; burada yol kısmı
+                            # yeterli (full path gizli bilgi taşımaz).
+                            path=str(url).split("://", 1)[-1].split("/", 1)[-1][:200]
+                            if "://" in str(url)
+                            else str(url)[:200],
+                            body_preview=(error_body or "")[:400],
+                        )
                         raise RecaptchaRejected(
                             "Upstream rejected the reCAPTCHA token.",
                             status_code=status,
