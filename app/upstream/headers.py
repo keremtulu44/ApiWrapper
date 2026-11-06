@@ -61,9 +61,20 @@ def platform_from_ua(user_agent: str) -> str:
         return '"macOS"'
     if "android" in ua:
         return '"Android"'
+    if "iphone" in ua or "ipad" in ua or "ios" in ua:
+        return '"iOS"'
     if "linux" in ua:
         return '"Linux"'
     return '"Unknown"'
+
+
+def is_mobile_ua(user_agent: str) -> bool:
+    """UA mobil istemciye ait mi? Client Hint '?0'/'?1' doğru üretilmeli."""
+    ua = user_agent.lower()
+    # Android telefon, iPhone, Lumia, Opera Mini, Mobil Safari vb.
+    return any(m in ua for m in ("android", "iphone", "ipad", "ipod",
+                                 "mobile", "lumia", "opera mini",
+                                 "windows phone"))
 
 
 def sec_ch_ua(user_agent: str) -> str:
@@ -160,7 +171,7 @@ def build_stream_headers(
         "referer": settings.referer_url(chat_id),
         "user-agent": ua,
         "sec-ch-ua": sec_ch_ua(ua),
-        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-mobile": "?1" if is_mobile_ua(ua) else "?0",
         "sec-ch-ua-platform": platform_from_ua(ua),
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
@@ -189,7 +200,7 @@ def build_page_headers(settings: Settings, *, include_cookie: bool = True) -> di
         "accept-language": settings.upstream_accept_language,
         "user-agent": ua,
         "sec-ch-ua": sec_ch_ua(ua),
-        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-mobile": "?1" if is_mobile_ua(ua) else "?0",
         "sec-ch-ua-platform": platform_from_ua(ua),
         "sec-fetch-dest": "document",
         "sec-fetch-mode": "navigate",
