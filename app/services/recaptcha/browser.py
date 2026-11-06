@@ -95,18 +95,36 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
 
         try:
             self._playwright = await async_playwright().start()
+            # Free Render 512 MB limiti için mümkün olan en hafif Chromium ayarı:
+            # - single-process (renderer/subprocess ayırmaz; ~50-80 MB tasarruf)
+            # - disable-dev-shm-usage (/dev/shm küçük olduğundan disk tabanlı
+            #   paylaşıma düşer; aksi hâlde /dev/shm dolunca Chromium çöker)
+            # - no-sandbox (container içinde zaten root/yek kullanıcı gerekli)
+            # - memory-pressure, js-flags ile GC sıkılaştırılır.
             self._browser = await self._playwright.chromium.launch(
                 headless=True,
                 args=[
                     "--no-sandbox",
                     "--disable-dev-shm-usage",
+                    "--single-process",
+                    "--disable-gpu",
+                    "--disable-software-rasterizer",
+                    "--disable-dev-tools",
+                    "--no-zygote",
+                    "--disable-extensions",
+                    "--disable-background-networking",
+                    "--disable-sync",
+                    "--disable-default-apps",
+                    "--mute-audio",
+                    "--hide-scrollbars",
                     "--disable-blink-features=AutomationControlled",
+                    "--js-flags=--max-old-space-size=128",
                 ],
             )
             self._context = await self._browser.new_context(
                 user_agent=self.settings.upstream_user_agent,
                 locale=self.settings.upstream_accept_language.split(",", 1)[0] or "en-US",
-                viewport={"width": 1440, "height": 900},
+                viewport={"width": 1024, "height": 768},
             )
         except Exception as exc:
             # Playwright başladıktan sonra Chromium/context açılamazsa yarım
