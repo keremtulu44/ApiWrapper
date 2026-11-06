@@ -239,6 +239,32 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                 await self.startup()
             return self._context
 
+    def invalidate(self) -> None:
+        """Önbelleği ve ısınmış sayfayı/tutulan token'ı temizler.
+
+        Temel sınıf yalnız token önbelleğini sıfırlar. Browser sağlayıcıda
+        ısınmış sayfa ve canlı tıklamadan yakalanan bekleyen token da
+        temizlenmeli: bir sonraki istek tamamen temiz bir sayfadan yeniden
+        token üretsin (yeni deploy/çerez/site-key sonrası eski sıcak
+        sayfanın tekrar kullanılması reddedilmeye yol açıyordu).
+        """
+        super().invalidate()
+        self._captured_live_token = None
+        warm_page = self._warm_page
+        self._warm_page = None
+        if warm_page is not None:
+            async def _close() -> None:
+                with contextlib.suppress(Exception):
+                    await warm_page.close()
+            # Senkron invalidate() içinde async close'u bir arka plan
+            # görevi olarak çalıştır; kilit bekletmez.
+            try:
+                loop = asyncio.get_running_loop()
+                loop.create_task(_close())
+            except RuntimeError:
+                # Çalışan döngü yok (test/CLI); yoksay.
+                pass
+
     async def shutdown(self) -> None:
         for closer in (self._warm_page, self._context, self._browser):
             if closer is not None:
