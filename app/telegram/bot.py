@@ -251,6 +251,9 @@ class TelegramBot:
         if command in {"/tani", "/tanı", "/durum", "/status", "/diagnose"}:
             await self.diagnose(chat_id)
             return
+        if command in {"/invalidate", "/sifirla", "/reset-captcha", "/captcha-reset"}:
+            await self.invalidate_captcha(chat_id)
+            return
         if command in {"/curl", "/setcurl"}:
             # Parça sınırlarındaki boşlukları da korumak için komuta normalize
             # edilmiş metin yerine yalnızca sol boşluğu atılan ham metni ver.
@@ -376,6 +379,23 @@ class TelegramBot:
             chat_id,
             "⚠ " + detail + hint
             + "\nAnahtarı biliyorsanız /apikey <anahtar> ile doğrudan verin.",
+        )
+
+    async def invalidate_captcha(self, chat_id: int) -> None:
+        """`/invalidate`: captcha önbelleğini + ısınmış tarayıcı sayfasını sıfırla."""
+        try:
+            r = await self.wrapper.post("/v1/admin/recaptcha/invalidate")
+            data = r.json()
+        except httpx.HTTPError as exc:
+            await self.send_text(
+                chat_id,
+                f"⚠ Captcha sıfırlama başarısız: {type(exc).__name__}.",
+            )
+            return
+        await self.send_text(
+            chat_id,
+            f"✅ Captcha önbelleği temizlendi (sağlayıcı: {data.get('provider','?')}). "
+            "Bir sonraki istekte yeni token üretilecek.",
         )
 
     async def diagnose(self, chat_id: int) -> None:
