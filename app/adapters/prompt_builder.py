@@ -149,8 +149,22 @@ def build_prompt(
 
 
 def collect_attachments(messages: list[ChatMessage]) -> list[dict[str, Any]]:
-    """Son kullanıcı mesajındaki ekleri toplar."""
-    for message in reversed(messages):
-        if message.role == "user":
-            return message.attachments()
-    return []
+    """Kullanıcı mesajlarındaki ekleri sırayla toplar.
+
+    Çok turlu bir sohbette kullanıcı bir önceki turda görsel yüklemişse o
+    görsel bağlamı korunur; yalnız son kullanıcı mesajına bakıldığında eski
+    görseller kayboluyor ve upstream ekleri görmüyordu. Aynı URL'nin birden
+    fazla kez eklenmesi de önlenir.
+    """
+    collected: list[dict[str, Any]] = []
+    seen_urls: set[str] = set()
+    for message in messages:
+        if message.role != "user":
+            continue
+        for att in message.attachments():
+            url = str(att.get("url", "") or "")
+            if url and url in seen_urls:
+                continue
+            seen_urls.add(url)
+            collected.append(att)
+    return collected

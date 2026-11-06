@@ -64,6 +64,21 @@ def test_first_occurrence_wins():
     assert parse_cookie_header("k=first; k=second")["k"] == "first"
 
 
+def test_parse_cookie_unquotes_url_encoded_json():
+    """URL-encoded JSON çerezler (arena_acq_source vb.) çözülmeli."""
+    encoded_json = quote('{"v":1,"status":"captured","ref":null}')
+    cookies = parse_cookie_header(f"arena_acq_source={encoded_json}; other=x")
+    assert cookies["arena_acq_source"] == '{"v":1,"status":"captured","ref":null}'
+    assert cookies["other"] == "x"
+
+
+def test_parse_cookie_preserves_jwt_and_base64():
+    """JWT / base64 değerler URL-decoding'den etkilenmemeli (percent içermezler)."""
+    cookies = parse_cookie_header(f"t={TOKEN}; b=abcDEF+/==")
+    assert cookies["t"] == TOKEN
+    assert cookies["b"] == "abcDEF+/=="
+
+
 def test_merge_chunked_cookies():
     merged = merge_chunked_cookies({"sb.1": "world", "sb.0": "hello", "x": "y"})
     assert merged["sb"] == "helloworld"

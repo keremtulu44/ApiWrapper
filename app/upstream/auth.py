@@ -125,6 +125,9 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
     Ayrıştırma bağışlayıcıdır: değer içinde ``=`` bulunabilir, boşluklar kırpılır,
     adsız parçalar yok sayılır. Aynı ad birden çok kez geçerse ilki korunur
     (tarayıcı davranışıyla uyumlu olarak en özgül çerez genelde başta gelir).
+
+    URL-encoded (``%XX``) değerler tek seviye çözülür; JWT/base64 değerleri bu
+    dönüşümden etkilenmez (alfabeleri güvenli aralıktadır).
     """
     cookies: dict[str, str] = {}
     if not raw:
@@ -136,6 +139,15 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
         name, _, value = part.partition("=")
         name = name.strip()
         value = value.strip().strip('"')
+        if "%" in value:
+            try:
+                decoded = unquote(value)
+                # Çift kodlanmış / JSON kaçışlı değerleri korumak için sadece
+                # geçerli UTF-8 metin ürettiyse değiştir.
+                if decoded and all(ord(c) >= 32 or c in "\r\n\t" for c in decoded):
+                    value = decoded
+            except (ValueError, TypeError, UnicodeDecodeError):
+                pass
         if name and name not in cookies:
             cookies[name] = value
     return cookies

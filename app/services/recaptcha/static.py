@@ -40,7 +40,7 @@ class StaticRecaptchaProvider(RecaptchaProvider):
 
 
 class NoopRecaptchaProvider(RecaptchaProvider):
-    """Boş token gönderir (upstream doğrulamıyorsa veya testlerde)."""
+    """CAPTCHA alanını hiç göndermez (hedef doğrulamıyorsa veya testlerde)."""
 
     name = "noop"
 
@@ -49,3 +49,7 @@ class NoopRecaptchaProvider(RecaptchaProvider):
 
     async def get_token(self) -> str:
         return ""
+
+    def invalidate(self) -> None:
+        """Token yok; "red" sayacı artmamalı — reddedilecek bir şey yoktu."""
+        return None

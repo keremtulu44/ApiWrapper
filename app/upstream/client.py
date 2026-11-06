@@ -49,6 +49,19 @@ _RENDER_SYNC_RETRY_MAX_SECONDS = 300.0
 RETRYABLE_STATUS = frozenset({408, 425, 429, 500, 502, 503, 504, 522, 524})
 #: Kimlik/captcha reddi olabilecek durum kodları.
 CAPTCHA_STATUS = frozenset({401, 403})
+
+#: Bir 403/401 gövdesinin reCAPTCHA reddine ait olduğunu gösteren **özgü**
+#: ifadeler. Genel "forbidden"/"bot"/"verification" kelimeleri bilinçli olarak
+#: dışarıda: onlar herhangi bir yetki hatasında geçebiliyor.
+CAPTCHA_MARKERS: tuple[str, ...] = (
+    "recaptcha",
+    "g-recaptcha-response",
+    "captcha verification failed",
+    "captcha token",
+    "captcha_rejected",
+    "invalid captcha",
+    "captcha required",
+)
 #: Gövdede captcha izi yokken oturum sorununa işaret eden kodlar.
 AUTH_STATUS = frozenset({401})
 #: İstemci sürümünün eskidiğini bildiren durum kodları (deployment/forced update).
@@ -581,18 +594,21 @@ class UpstreamClient:
 
     @staticmethod
     def _is_captcha_body(status: int, body: str) -> bool:
-        """403/401 yanıtının reCAPTCHA reddi olup olmadığını ayırt eder."""
-        if status not in CAPTCHA_STATUS:
+        """403/401 yanıtı **gerçekten** reCAPTCHA reddi mi?
+
+        Yalnızca "forbidden" veya "bot" kelimesini aramak yanlış teşhis
+        üretiyordu: hedefin herhangi bir 403 gövdesi bu kelimeleri içerebilir
+        ve o zaman operatör CAPTCHA token'ına bakmaya yönlendirilir. Bu yüzden
+        reCAPTCHA'ya özgü ifadeler aranır.
+        """
+        if status not in CAPTCHA_STATUS or not body:
             return False
         # Cloudflare sayfası "forbidden"/"bot" kelimelerini içerir; onu
         # reCAPTCHA reddiyle karıştırmamak için önce onu ayır.
         if UpstreamClient._is_cloudflare_challenge(status, body):
             return False
         lowered = body.lower()
-        return any(
-            marker in lowered
-            for marker in ("recaptcha", "captcha", "verification", "bot", "forbidden")
-        )
+        return any(marker in lowered for marker in CAPTCHA_MARKERS)
 
     def _is_quota_body(self, status: int, body: str) -> str | None:
         """Gövde upstream'in hesap kısıtlama mesajını taşıyorsa işareti döndürür.

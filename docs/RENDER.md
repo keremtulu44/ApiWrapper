@@ -266,6 +266,9 @@ bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamı
   değil) ve wrapper bu alan olmadan başarılı istek atıyor. Bu yüzden zorunlu kabul
   edilmez; bir 4xx gövdesi `cx` alanına atıfta bulunursa logda `upstream_cx_flag`
   ve `apiwrapper_upstream_cx_flags_total` metriği görünür.
+- `cx` artık cURL gövdesinden **yakalanır** (`UPSTREAM_CX`) ama varsayılan olarak
+  **gönderilmez**. Gönderimi `UPSTREAM_CX_SEND=true` ile açılır: 4xx gövdesi bu
+  alana atıfta bulunmaya başlarsa tek değişiklik bu bayraktır.
 
 ## 8. JSON logları ve SSE hata ayıklama
 

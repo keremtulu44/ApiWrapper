@@ -50,9 +50,13 @@ class UpstreamPayload(BaseModel):
         # Boş `cx` alanı gönderilmez: tarayıcı isteğinde değer her zaman doluydu.
         if not str(data.get("cx") or "").strip():
             data.pop("cx", None)
-        token = data.pop("recaptchaV3Token", "")
+        token = str(data.pop("recaptchaV3Token", "") or "").strip()
         field = (recaptcha_field or "recaptchaV3Token").strip()
-        data[field] = token
+        # Boş token'ı alan olarak göndermek `""` değerini iletir; hedef bunu
+        # "geçersiz token" sayıp `recaptcha_rejected` döndürebiliyor (noop
+        # sağlayıcısında tam olarak bu oluyordu). Alan hiç gönderilmez.
+        if token:
+            data[field] = token
         return data
 
 

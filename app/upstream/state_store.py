@@ -78,15 +78,17 @@ PERSISTED_FIELDS: tuple[str, ...] = (
     "upstream_accept_language",
     "upstream_mode",
     "upstream_recaptcha_field",
+    "recaptcha_provider",
     "recaptcha_static_token",
     # Public değer (secret değil): yanlış site key ile üretilen token hedefte
     # `recaptcha_rejected` olur, bu yüzden cURL'den öğrenilen değer korunur.
     "recaptcha_site_key",
     "upstream_cx",
+    "upstream_cx_send",
 )
 
 # JSON/local state içinde bool türü korunarak saklanan alanlar.
-PERSISTED_BOOL_FIELDS: tuple[str, ...] = ("upstream_auth_from_cookie",)
+PERSISTED_BOOL_FIELDS: tuple[str, ...] = ("upstream_auth_from_cookie", "upstream_cx_send")
 
 #: Süreç başında hesaplanan tohum özeti (`id(settings)` -> sha256 hex).
 _SEED_HASHES: dict[int, str] = {}
@@ -385,7 +387,10 @@ async def _sync_render_env_locked(
         "UPSTREAM_REFERER_PATH": settings.upstream_referer_path or "",
         "UPSTREAM_STREAM_PATH": settings.upstream_stream_path or "",
         "UPSTREAM_CAPTURED_MODEL_ID": settings.upstream_captured_model_id or "",
+        "UPSTREAM_CX": settings.upstream_cx or "",
+        "UPSTREAM_CX_SEND": "true" if settings.upstream_cx_send else "false",
         "UPSTREAM_SNAPSHOT_VERSION": "1",
+        "RECAPTCHA_PROVIDER": settings.recaptcha_provider or "",
         "RECAPTCHA_STATIC_TOKEN": settings.recaptcha_static_token or "",
         "RECAPTCHA_SITE_KEY": settings.recaptcha_site_key or "",
     }
