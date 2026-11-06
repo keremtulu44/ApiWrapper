@@ -135,14 +135,28 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await upstream.startup()
 
     recaptcha = create_recaptcha_provider(settings)
-    try:
-        await recaptcha.startup()
-    except Exception as exc:
-        # Captcha sağlayıcısı (özellikle browser/Playwright) başlatılamazsa
-        # servis yine ayakta kalsın; hata ilk istekte anlamlı biçimde raporlanır.
-        # (browser.startup() içindeki kaynak temizliği bunu zaten kendi yapar.)
-        logger.error(
-            "recaptcha_startup_failed", provider=recaptcha.name, error=str(exc)
+    # Free Render 512 MB RAM limitinde uygulama açılırken Chromium'u koşulsuz
+    # başlatmak OOM yüzünden deploy'un crash-loop'a girmesine yol açıyordu.
+    # Browser sağlayıcı LAZY (ilk gerçek token üretim talebinde) başlar;
+    # _produce_token / browser_context içindeki self-startup zaten var ve
+    # çöken tarayıcıyı otomatik yeniden dener.
+    #
+    # static/noop sağlayıcılar için startup() hızlı bir no-op/uyarıdır,
+    # onlar hemen başlatılır (hata vermezler, bellek yemezler).
+    if recaptcha.name in {"static", "noop"}:
+        try:
+            await recaptcha.startup()
+        except Exception as exc:
+            logger.error(
+                "recaptcha_startup_failed",
+                provider=recaptcha.name,
+                error=str(exc),
+            )
+    else:
+        logger.info(
+            "recaptcha_provider_deferred_startup",
+            provider=recaptcha.name,
+            hint="İlk token talebinde başlatılacak (Free Render hafıza dostu).",
         )
 
     sessions = SessionManager(settings, warmup=upstream.warmup)
