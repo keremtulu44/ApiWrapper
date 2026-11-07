@@ -283,13 +283,18 @@ async def test_refresh_propagates_to_account_pool_and_upstream_client():
     from app.services.account import build_account_pool
     from app.upstream.client import UpstreamClient
 
-    settings = _settings(upstream_cookie=session_cookie(expires_in=120))
+    settings = _settings(
+        upstream_cookie="prefs=%7B%22lang%22%3A%22tr%22%7D; "
+        + session_cookie(expires_in=120)
+    )
     accounts = build_account_pool(settings)
     upstream = UpstreamClient(settings)
     await upstream.startup()
     try:
         # Hesap istemcisini önceden ısıt ki eski çerez jar'da bulunsun.
-        _ = upstream._client_for(accounts.get(1))
+        old_http = upstream._client_for(accounts.get(1))
+        before = old_http.build_request("GET", "https://upstream.test/").headers["cookie"]
+        assert "prefs=%7B%22lang%22%3A%22tr%22%7D" in before
         new_access = _jwt(exp=time.time() + 3600)
 
         def handler(request: httpx.Request) -> httpx.Response:
@@ -313,6 +318,10 @@ async def test_refresh_propagates_to_account_pool_and_upstream_client():
         assert slot1.access_token == new_access
         assert extract_refresh_token(slot1.cookie) == "fresh-rotated-token"
         assert upstream._account_clients == {}, "eski hesap jar'ları sıfırlanmalı"
+        new_http = upstream._client_for(slot1)
+        after = new_http.build_request("GET", "https://upstream.test/").headers["cookie"]
+        assert "prefs=%7B%22lang%22%3A%22tr%22%7D" in after
+        assert extract_refresh_token(after) == "fresh-rotated-token"
     finally:
         await upstream.shutdown()
 
@@ -945,3 +954,74 @@ async def test_apikey_discovery_scans_more_than_four_scripts():
     assert report.key == anon
     assert report.found_in == "script"
     assert settings.upstream_refresh_api_key == anon
+
+
+def test_refresh_preserves_unrelated_cookie_encoding_and_duplicates():
+    cookie = (
+        "prefs=%7B%22lang%22%3A%22tr%22%7D; duplicate=first; "
+        + session_cookie()
+        + "; duplicate=second"
+    )
+    rewritten, changed = rewrite_session_cookie(
+        cookie, access_token=_jwt(exp=time.time() + 7200), refresh_token="rotated"
+    )
+    assert changed
+    assert "prefs=%7B%22lang%22%3A%22tr%22%7D" in rewritten
+    assert "duplicate=first" in rewritten and "duplicate=second" in rewritten
+    assert extract_refresh_token(rewritten) == "rotated"
+
+
+def test_httpx_cookie_jar_preserves_percent_encoded_values():
+    from app.upstream.client import UpstreamClient
+
+    settings = _settings(upstream_cookie="prefs=%7B%22lang%22%3A%22tr%22%7D")
+    client = UpstreamClient(settings)._build_client(settings)
+    try:
+        request = client.build_request("GET", "https://upstream.test/")
+        assert "prefs=%7B%22lang%22%3A%22tr%22%7D" in request.headers["cookie"]
+    finally:
+        import asyncio
+
+        asyncio.run(client.aclose())
+
+
+def test_refreshed_session_uses_unpadded_base64url():
+    import re
+
+    from app.upstream.auth import parse_cookie_header
+
+    # Unicode ensures the encoded payload exercises the base64url alphabet.
+    payload = {
+        "access_token": _jwt(exp=time.time() + 120),
+        "refresh_token": SECRET_REFRESH,
+        "user": {"name": "🦊🚀"},
+    }
+    original = "base64-" + base64.urlsafe_b64encode(
+        json.dumps(payload, ensure_ascii=False).encode()
+    ).decode().rstrip("=")
+    rewritten, changed = rewrite_session_cookie(
+        f"arena-auth-prod-v1={original}",
+        access_token=_jwt(exp=time.time() + 3600),
+        refresh_token="rotated",
+    )
+    assert changed
+    encoded = parse_cookie_header(rewritten)["arena-auth-prod-v1"]
+    assert re.fullmatch(r"base64-[A-Za-z0-9_-]+", encoded)
+    restored = json.loads(base64.urlsafe_b64decode(encoded[7:] + "=" * (-len(encoded[7:]) % 4)))
+    assert restored["user"]["name"] == "🦊🚀"
+
+
+def test_rewrite_plain_jwt_only_changes_first_matching_cookie():
+    old_token = _jwt(exp=time.time() + 120)
+    new_token = _jwt(exp=time.time() + 3600)
+    cookie = f"prefs=%7B%22v%22%3A1%7D; sb-access-token={old_token}; dup=a; dup=b"
+    rewritten, changed = rewrite_session_cookie(cookie, access_token=new_token)
+    assert changed
+    assert rewritten == f"prefs=%7B%22v%22%3A1%7D; sb-access-token={new_token}; dup=a; dup=b"
+
+
+def test_rewrite_undecodable_session_leaves_entire_header_untouched():
+    cookie = "prefs=%7B%22v%22%3A1%7D; arena-auth-prod-v1.0=base64-!!!; dup=a; dup=b"
+    rewritten, changed = rewrite_session_cookie(cookie, access_token="not-a-jwt")
+    assert not changed
+    assert rewritten == cookie

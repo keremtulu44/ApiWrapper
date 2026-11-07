@@ -66,19 +66,17 @@ class ExternalRecaptchaProvider(RecaptchaProvider):
                 self.settings.recaptcha_external_url, json=payload, headers=headers
             )
         except httpx.HTTPError as exc:
-            raise RecaptchaError(f"External captcha solver unreachable: {exc}") from exc
+            raise RecaptchaError("External captcha solver unreachable.") from exc
 
         if response.status_code >= 400:
             raise RecaptchaError(
-                f"External captcha solver returned HTTP {response.status_code}: "
-                f"{response.text[:300]}"
+                f"External captcha solver returned HTTP {response.status_code}."
             )
 
         token = self._extract_token(response)
         if not token:
             raise RecaptchaError(
-                "External captcha solver response did not contain a token: "
-                f"{response.text[:300]}"
+                "External captcha solver response did not contain a token."
             )
         return token
 

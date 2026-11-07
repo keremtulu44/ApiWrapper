@@ -163,6 +163,7 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
         self._warm_page: Any = None
         self._captured_live_token: str | None = None
         self._lock = asyncio.Lock()
+        self._reset_warm_page = False
 
     async def startup(self) -> None:
         if self._context is not None:
@@ -240,30 +241,12 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
             return self._context
 
     def invalidate(self) -> None:
-        """Önbelleği ve ısınmış sayfayı/tutulan token'ı temizler.
+        """Sonraki üretimde sıcak sayfayı kilit altında yenile.
 
-        Temel sınıf yalnız token önbelleğini sıfırlar. Browser sağlayıcıda
-        ısınmış sayfa ve canlı tıklamadan yakalanan bekleyen token da
-        temizlenmeli: bir sonraki istek tamamen temiz bir sayfadan yeniden
-        token üretsin (yeni deploy/çerez/site-key sonrası eski sıcak
-        sayfanın tekrar kullanılması reddedilmeye yol açıyordu).
+        Eşzamanlı bir üretimin kullandığı sayfayı burada kapatmak onu bozardı.
         """
         super().invalidate()
-        self._captured_live_token = None
-        warm_page = self._warm_page
-        self._warm_page = None
-        if warm_page is not None:
-            async def _close() -> None:
-                with contextlib.suppress(Exception):
-                    await warm_page.close()
-            # Senkron invalidate() içinde async close'u bir arka plan
-            # görevi olarak çalıştır; kilit bekletmez.
-            try:
-                loop = asyncio.get_running_loop()
-                loop.create_task(_close())
-            except RuntimeError:
-                # Çalışan döngü yok (test/CLI); yoksay.
-                pass
+        self._reset_warm_page = True
 
     async def shutdown(self) -> None:
         for closer in (self._warm_page, self._context, self._browser):
@@ -274,6 +257,7 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
             with contextlib.suppress(Exception):
                 await self._playwright.stop()
         self._warm_page = None
+        self._captured_live_token = None
         self._context = self._browser = self._playwright = None
         logger.info("recaptcha_browser_stopped")
 
@@ -475,6 +459,8 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
         if needs_boot:
             await self._set_cookies_from_settings()
             page = await self._context.new_page()
+            # Hazırlık başarısız olsa bile shutdown sayfayı kapatabilsin.
+            self._warm_page = page
 
             target_url = self._warm_target_url()
             mode = "bootstrap"
@@ -574,6 +560,13 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
 
     async def _produce_token(self) -> str:
         async with self._lock:
+            if self._reset_warm_page:
+                self._reset_warm_page = False
+                self._captured_live_token = None
+                if self._warm_page is not None:
+                    with contextlib.suppress(Exception):
+                        await self._warm_page.close()
+                    self._warm_page = None
             if not self._is_alive():
                 await self.shutdown()
                 await self.startup()
@@ -584,7 +577,11 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                 await self.shutdown()
                 await self.startup()
                 assert self._context is not None
-                page, mode = await self._ensure_warm_page()
+                try:
+                    page, mode = await self._ensure_warm_page()
+                except Exception:
+                    await self.shutdown()
+                    raise
 
             # Live-click modunda token'ı zaten yakaladık: bir kez
             # kullanırız, sonra sayfayı sıfırlarız (bir sonraki istek

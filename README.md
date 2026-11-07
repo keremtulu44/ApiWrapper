@@ -53,7 +53,7 @@ Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damg
 | Kota tespiti | Hedefin "limit reached" tarzı mesajı işaret tabanlı yakalanır (HTTP gövdesi · akış hata olayı · opsiyonel düz metin taraması) → `429 upstream_quota_reached` + `Retry-After`, **retry edilmez** |
 | Hesap havuzu | Çoklu çerez/token; kayan pencere sayacı, kilitte otomatik hesap geçişi, AIMD ile öğrenilen bütçe, hesap başına captcha token'ı |
 | Sohbet yönetimi | `SESSION_REUSE=true` ile istemci başına tek upstream sohbeti; `SESSION_ROTATE_AFTER_MESSAGES`/`_SECONDS` eşiğinde yeni sohbete geçilir (Continue gibi `conversation_id` gönderemeyen istemciler için) |
-| reCAPTCHA v3 | `static` (varsayılan) · `noop` · `browser` (Playwright) · `external` — TTL cache + tek-uçuş kilidi |
+| reCAPTCHA v3 | `static` (varsayılan) · `noop` · `browser` (Playwright) · `external` — her dinamik istek için tek kullanımlık token |
 | Gözlemlenebilirlik | structlog JSON, `X-Request-ID`, `completion_completed`/`stream_completed`/`stream_failed` olayları, Prometheus metrikleri (TTFT dahil) |
 | Arıza bildirimi | Saatlik probe → Telegram: **ne oldu + hangi kod + ne yapmalı**; yeni arıza/düzelme her zaman, aynı arıza `TELEGRAM_ALERT_REPEAT_SECONDS` aralıkla (vars. 6 saat) — spam yok |
 | Sürüm eskimesi | Upstream `409 refresh_required`/`forced_update` → `upstream_refresh_required` (retry yok, devre kesiciye sayılmaz, net eylem metni) |
@@ -389,18 +389,23 @@ RECAPTCHA_PROVIDER=external   # Tek istekte doğrudan token döndüren özel HTT
 ```
 
 Yerel Python kurulumunda `browser` için: `pip install ".[browser]" && playwright install chromium`.
-Gözlenen hedef **reCAPTCHA Enterprise** kullandığından örnek yapılandırmada
-`RECAPTCHA_VERSION=enterprise` ve `RECAPTCHA_ACTION=chat_submit` bulunur. Browser
-sağlayıcı hedef origin'de izole bir bootstrap belgesine `enterprise.js` yükleyip
-`grecaptcha.enterprise.execute()` çağırır. Belge Playwright route ile aynı origin'de
-üretilir; canlı hedef sayfasının Cloudflare/CSP veya diğer script'leri bootstrap'a
-karışmaz. `/recaptcha/enterprise/reload` protobuf isteğini veya Google cookie'lerini
+Örnek yapılandırmada `RECAPTCHA_VERSION=enterprise` ve
+`RECAPTCHA_ACTION=chat_submit` bulunur; bunların hedef entegrasyon için doğru
+olduğu cURL gövdesinden tek başına anlaşılamaz. Browser
+sağlayıcı önce canlı hedef sayfasında token üretmeyi dener; bu başarısızsa hedef
+origin'de Playwright route ile sunulan bir bootstrap belgesine `enterprise.js`
+yükleyip `grecaptcha.enterprise.execute()` çağırır. Canlı sayfa veya bootstrap
+ile token üretilmesi, upstream tarafından kabul edileceğini garanti etmez. `/recaptcha/enterprise/reload` protobuf isteğini veya Google cookie'lerini
 yeniden oynatmaz. Site key public'tir, üretilen CAPTCHA token'ı ise gizli ve kısa ömürlüdür.
 Docker imajı Playwright ve Chromium'u önceden içerir. `external` sağlayıcı tek HTTP
 cevabında doğrudan token döndüren bir uç bekler; standart `createTask`/`getTaskResult`
 akışları ayrıca adaptör gerektirir.
-Upstream token'ı reddederse (403) dinamik sağlayıcıda cache otomatik geçersizleşir ve istek
-**bir kez** yeniden denenir.
+Dinamik sağlayıcı her upstream POST denemesi için ayrı token üretir; token paylaşılmaz.
+Upstream token'ı reddederse dinamik sağlayıcıyla istek **bir kez** yeniden denenir.
+`RECAPTCHA_TOKEN_TTL` geriye dönük uyumluluk için kabul edilir, ancak artık kullanılmaz.
+Statik cURL tokenları kısa ömürlü ve tek kullanımlık olabileceğinden sürekli kullanım için uygun değildir. Aynı POST HTTP hatası aldıktan sonra statik token ile otomatik tekrarlanmaz; hesap devrinde farklı bir statik token varsa devir mümkündür. Ayrı API isteklerinde veya restart sonrasında statik tokenın daha önce kullanıldığı tüm durumlar izlenmez.
+
+Read/write timeout ve bağlantı koptuğunda POST sonucu belirsiz olabileceği için wrapper otomatik olarak yeniden göndermez. Connect/pool hataları ve dinamik/noop sağlayıcılarla bazı HTTP hata yanıtları hâlâ retry edilebilir; HTTP 5xx yanıtı bile işlemin yapılmadığını garanti etmez. Bunu sınırlamak için `RETRY_MAX_ATTEMPTS=1` ayarlayın ve gerekirse özel 409 deployment retry ayarlarını da kapatın. İstemci tarafındaki manuel tekrarlar da çift işleme yol açabilir.
 
 ### Render / Docker
 

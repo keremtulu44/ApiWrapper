@@ -161,10 +161,16 @@ arkasında **takılıp çıkarılabilir** dört sağlayıcı:
 | `noop` | Boş string gönderir | Upstream doğrulamıyorsa / test |
 | `static` | `.env`'den elle alınan token | Hızlı başlangıç, kısa ömürlü (~2 dk) |
 | `external` | Tek HTTP cevabında doğrudan token döndüren yapılandırılabilir çözücü API'si | Üretim |
-| `browser` | Playwright ile hedef origin'de v3 `grecaptcha.execute()` veya Enterprise `grecaptcha.enterprise.execute()` çağırır, token'ı cache'ler (TTL 100 sn) | Bağımsız üretim |
+| `browser` | Playwright ile hedef origin'de v3 `grecaptcha.execute()` veya Enterprise `grecaptcha.enterprise.execute()` çağırır, her POST için yeni token üretir | Bağımsız üretim |
 
-Sağlayıcılar `TokenCache` (TTL + tek-uçuş `asyncio.Lock`) ile sarılır; eşzamanlı 100 istek
-tek token üretimini paylaşır. Token reddi (upstream 403) → otomatik invalidate + 1 kez retry.
+Dinamik tokenlar tek kullanımlıktır: eşzamanlı istekler ve HTTP yeniden denemeleri
+ayrı token alır. Browser sayfasına erişim kilitle serileştirilir. Token reddinde
+dinamik sağlayıcı ile bir kez daha denenir. Statik token bir HTTP hatasından sonra
+aynı POST'ta yeniden gönderilmez; ayrı isteklerde kullanımın tamamı izlenmez.
+Read/write/protocol ağ hatalarında POST sonucu belirsizdir ve retry yapılmaz;
+connect/pool hataları ve dinamik/noop ile bazı HTTP hataları hâlâ tekrar
+edilebilir. HTTP retry işlemin hedefte yapılmadığını garanti etmez.
+`RECAPTCHA_TOKEN_TTL` artık kullanılmaz.
 
 ---
 

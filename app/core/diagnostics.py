@@ -64,6 +64,14 @@ _HINTS: dict[str, FailureHint] = {
         ),
         severity="critical",
     ),
+    "upstream_challenge": FailureHint(
+        title="Upstream bir güvenlik challenge yanıtı döndürdü.",
+        action=(
+            "Erişim politikasını ve tarayıcı/ağ bağlamını kontrol edin. "
+            "Challenge tek başına oturum süresinin dolduğunu göstermez."
+        ),
+        severity="critical",
+    ),
     "upstream_unauthorized": FailureHint(
         title="Upstream oturum kimliğini reddetti (HTTP 401).",
         action=(
