@@ -164,6 +164,12 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
         self._captured_live_token: str | None = None
         self._lock = asyncio.Lock()
         self._reset_warm_page = False
+        self.stats["last_token_source"] = None
+
+    def _record_token_source(self, source: str) -> None:
+        # Yalnız yol adı tutulur; token veya sayfa içeriği loglanmaz.
+        self.stats["last_token_source"] = source
+        logger.info("recaptcha_browser_token_source", source=source)
 
     async def startup(self) -> None:
         if self._context is not None:
@@ -560,6 +566,7 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
 
     async def _produce_token(self) -> str:
         async with self._lock:
+            self.stats["last_token_source"] = None
             if self._reset_warm_page:
                 self._reset_warm_page = False
                 self._captured_live_token = None
@@ -593,6 +600,7 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                 with contextlib.suppress(Exception):
                     await page.close()
                 self._warm_page = None
+                self._record_token_source("live_click")
                 return cached
 
             try:
@@ -604,6 +612,7 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                         with contextlib.suppress(Exception):
                             await page.close()
                         self._warm_page = None
+                        self._record_token_source("live_click")
                         return tok
                 # Doğrudan execute() ile üret (live/bootstrap):
                 with contextlib.suppress(Exception):
@@ -653,4 +662,5 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
 
             if not isinstance(token, str) or not token:
                 raise RecaptchaError("Browser returned an empty reCAPTCHA token.")
+            self._record_token_source("live_execute" if mode == "live" else "bootstrap_execute")
             return token

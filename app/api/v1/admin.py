@@ -674,9 +674,9 @@ async def auth_diagnostics(
             },
             "origin": settings.base_url,
             "hint": (
-                "Tarayıcı sağlayıcısı site key ile token üretir; anahtar hedefin "
-                "sitesine ait değilse hedef token'ı reddeder (recaptcha_rejected). "
-                "Doğru anahtar cURL'de görünüyorsa /curl ile yeniden yükleyin."
+                "Token üretilmesi kabul edildiğini göstermez. Site key, action, "
+                "sürüm ve istek alanını; ayrıca ağ/tarayıcı bağlamı ve hedef "
+                "erişim politikasını kontrol edin."
                 if settings.recaptcha_provider in {"browser", "external"}
                 else None
             ),

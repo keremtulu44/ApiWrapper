@@ -49,7 +49,7 @@ from typing import Any
 
 import httpx
 
-from app.core.config import Settings
+from app.core.config import RENDER_EMPTY_VALUE, Settings
 from app.core.logging import get_logger
 from app.upstream.auth import (
     extract_access_token,
@@ -414,12 +414,24 @@ async def _sync_render_env_locked(
                 f"https://api.render.com/v1/services/{service_id}/env-vars/{key}"
             )
             response = await http.put(url, headers=headers, json={"value": value})
+            empty_fallback = response.status_code == 400 and value == ""
+            if empty_fallback:
+                # Silmek, linked env group veya eski cURL'ü yeniden etkinleştirebilir.
+                # Servis katmanında işaret saklanır ve Settings bunu boş olarak okur.
+                response = await http.put(
+                    url, headers=headers, json={"value": RENDER_EMPTY_VALUE}
+                )
+                if response.status_code < 400:
+                    logger.info("render_env_sync_empty_fallback", env_key=key)
             if response.status_code >= 400:
                 ok = False
+                # Response body bir secret yansıtabilir; asla loglanmaz.
                 logger.warning(
                     "render_env_sync_failed",
                     env_key=key,
                     status_code=response.status_code,
+                    empty_value=(value == ""),
+                    empty_fallback_attempted=empty_fallback,
                 )
     except httpx.HTTPError as exc:
         ok = False

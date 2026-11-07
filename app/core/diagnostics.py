@@ -59,8 +59,9 @@ _HINTS: dict[str, FailureHint] = {
     "recaptcha_rejected": FailureHint(
         title="Upstream reCAPTCHA token'ını reddetti.",
         action=(
-            "Token üretimini yenileyin (/v1/admin/recaptcha/invalidate); "
-            "browser/external sağlayıcıya geçmek kalıcı çözümdür."
+            "Site key, action, sürüm ve istek alanını hedef uygulamanın güncel "
+            "yapılandırmasıyla karşılaştırın; ağ/tarayıcı bağlamı ve erişim "
+            "politikasını kontrol edin. Token üretilmesi kabul edildiğini göstermez."
         ),
         severity="critical",
     ),
