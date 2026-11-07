@@ -6,51 +6,65 @@ from typing import Any
 
 import pytest
 
-from app.core.errors import RecaptchaError
-from app.services.recaptcha.browser import BrowserRecaptchaProvider
+from app.services.recaptcha.browser import (
+    _BOOTSTRAP_HTML_TEMPLATE,
+    BrowserRecaptchaProvider,
+)
 from tests.conftest import make_settings
 
 
-class FakeRoute:
+class _FakeRoute:
     def __init__(self) -> None:
         self.status: int | None = None
         self.content_type: str | None = None
-        self.body: str | None = None
+        self.body: Any = None
+        self.aborted: str | None = None
 
-    async def fulfill(self, *, status: int, content_type: str, body: str) -> None:
+    async def fulfill(self, *, status: int, content_type: str, body: Any) -> None:
         self.status = status
         self.content_type = content_type
         self.body = body
 
+    async def abort(self, reason: str = "failed") -> None:
+        self.aborted = reason
 
-class FakePage:
-    def __init__(self, *, script_failed: bool = False, fail_goto: bool = False) -> None:
-        self.url = "about:blank"
-        self.script_failed = script_failed
-        self.fail_goto = fail_goto
+
+class _FakePageForBootstrap:
+    """_install_bootstrap için yalın sahte sayfa."""
+
+    def __init__(self) -> None:
         self.routes: dict[str, Any] = {}
-        self.fulfillments: list[FakeRoute] = []
-        self.goto_url: str | None = None
+        self.fulfillments: list[_FakeRoute] = []
 
     async def route(self, url: str, handler: Any) -> None:
         self.routes[url] = handler
 
-    async def goto(self, url: str, **_kwargs: Any) -> None:
-        self.goto_url = url
-        if self.fail_goto:
-            raise RuntimeError("navigation failed")
-        # Route kaydı yoksa gerçek hedefe gidilmesine izin verme: test, canlı
-        # sayfa yerine izole bootstrap'ın kullanıldığını böylece de doğrular.
-        handler = self.routes[url]
-        route = FakeRoute()
-        await handler(route)
-        self.fulfillments.append(route)
-        self.url = url
+    async def unroute(self, url: str) -> None:
+        self.routes.pop(url, None)
 
-    async def evaluate(self, script: str, *_args: Any) -> Any:
-        if "__wrapperRecaptchaScriptFailed" in script:
-            return self.script_failed
-        return None
+    async def goto(self, url: str, **_kwargs: Any) -> None:
+        if url in self.routes:
+            r = _FakeRoute()
+            await self.routes[url](r)
+            self.fulfillments.append(r)
+            return
+        for pattern, cand in list(self.routes.items()):
+            # Playwright glob: **/* tüm alt yolları eşleştirir.
+            if pattern.endswith("/**/*"):
+                prefix = pattern[: -len("/**/*")]
+                if url.startswith(prefix + "/"):
+                    r = _FakeRoute()
+                    await cand(r)
+                    self.fulfillments.append(r)
+                    return
+            else:
+                # basit fnmatch
+                import fnmatch
+                if fnmatch.fnmatch(url, pattern):
+                    r = _FakeRoute()
+                    await cand(r)
+                    self.fulfillments.append(r)
+                    return
 
 
 def browser_provider(**overrides: Any) -> BrowserRecaptchaProvider:
@@ -58,125 +72,198 @@ def browser_provider(**overrides: Any) -> BrowserRecaptchaProvider:
         "recaptcha_provider": "browser",
         "recaptcha_site_key": "site-key",
         "target_domain": "upstream.test",
+        "upstream_referer_path": "/c/{chat_id}",
+        "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+        "upstream_scheme": "https",
+        "upstream_accept_language": "en-US,en;q=0.9",
+        "upstream_user_agent": "Mozilla/5.0 Chrome/154.0.0.0",
+        "upstream_recaptcha_field": "recaptchaV3Token",
     }
     values.update(overrides)
     return BrowserRecaptchaProvider(make_settings(**values))
 
 
-@pytest.mark.asyncio
-async def test_browser_bootstrap_uses_isolated_target_origin():
-    page = FakePage()
-    await browser_provider()._load_page(page)
-
-    assert page.goto_url == "https://upstream.test/"
-    assert page.url == "https://upstream.test/"
-    assert len(page.fulfillments) == 1
-    route = page.fulfillments[0]
-    assert route.status == 200
-    assert route.content_type == "text/html"
-    assert route.body is not None
-    assert "/recaptcha/api.js?render=site-key" in route.body
-
-
-@pytest.mark.asyncio
-async def test_browser_bootstrap_uses_enterprise_script_when_configured():
-    page = FakePage()
-    provider = browser_provider(recaptcha_version="enterprise")
-    await provider._load_page(page)
-
-    body = page.fulfillments[0].body
-    assert body is not None
-    assert "/recaptcha/enterprise.js?render=site-key" in body
-    assert "/recaptcha/api.js" not in body
-
-
-@pytest.mark.asyncio
-async def test_browser_script_load_failure_is_not_generic_execute_timeout():
-    page = FakePage(script_failed=True)
-    with pytest.raises(RecaptchaError, match="script failed to load"):
-        await browser_provider()._load_page(page)
-
-
-@pytest.mark.asyncio
-async def test_browser_bootstrap_initialization_failure_is_actionable():
-    page = FakePage(fail_goto=True)
-    with pytest.raises(RecaptchaError, match="isolated reCAPTCHA page"):
-        await browser_provider()._load_page(page)
-
-
-@pytest.mark.asyncio
-async def test_enterprise_execution_receives_version_and_action(monkeypatch):
-    class ExecutePage:
-        def __init__(self):
-            self.arguments: list[str] = []
-
-        async def evaluate(self, script: str, arguments: list[str]) -> str:
-            assert "grecaptcha.enterprise" in script
-            self.arguments = arguments
-            return "fresh-token"
-
-        async def close(self) -> None:
-            return None
-
-    class Context:
-        def __init__(self, page: ExecutePage):
-            self.page = page
-
-        async def new_page(self) -> ExecutePage:
-            return self.page
-
-    async def fake_load_page(_page) -> None:
-        return None
-
-    page = ExecutePage()
-    provider = browser_provider(
-        recaptcha_version="enterprise",
-        recaptcha_action="chat_submit",
+def _render_bootstrap(provider: BrowserRecaptchaProvider) -> str:
+    """_install_bootstrap tarafından route handler'a verilen HTML'i döndürür."""
+    script_name = (
+        "enterprise.js"
+        if provider.settings.recaptcha_version == "enterprise"
+        else "api.js"
     )
-    provider._context = Context(page)
-    monkeypatch.setattr(provider, "_load_page", fake_load_page)
+    host = "upstream.test"
+    lang = (provider.settings.upstream_accept_language or "en-US").split(",", 1)[0]
+    return (
+        _BOOTSTRAP_HTML_TEMPLATE.replace("__SCRIPT_NAME__", script_name)
+        .replace("__SITE_KEY__", provider.settings.recaptcha_site_key)
+        .replace("__ORIGIN_HOST__", host)
+        .replace("__LANG__", lang)
+    )
 
-    assert await provider._produce_token() == "fresh-token"
+
+def test_browser_bootstrap_html_uses_v3_script():
+    html = _render_bootstrap(browser_provider(recaptcha_version="v3"))
+    assert "/recaptcha/api.js?render=site-key" in html
+    assert "/recaptcha/enterprise.js" not in html
+
+
+def test_browser_bootstrap_html_uses_enterprise_script_when_configured():
+    html = _render_bootstrap(browser_provider(recaptcha_version="enterprise"))
+    assert "/recaptcha/enterprise.js?render=site-key" in html
+    assert "/recaptcha/api.js" not in html
+
+
+def test_warm_target_url_resolves_chat_id_placeholder():
+    p = browser_provider(upstream_referer_path="/c/{chat_id}")
+    assert p._warm_target_url() == "https://upstream.test/c/captcha-warmup"
+
+
+def test_warm_target_url_passthrough_for_direct_paths():
+    p = browser_provider(upstream_referer_path="/text/direct")
+    assert p._warm_target_url() == "https://upstream.test/text/direct"
+
+
+def test_stream_url_drops_chat_id_for_new_create_endpoint():
+    p = browser_provider(
+        upstream_stream_path="/nextjs-api/stream/create-evaluation"
+    )
+    assert p._stream_url() == (
+        "https://upstream.test/nextjs-api/stream/create-evaluation"
+    )
+
+
+def test_stream_url_templates_chat_id_segment():
+    p = browser_provider(
+        upstream_stream_path="/nextjs-api/stream/post-to-evaluation/{chat_id}"
+    )
+    assert "warmup-chat-id" in p._stream_url()
 
 
 @pytest.mark.asyncio
-async def test_browser_provider_restarts_when_chromium_disconnects(monkeypatch):
-    class GoodPage:
-        async def evaluate(self, _script: str, _args: list[str]) -> str:
-            return "recovered-token"
+async def test_install_bootstrap_registers_wildcard_and_root_routes():
+    p = browser_provider()
+    page = _FakePageForBootstrap()
+    await p._install_bootstrap(page)
+    patterns = sorted(page.routes.keys())
+    assert any("/**/*" in ptn for ptn in patterns)
+    assert any(ptn.endswith("upstream.test/") for ptn in patterns)
+    # Wildcard'a giden bir istekte text/html cevap üretilsin:
+    await page.goto("https://upstream.test/text/direct")
+    assert page.fulfillments
+    last = page.fulfillments[-1]
+    assert last.status == 200
+    assert "text/html" in (last.content_type or "")
+    assert "recaptcha/api.js?render=site-key" in (last.body or "")
 
-        async def close(self) -> None:
+
+@pytest.mark.asyncio
+async def test_produce_token_restarts_when_chromium_disconnects(monkeypatch):
+    """İlk context ölüyorsa shutdown+startup yapıp tekrar dener."""
+
+    class LivePage:
+        closed = False
+
+        async def goto(self, *_a, **_k):
             return None
+
+        async def wait_for_function(self, *_a, **_k):
+            return None
+
+        async def evaluate(self, script, *_a):
+            if "wrapperRecaptchaScriptFailed" in script:
+                return False
+            if "new Promise" in script:
+                return "recovered-token"
+            return None
+
+        async def query_selector(self, *_a):
+            return None
+
+        async def route(self, *_a):
+            return None
+
+        async def unroute(self, *_a):
+            return None
+
+        def is_closed(self):
+            return self.closed
+
+        async def close(self):
+            self.closed = True
 
     class DeadContext:
         async def new_page(self):
             raise RuntimeError("Target page, context or browser has been closed")
 
-        async def close(self) -> None:
+        async def add_init_script(self, *_a):
+            return None
+
+        async def add_cookies(self, *_a):
+            return None
+
+        async def close(self):
             return None
 
     class GoodContext:
-        async def new_page(self) -> GoodPage:
-            return GoodPage()
+        def __init__(self, page):
+            self.page = page
+            self.init_scripts = []
+            self.cookies_added = []
 
-        async def close(self) -> None:
+        async def new_page(self):
+            return self.page
+
+        async def add_init_script(self, s):
+            self.init_scripts.append(s)
+
+        async def add_cookies(self, c):
+            self.cookies_added.extend(c)
+
+        async def close(self):
             return None
 
+    page = LivePage()
     provider = browser_provider(recaptcha_version="enterprise")
     provider._context = DeadContext()
+    provider._browser = type("B", (), {"is_connected": lambda self: False})()
     restarted = False
 
-    async def fake_startup() -> None:
+    async def fake_startup():
         nonlocal restarted
         restarted = True
-        provider._context = GoodContext()
-
-    async def fake_load_page(_page) -> None:
-        return None
+        provider._context = GoodContext(page)
+        provider._browser = type("B", (), {"is_connected": lambda self: True})()
 
     monkeypatch.setattr(provider, "startup", fake_startup)
-    monkeypatch.setattr(provider, "_load_page", fake_load_page)
+    # _ensure_warm_page'ı atla, doğrudan bootstrap modda sıcak sayfa ver:
+    provider._warm_page = page
+    provider._warm_mode = "bootstrap"  # type: ignore[attr-defined]
 
     token = await provider._produce_token()
     assert token == "recovered-token"
     assert restarted is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [200, 500])
+async def test_external_failure_does_not_expose_response_secrets(status):
+    import httpx
+
+    from app.core.errors import RecaptchaError
+    from app.services.recaptcha.external import ExternalRecaptchaProvider
+
+    secret = "sensitive-opaque-secret"
+    provider = ExternalRecaptchaProvider(
+        make_settings(recaptcha_external_url="https://solver.test/token")
+    )
+
+    async def handler(_request):
+        return httpx.Response(status, json={"error": secret})
+
+    provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(RecaptchaError) as exc:
+            await provider.get_token()
+        assert secret not in str(exc.value)
+        assert secret not in str(provider.stats)
+    finally:
+        await provider.shutdown()

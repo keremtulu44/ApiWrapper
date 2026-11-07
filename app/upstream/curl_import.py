@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 import re
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from app.upstream.auth import extract_access_token, looks_like_jwt
 from app.upstream.header_store import format_extra_headers
@@ -450,17 +450,22 @@ def build_settings(
         env["UPSTREAM_CX"] = cx.strip()
         env["UPSTREAM_CX_SEND"] = "true"
 
-    # --- reCAPTCHA site key (tarayıcı sağlayıcısı için kritik)
-    # Site key public'tir; cURL'ün başlıklarında/gövdesinde görünüyorsa doğru
-    # anahtar budur. Render blueprint'indeki sabit değer başka bir siteye aitse
-    # üretilen token hedefte `recaptcha_rejected` olarak reddedilir, bu yüzden
-    # cURL'de görülen değer sabit değerin önüne geçer.
-    site_key_source = " ".join(
-        [parsed.get("url") or "", *headers.values(), json.dumps(body, ensure_ascii=False)]
-    )
-    site_key_match = _RECAPTCHA_SITE_KEY_RE.search(site_key_source)
-    if site_key_match:
-        env["RECAPTCHA_SITE_KEY"] = site_key_match.group(0)
+    # Site key yalnız açıkça etiketlenmiş bir alandan alınabilir. Cookie,
+    # response token veya serbest metinde biçim eşleşmesi yeterli değildir.
+    site_key_candidates: list[Any] = [
+        body.get("siteKey"), body.get("site_key"), body.get("recaptchaSiteKey"),
+        headers.get("x-recaptcha-site-key"),
+    ]
+    if split:
+        query = parse_qs(split.query)
+        for name in ("sitekey", "site_key", "siteKey"):
+            site_key_candidates.extend(query.get(name, []))
+        if "recaptcha/" in split.path.lower():
+            site_key_candidates.extend(query.get("render", []))
+    for candidate in site_key_candidates:
+        if isinstance(candidate, str) and _RECAPTCHA_SITE_KEY_RE.fullmatch(candidate.strip()):
+            env["RECAPTCHA_SITE_KEY"] = candidate.strip()
+            break
 
     # --- model kimliği
     model_id = body.get("modelAId")

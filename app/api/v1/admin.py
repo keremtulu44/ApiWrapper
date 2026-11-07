@@ -357,6 +357,25 @@ async def update_upstream_curl(
     except ValueError as exc:
         raise InvalidRequestError(str(exc), param="curl") from exc
 
+    # cURL noop -> static geçişi yapabilir; Settings ile yaşayan sağlayıcı
+    # farklı kalırsa CAPTCHA alanı sessizce boş gönderilir.
+    current_provider = request.app.state.recaptcha
+    if current_provider.name != settings.recaptcha_provider:
+        from app.services.recaptcha import create_recaptcha_provider
+
+        new_provider = create_recaptcha_provider(settings)
+        await new_provider.startup()
+        request.app.state.recaptcha = new_provider
+        request.app.state.completion_service.recaptcha = new_provider
+        await current_provider.shutdown()
+
+    # Model kimliği de cURL snapshot'ının parçasıdır; canlı registry güncel
+    # değilse endpoint doğru modeli raporlarken POST eski modele gider.
+    request.app.state.registry.resolve(None).upstream_id = (
+        settings.upstream_captured_model_id
+        or request.app.state.configured_default_upstream_model_id
+    )
+
     account_changes = accounts.reload_credentials(settings)
     dropped_clients = await upstream.reset_account_clients()
     upstream.breaker.reset()
@@ -649,15 +668,9 @@ async def auth_diagnostics(
             # (sır) hiçbir zaman dönmez.
             "production": {
                 **(getattr(getattr(request.app.state, "recaptcha", None), "stats", {}) or {}),
-                "cached": bool(
-                    getattr(
-                        getattr(request.app.state, "recaptcha", None), "_cache", None
-                    )
-                    and getattr(
-                        request.app.state.recaptcha._cache, "_value", None
-                    )
-                ),
-                "token_ttl_seconds": settings.recaptcha_token_ttl,
+                "cached": False,
+                # Eski alan korunur; dinamik token'lar artık önbelleğe alınmaz.
+                "token_ttl_seconds": None,
             },
             "origin": settings.base_url,
             "hint": (

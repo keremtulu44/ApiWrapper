@@ -161,6 +161,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     sessions = SessionManager(settings, warmup=upstream.warmup)
     registry = _load_registry(settings)
+    app.state.configured_default_upstream_model_id = registry.resolve(None).upstream_id
     if model_id := app.state.upstream_curl_model_id:
         entry = registry.resolve(None)
         entry.upstream_id = model_id
@@ -235,7 +236,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             with contextlib.suppress(asyncio.CancelledError):
                 await telegram_task
         with contextlib.suppress(Exception):
-            await recaptcha.shutdown()
+            await app.state.recaptcha.shutdown()
         with contextlib.suppress(Exception):
             await upstream.shutdown()
         await sessions.clear()
@@ -279,6 +280,9 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # Render'ın domain fallback'i önce uygulanmalı: aksi hâlde TARGET_DOMAIN
     # boşken kalıcı durum "localhost != arena.ai" nedeniyle geri yüklenemez.
     restore_runtime_state(settings)
+    # Kalıcı snapshot, başlangıç cURL'ünden daha yeni olabilir. Registry de
+    # restore sonrası kazanan snapshot'ın modelini kullanmalıdır.
+    upstream_curl_model_id = settings.upstream_captured_model_id.strip() or None
 
     configure_logging(settings.log_level, settings.log_json)
     if (

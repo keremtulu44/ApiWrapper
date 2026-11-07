@@ -49,8 +49,7 @@ def quota_error_message(marker: str, source: str, detail: str = "") -> str:
         f"(matched {marker!r} in the {source}). The rolling window needs to expire "
         "before requests succeed again; the wrapper will keep honouring Retry-After."
     )
-    if detail:
-        text = f"{text} Upstream said: {detail[:300]}"
+    # Ham upstream gövdesi kişisel bilgi veya opak token içerebilir.
     return text
 
 
@@ -95,7 +94,7 @@ class QuotaTextScanner:
         marker = find_quota_marker(self._buffer, self._markers)
         if marker is not None:
             logger.warning(
-                "upstream_quota_detected_in_stream", marker=marker, preview=self._buffer[:120]
+                "upstream_quota_detected_in_stream", marker=marker, text_length=len(self._buffer)
             )
             return marker
         # Pencere dolduysa daha fazla tarama; gerçek içerik akıyor demektir.

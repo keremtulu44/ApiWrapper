@@ -90,6 +90,10 @@ class RecaptchaRejected(UpstreamException):
     """Upstream reCAPTCHA token'ını reddetti (yenilenip tekrar denenmeli)."""
 
 
+class UpstreamChallenge(UpstreamException):
+    """Upstream güvenlik katmanından challenge döndü; kimlik refresh'i değil."""
+
+
 class UpstreamAuthRejected(UpstreamException):
     """Upstream oturumu/`access_token`'ı reddetti (401). Yenilemek kullanıcıya düşer."""
 

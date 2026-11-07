@@ -1,5 +1,8 @@
 # Oturum devir dosyası (HANDOFF)
 
+> Tarihsel kayıt: Aşağıdaki satır ve durumlar güncel olmayabilir. Özellikle dinamik
+> CAPTCHA token önbelleği kaldırılmıştır; her POST denemesi yeni token alır.
+
 Bu dosya, yeni bir oturumun (veya başka bir modelin) depoyu **kendi başına**
 anlaması için gereken dosya yollarını ve satır konumlarını listeler.
 

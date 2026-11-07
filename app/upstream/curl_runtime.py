@@ -87,7 +87,9 @@ def apply_curl_to_settings(
     if not text:
         raise ValueError("Boş cURL gönderildi.")
     candidate = settings.model_copy(update={"upstream_curl": text})
-    updated, model_id = apply_upstream_curl(candidate)
+    # Açık yönetici güncellemesi başlangıç/restart uzlaştırması değildir:
+    # aynı exp değerindeki eski runtime snapshot yeni cURL'ü ezmemeli.
+    updated, model_id = apply_upstream_curl(candidate, prefer_existing_credentials=False)
 
     warnings: list[str] = []
     incoming_path = _curl_path(text)
@@ -129,7 +131,9 @@ def apply_curl_to_settings(
     return {"fields": changed, "model_id": model_id, "warnings": warnings}
 
 
-def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
+def apply_upstream_curl(
+    settings: Settings, *, prefer_existing_credentials: bool = True
+) -> tuple[Settings, str | None]:
     """Ham cURL varsa onu mevcut upstream alanlarının üzerine uygular.
 
     Dönüşteki ikinci değer cURL gövdesindeki ``modelAId``'dir; uygulama yaşam
@@ -186,7 +190,11 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
     )
     env_exp = token_expiry(env_token) if env_token else None
     curl_exp = token_expiry(curl_token) if curl_token else None
-    if env_exp is not None and (curl_exp is None or env_exp >= curl_exp):
+    if (
+        prefer_existing_credentials
+        and env_exp is not None
+        and (curl_exp is None or env_exp >= curl_exp)
+    ):
         # Eşit `exp`, aynı access token ile yalnız refresh token'ın döndüğü
         # hızlı restart'ta görülür. Render env, çalışma sırasında yazılan son
         # anlık görüntüdür; eşitlikte eski UPSTREAM_CURL'e dönmek tek kullanımlık
@@ -210,7 +218,10 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
                 "upstream_referer_path",
                 "upstream_stream_path",
                 "upstream_captured_model_id",
+                "upstream_cx",
+                "upstream_cx_send",
                 "recaptcha_static_token",
+                "recaptcha_site_key",
             ):
                 updates[field] = getattr(settings, field)
         elif settings.upstream_extra_headers:

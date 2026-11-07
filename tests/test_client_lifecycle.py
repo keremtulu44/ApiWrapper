@@ -186,3 +186,29 @@ async def test_failed_render_sync_is_retried_and_latest_credentials_win(monkeypa
 
     assert len(attempts) >= 2, "başarısız yazım yeniden denenmedi"
     assert attempts[-1] == "session=rotated", "tekrar deneme eski kimlikle yapıldı"
+
+
+@pytest.mark.asyncio
+async def test_set_cookie_preserves_encoded_and_duplicate_unrelated_cookie_segments():
+    settings = make_settings(
+        upstream_cookie="prefs=%7B%22v%22%3A1%7D; dup=first; dup=second; session=old"
+    )
+    upstream = UpstreamClient(settings)
+    await upstream.startup()
+    try:
+        http = upstream.client
+        http.cookies.set("session", "rotated", domain="upstream.test", path="/")
+        upstream._ingest_set_cookie(
+            httpx.Response(200, headers={"set-cookie": "session=rotated; Path=/"}),
+            http,
+            None,
+        )
+        assert settings.upstream_cookie == (
+            "prefs=%7B%22v%22%3A1%7D; dup=first; dup=second; session=rotated"
+        )
+        await upstream.reset_account_clients()
+        wire = http.build_request("GET", "https://upstream.test/").headers["cookie"]
+        assert "prefs=%7B%22v%22%3A1%7D" in wire
+        assert "session=rotated" in wire
+    finally:
+        await upstream.shutdown()

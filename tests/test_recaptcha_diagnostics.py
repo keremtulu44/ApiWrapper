@@ -40,11 +40,11 @@ async def test_stats_start_empty(settings) -> None:
 async def test_generation_is_counted_once_per_produced_token(settings) -> None:
     provider = _provider(_Counting, settings)
     await provider.get_token()
-    await provider.get_token()  # cache'ten gelir, yeni üretim değil
-    assert provider.stats["generated"] == 1
+    await provider.get_token()  # her istek ayrı tek kullanımlık token alır
+    assert provider.stats["generated"] == 2
     provider.invalidate()
     await provider.get_token()
-    assert provider.stats["generated"] == 2
+    assert provider.stats["generated"] == 3
     assert provider.stats["rejected"] == 1
 
 

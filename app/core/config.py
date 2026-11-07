@@ -321,6 +321,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------- recaptcha
     recaptcha_provider: RecaptchaProviderName = "static"
     recaptcha_static_token: str = ""
+    # Geriye uyumluluk: tek kullanımlık dinamik tokenlar cache edilmez.
     recaptcha_token_ttl: float = 100.0
     #: external sağlayıcı için: token döndüren HTTP uç noktası.
     recaptcha_external_url: str = ""
