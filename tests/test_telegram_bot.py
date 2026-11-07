@@ -966,3 +966,16 @@ async def test_apikey_discovery_failure_shows_why_and_how_many_scripts_were_scan
     text = sent[-1]["text"]
     assert "403" in text
     assert "/apikey <anahtar>" in text
+
+
+@pytest.mark.asyncio
+async def test_diagnose_shows_browser_token_source_without_token():
+    payload = _auth_payload()
+    payload["recaptcha"] = {
+        "provider": "browser", "site_key": "fake-site-key", "version": "enterprise",
+        "action": "chat_submit", "production": {
+            "generated": 4, "rejected": 4, "last_token_source": "live_execute",
+        },
+    }
+    text = await _run_diagnose(payload)
+    assert "4 token · 4 red · son yol: live_execute" in text

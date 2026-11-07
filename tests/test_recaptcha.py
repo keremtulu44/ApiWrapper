@@ -267,3 +267,45 @@ async def test_external_failure_does_not_expose_response_secrets(status):
         assert secret not in str(provider.stats)
     finally:
         await provider.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "captured", "clicked", "expected"),
+    [
+        ("live", "cached-secret", None, "live_click"),
+        ("live", None, "clicked-secret", "live_click"),
+        ("live", None, None, "live_execute"),
+        ("bootstrap", None, None, "bootstrap_execute"),
+    ],
+)
+async def test_browser_reports_token_source_without_token(
+    monkeypatch, mode, captured, clicked, expected
+):
+    provider = browser_provider()
+    provider._context = object()
+    provider._captured_live_token = captured
+
+    class Page:
+        async def close(self):
+            pass
+
+        async def evaluate(self, script, *_args):
+            return "execute-secret" if "new Promise" in script else None
+
+    async def warm():
+        return Page(), mode
+
+    async def click(_page):
+        return clicked
+
+    async def no_sleep(_duration):
+        pass
+
+    monkeypatch.setattr(provider, "_ensure_warm_page", warm)
+    monkeypatch.setattr(provider, "_extract_token_from_click", click)
+    monkeypatch.setattr("app.services.recaptcha.browser.asyncio.sleep", no_sleep)
+    token = await provider.get_token()
+    assert token in {captured, clicked, "execute-secret"}
+    assert provider.stats["last_token_source"] == expected
+    assert token not in str(provider.stats)

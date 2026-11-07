@@ -23,6 +23,10 @@ RecaptchaVersion = Literal["v3", "enterprise"]
 #: "kaydedildi" deyip uygulamanın onları yok saymasını önlemek için tek kaynak.
 MAX_ACCOUNT_SLOTS = 4
 
+# Render boş env değeri için 400 döndürürse bu ayrılmış değer,
+# doğrudan servis env katmanında eski/group değerlerini gölgeleyerek boşu korur.
+RENDER_EMPTY_VALUE = "__APIWRAPPER_EMPTY_VALUE_V1__"
+
 
 class Settings(BaseSettings):
     """Ortam değişkeni tabanlı ayarlar."""
@@ -357,6 +361,18 @@ class Settings(BaseSettings):
     metrics_enabled: bool = True
 
     # ----------------------------------------------------------- validators
+    @field_validator(
+        "upstream_cookie", "upstream_access_token", "upstream_refresh_token",
+        "upstream_user_agent", "upstream_accept_language", "upstream_extra_headers",
+        "upstream_auth_scheme", "upstream_referer_path", "upstream_recaptcha_field",
+        "upstream_captured_model_id", "upstream_cx", "upstream_mode", "upstream_stream_path",
+        "recaptcha_site_key", "recaptcha_static_token", mode="before",
+    )
+    @classmethod
+    def _decode_render_empty_value(cls, v: object) -> object:
+        """Render'ın boş değer yerine sakladığı ayrılmış işareti geri aç."""
+        return "" if v == RENDER_EMPTY_VALUE else v
+
     @field_validator(
         "api_keys",
         "admin_api_keys",

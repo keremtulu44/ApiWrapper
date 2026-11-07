@@ -437,3 +437,41 @@ def test_render_style_env_restore_keeps_refreshed_curl_context():
     assert extract_refresh_token(restored.upstream_cookie) == "new-refresh"
     assert restored.upstream_cx_send is True
     assert restored.upstream_cx == "new-context"
+
+
+@pytest.mark.asyncio
+async def test_render_empty_fallback_with_fresher_jwt_does_not_revive_old_curl_secrets(monkeypatch):
+    from app.core.config import RENDER_EMPTY_VALUE, Settings
+    from app.upstream.curl_runtime import apply_curl_to_settings, apply_upstream_curl
+    from app.upstream.state_store import sync_render_env
+
+    old_curl = _fake_curl(_jwt(3600), "old-refresh").replace(
+        "-H 'referer:", "-H 'authorization: Bearer old-secret' -H 'referer:"
+    )
+    new_curl = _fake_curl(_jwt(7200), "new-refresh")
+    current, _ = apply_upstream_curl(make_settings(
+        upstream_curl=old_curl, recaptcha_provider="browser", recaptcha_site_key="fake-key"
+    ))
+    apply_curl_to_settings(current, new_curl)
+    current.render_api_key = "fake-render-key"
+    current.render_service_id = "srv-fake"
+    assert current.upstream_access_token == ""
+    stored: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        value = json.loads(request.content)["value"]
+        if value == "":
+            return httpx.Response(400)
+        stored[request.url.path.rsplit("/", 1)[-1]] = value
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await sync_render_env(current, client)
+    assert stored["UPSTREAM_ACCESS_TOKEN"] == RENDER_EMPTY_VALUE
+    for key, value in stored.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("UPSTREAM_CURL", old_curl)
+    restored, _ = apply_upstream_curl(Settings(_env_file=None))
+    assert restored.upstream_access_token == ""
+    assert restored.recaptcha_static_token == ""
+    assert extract_refresh_token(restored.upstream_cookie) == "new-refresh"
