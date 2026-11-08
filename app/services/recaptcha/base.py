@@ -62,16 +62,20 @@ class RecaptchaProvider(abc.ABC):
         self.stats["rejected"] = int(str(self.stats["rejected"])) + 1
         self.stats["last_rejected_at"] = time.time()
         logger.info("recaptcha_token_invalidated", provider=self.name)
-        self.reset_context()
+        self.reset_token_context()
 
-    def reset_context(self) -> None:
+    def reset_token_context(self) -> None:
         """Oturum kimliği döndüğünde token **üretim bağlamını** sıfırlar.
 
         `invalidate`'dan farkı: red sayacı artmaz — oturum yenilendiğinde token
         reddedilmiş olmaz, yalnızca eski kimlikle kurulmuş sayfa/çerez/oturum
         bir daha kullanılmamalıdır. Upstream `Set-Cookie` ile veya arka plan
-        yenileyicisiyle kimlik döndüğünde `UpstreamClient` bu metodu çağırır;
-        aksi halde HTTP istemi taze çerezle, CAPTCHA üreten bağlam ise ölü
-        oturumla çalışmaya devam eder.
+        yenileyicisiyle kimlik döndüğünde `UpstreamClient` bu metodu çağırır.
+
+        Kapsam dürüstçe: bu metod **token üreten sayfayı/bağlam nesnesini**
+        bir sonraki üretimde yeniden kurdurur. Tarayıcı `BrowserContext`'inin
+        kendisi (UA, locale, challenge ile kazanılan `cf_*` çerezleri)
+        korunur — bilinçli tercih: challenge çerezlerini silmek her üretimde
+        Cloudflare'i yeniden tetiklerdi.
         """
         return None

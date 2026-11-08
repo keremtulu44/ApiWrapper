@@ -176,7 +176,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     def _reset_captcha_context() -> None:
         provider = getattr(app.state, "recaptcha", None)
         if provider is not None:
-            provider.reset_context()
+            provider.reset_token_context()
 
     upstream.add_identity_listener(_reset_captcha_context)
 

@@ -162,6 +162,9 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
         self._context: Any = None
         self._warm_page: Any = None
         self._captured_live_token: str | None = None
+        #: Bu sağlayıcının context'e yazdığı çerez adları. Ayarlardan düşenler
+        #: bir sonraki sıfırlamada bağlamdan da silinir (hayalet çerez).
+        self._injected_cookie_names: set[str] = set()
         self._lock = asyncio.Lock()
         self._reset_warm_page = False
         self.stats["last_token_source"] = None
@@ -247,20 +250,25 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
             return self._context
 
     def invalidate(self) -> None:
-        """Sonraki üretimde sıcak sayfayı kilit altında yenile.
+        """Redden sonra bağlamı sıfırla; sayfayı **bu çağrıda** kapatma.
 
         Eşzamanlı bir üretimin kullandığı sayfayı burada kapatmak onu bozardı.
         """
-        super().invalidate()
+        super().invalidate()  # reset_token_context() burada çağrılır
 
-    def reset_context(self) -> None:
-        """Red veya kimlik dönüşünden sonra bağlamı sıfırla.
+    def reset_token_context(self) -> None:
+        """Red veya kimlik dönüşünden sonra üretim bağlamını sıfırla.
 
-        Yalnız bayrağı değil, **henüz tüketilmemiş yakalanmış token'ı** da
-        düşürür: `invalidate()` ağ yanıtının ardından kilit dışında çağrıldığı
-        için, sıcak sayfanın ürettiği token bir sonraki isteğe sızmaya devam
-        edebiliyordu. Tek kullanımlık bir token'ın çöpe atılması güvenlidir;
-        bayat bir token'ın gönderilmesi değildir.
+        Ne yapılır: sıcak sayfa bir sonraki üretimde yeniden kurulur (bayat
+        bekleyen token düşürülür) ve **bizim enjekte ettiğimiz** çerezlerden
+        artık ayarlarda olmayanlar silinir — eski cURL'ün "hayalet çerezleri"
+        yeni oturumla karışmasın.
+        Ne yapılmaz: Playwright `BrowserContext`'i kapatılmaz; challenge'ı
+        geçmiş `cf_clearance`/`__cf_bm` gibi çerezler korunur.
+
+        Bekleyen token'ın düşürülmesi savunmacıdır: mevcut kodda token yakalama
+        ile tüketme arasında askıya alma noktası yok, dolayısıyla bugün
+        gözlenebilir bir sızız penceresi **kanıtlanmadı**.
         """
         self._reset_warm_page = True
         self._captured_live_token = None
@@ -275,6 +283,7 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                 await self._playwright.stop()
         self._warm_page = None
         self._captured_live_token = None
+        self._injected_cookie_names = set()
         self._context = self._browser = self._playwright = None
         logger.info("recaptcha_browser_stopped")
 
@@ -352,9 +361,50 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                     "Bu, token'ın reddedildiğini kanıtlamaz — yalnız bağlamı bildirir."
                 ),
             )
+        stale = sorted(self._injected_cookie_names - {item["name"] for item in to_add})
+        if stale:
+            await self._prune_injected_cookies(stale)
         if to_add:
-            with contextlib.suppress(Exception):
+            try:
                 await self._context.add_cookies(to_add)  # type: ignore[arg-type]
+                self._injected_cookie_names = {item["name"] for item in to_add}
+            except Exception as exc:  # pragma: no cover - tarayıcıya bağlı
+                # Domain biçimi bazı sürümlerde reddediliyor; URL ile bir kez daha.
+                logger.debug(
+                    "recaptcha_browser_cookie_inject_retry", error_type=type(exc).__name__
+                )
+                url_payload = [dict(item, url=self.settings.base_url) for item in to_add]
+                for item in url_payload:
+                    item.pop("domain", None)
+                with contextlib.suppress(Exception):
+                    await self._context.add_cookies(url_payload)  # type: ignore[arg-type]
+                    self._injected_cookie_names = {item["name"] for item in url_payload}
+
+    async def _prune_injected_cookies(self, names: list[str]) -> None:
+        """Yalnızca bizim enjekte ettiğimiz, artık ayarlarda olmayan çerezleri sil.
+
+        `remove_cookies` Playwright'ın her sürümde aynı imzayı taşımaz; hata
+        halinde sessizce vazgeçilir ve teşhis sayacına yazılır. Sayfanın kendi
+        kazandığı çerezlere (ör. `cf_clearance`) dokunulmaz.
+        """
+        assert self._context is not None
+        remover = getattr(self._context, "remove_cookies", None)
+        if remover is None:
+            self.stats["browser_cookie_prune"] = "unsupported"
+            return
+        removed: list[str] = []
+        for name in names:
+            try:
+                await remover(name=name)
+                removed.append(name)
+            except Exception as exc:  # pragma: no cover - tarayıcıya bağlı
+                logger.debug(
+                    "recaptcha_browser_cookie_prune_failed", error_type=type(exc).__name__
+                )
+        self._injected_cookie_names -= set(removed)
+        if removed:
+            self.stats["browser_cookie_prune"] = len(removed)
+            logger.info("recaptcha_browser_stale_cookies_pruned", count=len(removed))
 
     async def _wait_for_grecaptcha(self, page: Any, timeout_ms: int) -> bool:
         try:

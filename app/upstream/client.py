@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -39,10 +40,10 @@ from app.utils.backoff import full_jitter_delay, parse_retry_after
 
 logger = get_logger(__name__)
 
-#: `Set-Cookie` her yanıtta gelirse tarayıcı bağlamının sürekli yenilenmesini
-#: engellemek için otomatik kimlik bildirimi bu aralığa sıkıştırılır (saniye).
-#: Yönetici/refresh kaynaklı `reset_account_clients()` bunu beklemez.
-_IDENTITY_NOTIFY_MIN_INTERVAL = 60.0
+#: `Set-Cookie` her yanıtta gelirse token üretim bağlamının her istekte
+#: sıfırlanması ilk token süresini katlar. Bu pencere içinde gelen değişimler
+#: **silinmez**, pencere sonunda tek bildirime indirgenir (koalesein).
+_IDENTITY_NOTIFY_QUIET_SECONDS = 5.0
 
 #: Free Render env yazımı başarısız olduğunda artan aralıkla yeniden deneme.
 #: İlk denemeler hızlıdır (geçici Render 5xx/ağ hatası), üst sınır log ve API
@@ -146,7 +147,15 @@ class UpstreamClient:
         #: kimlikle çalışıyordu; cookie jar yenilenip onun yenilenmemesi
         #: yarı-taze kimlik üretiyordu. bkz. `_notify_identity_rotated`.
         self._identity_listeners: list[Callable[[], None]] = []
+        self._identity_quiet_seconds = _IDENTITY_NOTIFY_QUIET_SECONDS
         self._last_identity_notify = 0.0
+        #: Son bildirilen kimliğin özetidir (token'ın kendisi saklanmaz); aynı
+        #: erişim token'ı için bildirim yinelenmez.
+        self._last_notified_identity = ""
+        self._identity_flush_handle: object | None = None
+        #: Son `Set-Cookie` okumasının **kararı**: yalnız bayraklar, değer yok.
+        #: `identity_update` üzerinden okunur (admin/teşhis ve testler için).
+        self._last_identity_update: dict[str, object] = {}
         self._semaphore = asyncio.Semaphore(max(1, settings.max_concurrent_upstream))
         self._client: httpx.AsyncClient | None = None
         # Cookie jar ve bağlantı havuzu hesaplar arasında paylaşılmaz. Ortak jar,
@@ -218,6 +227,11 @@ class UpstreamClient:
         return client
 
     async def shutdown(self) -> None:
+        handle = self._identity_flush_handle
+        self._identity_flush_handle = None
+        if handle is not None:
+            with suppress(Exception):
+                handle.cancel()  # type: ignore[attr-defined]
         sync_task = self._render_sync_task
         self._render_sync_task = None
         self._render_sync_pending = False
@@ -290,6 +304,11 @@ class UpstreamClient:
             return
         await client.aclose()
 
+    @property
+    def identity_update(self) -> dict[str, object]:
+        """Son kimlik güncellemesinin özeti (boş dict: hiç `Set-Cookie` yok)."""
+        return dict(self._last_identity_update)
+
     def add_identity_listener(self, callback: Callable[[], None]) -> None:
         """Oturum kimliği döndüğünde çağrılacak geri çağrımı kaydeder.
 
@@ -300,18 +319,52 @@ class UpstreamClient:
         if callback not in self._identity_listeners:
             self._identity_listeners.append(callback)
 
-    def _notify_identity_rotated(self, *, throttle: bool = False) -> None:
-        """Kimlik döndüğünde dinleyicileri haberdar eder (hatalar yutulur).
+    def _notify_identity_rotated(
+        self, *, coalesce: bool = False, identity: str = ""
+    ) -> None:
+        """Kimlik değiştiğinde dinleyicileri haberdar eder (hatalar yutulur).
 
-        `throttle=True` yalnız `Set-Cookie` kaynaklı bildirimler için: hedef her
-        yanıtta çerez tazeliyorsa token üretim bağlamının her istekte
-        sıfırlanması ilk token süresini katlar.
+        Kural: **gerçekleşen hiçbir kimlik değişimi atılmaz.** İki koruma var:
+
+        * `identity` verilirse değerin özeti tutulur; aynı erişim token'ı için
+          bildirim tekrarlanmaz (periyodik `Set-Cookie` gürültüsü).
+        * `coalesce=True` yalnız `Set-Cookie` yolu için: kısa bir sessiz pencere
+          içinde gelen değişimler silinmez, pencere sonunda tek bildirime
+          indirgenir. Eskiden bu durumda bildirim **düşüyordu** ve aradaki gerçek
+          kimlik dönüşü token üretim bağlamına hiç yansımıyordu.
         """
-        if throttle:
-            now = time.monotonic()
-            if now - self._last_identity_notify < _IDENTITY_NOTIFY_MIN_INTERVAL:
-                return
-            self._last_identity_notify = now
+        digest = hashlib.sha256(identity.encode("utf-8")).hexdigest()[:16] if identity else ""
+        if digest and digest == self._last_notified_identity:
+            return
+        delay = 0.0
+        if coalesce and self._identity_quiet_seconds > 0:
+            delay = self._identity_quiet_seconds - (
+                time.monotonic() - self._last_identity_notify
+            )
+        if delay > 0:
+            self._schedule_identity_flush(delay, digest)
+            return
+        self._deliver_identity_rotated(digest)
+
+    def _schedule_identity_flush(self, delay: float, digest: str) -> None:
+        """Bekleyen bildirimi sessiz pencere sonunda teslim eder."""
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:  # pragma: no cover - olay döngüsü olmayan çağrılar
+            self._deliver_identity_rotated(digest)
+            return
+        handle = self._identity_flush_handle
+        if handle is not None:
+            handle.cancel()  # type: ignore[attr-defined]
+        self._identity_flush_handle = loop.call_later(
+            delay, self._deliver_identity_rotated, digest
+        )
+
+    def _deliver_identity_rotated(self, digest: str = "") -> None:
+        self._identity_flush_handle = None
+        self._last_identity_notify = time.monotonic()
+        if digest:
+            self._last_notified_identity = digest
         for listener in list(self._identity_listeners):
             try:
                 listener()
@@ -340,7 +393,8 @@ class UpstreamClient:
             for name, value in initial_cookies.items():
                 self._client.cookies.set(name, value, domain=cookie_host, path="/")
         self.deployment.reset()
-        self._notify_identity_rotated()
+        # Yönetici/refresh kaynaklı tazeleme: gecikmesin, koalesce edilmesin.
+        self._deliver_identity_rotated()
         return len(clients)
 
     # ------------------------------------------------------------- helpers
@@ -491,11 +545,18 @@ class UpstreamClient:
         )
         old_access = extract_access_token(old_cookie, cookie_names=cookie_names)
         new_access = extract_access_token(new_cookie, cookie_names=cookie_names)
+        new_refresh = extract_refresh_token(new_cookie, cookie_names=cookie_names)
+        current_refresh = str(self.settings.upstream_refresh_token or "")
+        refresh_rotated = bool(new_refresh and new_refresh != current_refresh)
+        access_rotated = False
         if new_access and new_access != old_access:
             # Erişim token'ı döndü: token üreten bağlam (tarayıcı sayfası) eski
             # oturumun çerezleriyle ayakta kalırsa, yeni kimlikle gönderilen POST
-            # eski bağlamdan üretilmiş bir CAPTCHA tokenı taşır.
-            self._notify_identity_rotated(throttle=True)
+            # eski bağlamdan üretilmiş bir CAPTCHA tokenı taşır. Bu bir hijyen
+            # düzeltmesidir; belirli bir canlı arızanın nedeni olduğu iddia
+            # edilmez (bkz. docs/CAPTCHA_INCELEME_2026_11_08.md §3).
+            access_rotated = True
+            self._notify_identity_rotated(coalesce=True, identity=new_access)
             if (
                 account is not None
                 and account.access_token
@@ -511,8 +572,23 @@ class UpstreamClient:
             if current_access and current_access == old_access:
                 setattr(self.settings, access_attr, new_access)
 
+        self._last_identity_update = {
+            "slot": slot,
+            "access_token_rotated": access_rotated,
+            "refresh_token_rotated": refresh_rotated,
+            "at": time.time(),
+        }
+        #: Teşhis kanıtı. "`Set-Cookie` geldi" ile "erişim token'ı gerçekten
+        #: döndü" ayrı iddialardır; kimlik/CAPTCHA tartışması ancak bu satırla
+        #: doğrulanabilir ya da çürütülebilir. Değerlerin kendisi loglanmaz.
+        logger.info(
+            "upstream_identity_update",
+            slot=slot,
+            access_token_rotated=access_rotated,
+            refresh_token_rotated=refresh_rotated,
+        )
+
         if slot <= 1:
-            new_refresh = extract_refresh_token(new_cookie, cookie_names=cookie_names)
             if new_refresh and new_refresh != self.settings.upstream_refresh_token:
                 self.settings.upstream_refresh_token = new_refresh
             save_runtime_state(self.settings, source="upstream_set_cookie")

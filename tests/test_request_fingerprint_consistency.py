@@ -304,3 +304,24 @@ def test_runtime_curl_apply_clears_stale_cx() -> None:
     assert "upstream_cx" in result["fields"] or settings.upstream_cx == ""
     assert settings.upstream_cx == ""
     assert settings.upstream_cx_send is False
+
+
+# ------------------------------------- K5 tamamlama: ingest de hesap ayarına bakar
+def test_ingest_honours_the_account_settings_gate() -> None:
+    """`ingest()` kararı **hesabın** başlıklarından verilmeli (globalden değil)."""
+    page = httpx.Response(200, headers={"x-deployment-id": STAMP_FRESH}, text="<html></html>")
+
+    # Global damga göndermiyor; hesap gönderiyor -> kanarya hesap için aktif.
+    resolver = DeploymentIdResolver(make_settings(upstream_extra_headers=""))
+    account = make_settings(upstream_extra_headers=f"x-deployment-id={STAMP_STALE}")
+    assert resolver.ingest(page, "https://upstream.test", settings=account) == STAMP_FRESH
+    assert resolver.cached("https://upstream.test") == STAMP_FRESH
+
+
+def test_ingest_is_skipped_when_only_the_global_config_has_a_stamp() -> None:
+    page = httpx.Response(200, headers={"x-deployment-id": STAMP_FRESH}, text="<html></html>")
+    resolver = DeploymentIdResolver(
+        make_settings(upstream_extra_headers=f"x-deployment-id={STAMP_STALE}")
+    )
+    account = make_settings(upstream_extra_headers="")
+    assert resolver.ingest(page, "https://upstream.test", settings=account) is None

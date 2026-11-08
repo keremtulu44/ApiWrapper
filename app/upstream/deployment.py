@@ -138,8 +138,8 @@ class DeploymentIdResolver:
             self._locks[base_url] = lock
         return lock
 
-    def _probe_url(self, base_url: str) -> str:
-        path = (self.settings.deployment_probe_path or "/").strip() or "/"
+    def _probe_url(self, base_url: str, settings: Settings | None = None) -> str:
+        path = (self._resolve(settings).deployment_probe_path or "/").strip() or "/"
         if not path.startswith("/"):
             path = "/" + path
         return f"{base_url.rstrip('/')}{path}"
@@ -184,7 +184,7 @@ class DeploymentIdResolver:
             if not force and entry.value and now - entry.checked_at < ttl:
                 return DeploymentReading(entry.value, "cache")
 
-            probe_url = self._probe_url(base_url)
+            probe_url = self._probe_url(base_url, request_settings)
             try:
                 response = await client.get(
                     probe_url,
@@ -266,8 +266,13 @@ class DeploymentIdResolver:
         tazeleme GET'i aynı yanıtı hem çerez hem damga için kullanır. Böylece
         deployment kimliği ana sayfada görünmese bile sohbet sayfasından
         yakalanabilir.
+
+        `settings` sayfayı açan hesabın ayarlarıdır: kanaryanın **aktiflik
+        kararı** da o hesabın gönderdiği başlıklara göre verilir. Global
+        ayarla kontrol etmek, damgayı hesap için gereksiz yere yazmak ya da
+        hiç yazmamakla sonuçlanıyordu.
         """
-        if not self.active or response is None:
+        if not self._active(self._resolve(settings)) or response is None:
             return None
         if not (200 <= response.status_code < 400):
             return None

@@ -21,6 +21,11 @@ düzelttik. Bu dallanma `ca97c37` üzerinde yapıldı.
   "retmin sebebi X'tir" demenin imkânı yok; aşağıda **kanıt** ile **olasılık**
   ayrı bölümlerdir.
 
+> **2. tur (itirazlar sonrası).** İlk sürüm; K3'ün nedenini, `reset_context()`
+> adını ve `cookie_only` deneyinin durumunu **olduğundan güçlü** yazmıştı.
+> İtirazların hepsi doğruydu: K3'ün neden iddiası çürütüldü, iki yarım düzeltme
+> tamamlandı, bir öneri zaten denenmişti. Kanıt zinciri ve neyin değiştiği **§6**.
+
 ## 1) cURL ile kodun ürettiği isteğin karşılaştırması
 
 Kontrol, paylaşılan cURL'ün *yapısı birebir* kopyalanıp değerleri sahteleriyle
@@ -52,6 +57,7 @@ cihaz ipucu uyumsuzluğu yok.
 Aşağıdaki her biri kod okunarak + **önce kırık, sonra geçen** testle
 doğrulandı. Hiçbiri "CAPTCHA retminin sebebi budur" iddiası taşımaz; hepsi
 "gerçek bir tarayıcının asla üretmeyeceği istek/durum üretiyorduk" sınıfında.
+(İlk sürümde K3 bu kuralı ihlal ediyordu; §6.)
 
 **K1 — Başlık adı büyük/küçük harf duyarlı biriktirildi → çelişkili çift satır.**
 `parse_extra_headers()` adları olduğu gibi bırakıyor, `build_*_headers` ise
@@ -89,32 +95,63 @@ dokunulmaz; eşleşen ipuçları **birebir korunur**. Kasıtlı taklit için
 `test_non_chromium_user_agent_keeps_its_own_hints`,
 `test_autofix_can_be_disabled_for_deliberate_spoofing`.
 
-**K3 — Otomatik kimlik dönüşünde CAPTCHA üretim bağlamı yenilenmiyordu.**
-Belirtilen belirtiyle (otomatik istek başarılı → hemen ardından kullanıcı
-isteği ve tekrar denemesi CAPTCHA 403) doğrudan örtüşen tek kanıtlı asimetri:
-`/upstream/refresh`, `/upstream/cookie` ve `/upstream/curl` gibi **elle**
-yollar `recaptcha.invalidate()` çağırıyordu; **otomatik** yollar — arka plan
-yenileyici (`run_token_refresher`), `UpstreamAuthRejected` sonrası tek deneme
-ve upstream'in `Set-Cookie` ile oturumu çevirmesi — yalnız
-`reset_account_clients()` yapıyordu. Yani POST taze çerezle giderken, token'ı
-üreten tarayıcı sayfası ölü oturumun çerezleriyle ayakta kalıyordu.
-Ayrıca `BrowserRecaptchaProvider.invalidate()` yakalanmış ama henüz
-tüketilmemiş token'ı **düşürmüyordu**; `invalidate()` ağ yanıtından sonra kilit
-dışında çağrıldığı için o token bir sonraki isteğe sızabiliyordu.
-*Düzeltme:* sağlayıcıya red sayacını kirletmeyen `reset_context()` kancası
-eklendi; `UpstreamClient.add_identity_listener()` ile bağlandı ve
-`reset_account_clients()` + erişim token'ının gerçekten döndüğü
-`_ingest_set_cookie` yolunda çağrılır (`Set-Cookie` yolu, hedef her yanıtta
-çerez tazelerse ilk token süresinin katlanmaması için 60 sn ile kısılır;
-`_body_signature`/`upstream_client_hint_mismatch` logları hariç hiçbir yerde
-değer yazılmaz). Uygulama yaşam döngüsü bu kanalı `app.state.recaptcha`
-üzerinden bağlar, böylece `/settings` sağlayıcıyı değiştirse bile bağlantı
-kopmaz.
-*Testler:* `tests/test_identity_rotation_captcha_context.py` (12 test) —
-bildirimin `reset_account_clients`'ta yapılması, `Set-Cookie` ile erişim
- token'ı döndüğünde bildirim + kısma, ilgisiz çerezde sıfırlama olmaması,
-`reset_context`'in `rejected` sayacını artırmaması, tarayıcının bekleyen
-token'ını düşürmesi, uygulama bağlantısının kurulmuş olması.
+**K3 — Kimlik dönüşünde transport ile CAPTCHA üretim bağlamı kopuyordu.**
+*(Kod asimetrisi kesin; "bu olayın nedeni" iddiası 2. turda **geri alındı**.)*
+Asimetri kodda gerçek: `/upstream/refresh`, `/upstream/cookie`, `/upstream/curl`
+gibi **elle** yollar `recaptcha.invalidate()` çağırıyor; **otomatik** yollar — arka
+plan yenileyici, `UpstreamAuthRejected` sonrası tek deneme, upstream'in
+`Set-Cookie` ile oturumu çevirmesi — yalnız `reset_account_clients()` çağırıyor.
+Yani birinde sayfa + token bağlamı tazeleniyor, diğerinde transport.
+
+Bunu **bu 403'ün nedeni olarak sunmak yanlıştı**, iki nedenle:
+
+1. Log `Set-Cookie` geldiğini gösteriyor, **oturum token'ının döndüğünü
+   göstermiyor** — hangi çerezin döndüğü logda yok. Orijinal cURL'de
+   `__Secure-sb-access-token` 1 saniyelik `Max-Age` ile süresi dolmuş
+   görünüyordu, `sb-id-token`/`sb-refresh-token` 400 günlük. "Set-Cookie geldi"
+   ve "kimlik döndü" ayrı iddialardı; ikincisi kanıtlanmadı.
+2. Kod *ilk* reddedilişte zaten sayfayı yeniliyor (`_events` içinde her
+   `recaptcha_rejected` işareti → `invalidate()`); **ikinci deneme de 403** aldı.
+   Bayat sayfa tek başına sebep olsaydı ikinci denemenin geçmesi gerekirdi.
+
+*Düzeltme (hijyen olarak korundu):* `UpstreamClient.add_identity_listener()`
+**yalnız erişim token'ı gerçekten değiştiğinde** bildirir; bağ `app.state.recaptcha`
+üzerinden kurulur, böylece `/settings` sağlayıcıyı değiştirse de kopmaz. Bu hatta
+bağlı dört iyileştirme:
+
+* **Ad:** `reset_context()` → **`reset_token_context()`**. Eski ad Playwright
+  *browser context*'inin silindiğini söylüyordu; kodun yaptığı ısınma **sayfasını**
+  çöpe atıp bekleyen canlı token'ı düşürmekti — browser context, UA, viewport ve
+  `cf_*` çerezleri korunuyordu. Yeni ad davranışı anlatıyor; docstring neyin
+  **kasıtlı olarak korunduğunu** da yazıyor.
+* **Hayalet çerez budama:** yenilenen oturumda enjekte ettiğimiz isimlerden
+  düşenler (ör. `__Secure-sb-access-token`, `accessToken`) ertesi oturumlu
+  gezinmede **eski değeriyle** taşınıyordu; artık enjekte edilen isimler izlenir
+  ve düşenler `ctx.remove_cookies(url=...)` ile silinir. `cf_clearance` /
+  `__cf_bm` **bilerek silinmez** — onları temizlemek her token'da Cloudflare'i
+  baştan tetiklerdi. `remove_cookies` desteklemeyen context'te sessiz başarısızlık
+  yerine `stats["browser_cookie_prune"] = "unsupported"` yazılır; ayrıca
+  `add_cookies` alan reddederse URL ile yeniden denenir (sessiz kayıp olmaz).
+* **Bildirim atılmaz, birleştirilir:** ilk sürümde 60 sn'lik eşik *kısıyordu* —
+  art arda iki gerçek rotasyonda ikinci bildirim hiç gelmiyordu. Artık aynı
+  değerin tekrarı sha256 özetle bastırılır (boş yere sayfa yakmamak için),
+  **farklı** değerin bildirimi sakin pencere sonuna ertelenir ama asla
+  düşürülmez (`_IDENTITY_NOTIFY_QUIET_SECONDS`, `reset_account_clients()`
+  bekleyen bildirimi beklemeden teslim eder).
+* **Teşhis:** `_ingest_set_cookie` her okumada
+  `upstream_identity_update {slot, access_token_rotated, refresh_token_rotated}`
+  yazar (yalnız **bayraklar**, değer yok) ve aynı özet `identity_update` olarak
+  `GET /v1/admin/auth` cevabında görünür. "`Set-Cookie` geldi" ile "oturum döndü"
+  ayrımı bundan sonra logdan okunabilir — ilk sürümde eksik olan tam olarak buydu.
+
+*Testler:* `tests/test_identity_rotation_captcha_context.py` (16 test) —
+bildirimin `reset_account_clients`'ta yapılması, erişim token'ı döndüğünde
+bildirim, ilgisiz çerezde sıfırlama olmaması, art arda rotasyonların
+birleştirilip **hiçbirinin düşürülmemesi**, aynı değerin ikinci kez
+bildirilmemesi, `reset_token_context`'in `rejected` sayacını artırmaması,
+bekleyen token'ın düşürülmesi, hayalet çerez budaması (challenge çerezleri
+kalarak), uygulama bağının kurulması, `/v1/admin/auth` özetinin değer
+sızdırmaması.
 
 **K4 — `cx` oturumdan oturuma taşınıyordu.** `cx` gövdede görünen, oturuma
 bağlı bir bağlam işaretidir. `build_settings()` yalnız yeni cURL'de `cx`
@@ -176,7 +213,10 @@ yönlendirilir. *Test:* `test_refresh_warning_when_cookie_cannot_be_rewritten`.
 3. **`Authorization` başlığının fazlalığı.** Tarayıcı cookie-only gidiyor;
    wrapper çerezden JWT okuyup ek başlık üretiyor. Bu başlık bayat kaldığında
    (K7) veya çerez kuşağından farklılaştığında ret tetikleyip tetiklemeyeceği
-   bilinmiyor. Test: `UPSTREAM_AUTH_HEADER_MODE=cookie_only` ile tek istek.
+   bilinmiyor. **Bu ayrım deneylendi ve elendi:**
+   `UPSTREAM_AUTH_HEADER_MODE=cookie_only` etkinken de hem kullanıcı isteği hem
+   tekrar denemesi 403 aldı (§6). Yani bu olayın ayırt edicisi
+   `Authorization`/çerez yığılması değil.
 4. **Damga/oturum kovaları.** cURL'de yapışık oturum çerezindeki `dpl_…`
    değeri ile `x-deployment-id` başlığı **farklıydı**; maskelenmiş değerlerle
    bundan sonuç çıkarılmaz. Kanarya kapalıysa (`deployment_id_refresh_enabled`
@@ -193,8 +233,12 @@ yönlendirilir. *Test:* `test_refresh_warning_when_cookie_cannot_be_rewritten`.
 
 ## 4) Doğrulama
 
-* `python -m pytest -q` → **688 geçti** (652 taban + 36 yeni/yeniden
-  düzenlenmiş); `ruff check app tests scripts` ve `mypy app` temiz.
+* `python -m pytest -q` → **694 geçti** (652 taban + 42 yeni/düzeltilmiş);
+  `ruff check app tests scripts` ve `mypy app` temiz (61 kaynak dosyası).
+* 2. turda eklenen beş davranışın (`ingest` kapağı, bildirim birleştirme,
+  hayalet çerez budama, `reset_token_context` adı, `identity_update` özeti)
+  her biri için de aynı yöntem izlendi: test **önce kırıldı**, düzeltmeden
+  sonra geçti.
 * Ağ yok: tüm testler `httpx.MockTransport`/RESPX ve sentetik verilerle
   koştu. Gerçek hedefe, Google reCAPTCHA'ya veya Cloudflare'e istek
   atılmadı; Playwright başlatılmadı.
@@ -202,7 +246,7 @@ yönlendirilir. *Test:* `test_refresh_warning_when_cookie_cannot_be_rewritten`.
   üretildi; düzeltme sonrası testler geçiyor. Testler sahte değer kullanır,
   paylaşılan cURL'ün hiçbir değeri test dosyalarına yazılmadı.
 
-## 5) Sıradaki üç iş (öncelik sırasıyla)
+## 5) Sıradaki işler (öncelik sırasıyla)
 
 1. Bir sonraki canlı 403'te `upstream_error_unclassified` satırındaki bayrakları
    ve `cf-mitigated` varlığını oku; `captcha_like` true + marker false ise
@@ -212,7 +256,34 @@ yönlendirilir. *Test:* `test_refresh_warning_when_cookie_cannot_be_rewritten`.
    ve token'ın hangi yoldan üretildiğini (`stats["last_token_source"]`) aynı
    olay penceresinde karşılaştır; yerel/izole test sayfası olmadan canlı-click
    izolasyonunu "çözüm" olarak sunma.
-3. `recaptcha_rejected` alındığında `UPSTREAM_CX_SEND=false` ve
-   `UPSTREAM_AUTH_HEADER_MODE=cookie_only` ile tek değişkenli deneme yap —
-   wrapper'a özgü iki sapma bunlar; sırayla devre dışı bırakmak retmi
-   ayırt etmenin en ucuz yolu.
+3. `recaptcha_rejected` alındığında `UPSTREAM_CX_SEND=false` ile tek değişkenli
+   deneme yap. **`UPSTREAM_AUTH_HEADER_MODE=cookie_only` denemesi yapıldı ve
+   negatife döndü** (§6); tekrar önerilmiyor.
+4. Bir sonraki olayda kimlik dönüşü iddiasını **`upstream_identity_update`
+   satırını okumadan kurma**: `access_token_rotated: false` ise K3 hattı hiç
+   gündeme gelmez. (Bu cümlenin kendisi ilk sürümün eksikliğidir.)
+
+## 6) İtirazlar ve düzeltmeler (2. tur)
+
+İlk sürüm operatörün itirazlarıyla sınandı; **itirazların hepsi doğruydu**.
+Tablo iddia → kod/log kanıtı → son hal biçimindedir.
+
+| İtiraz | Kanıt | Sonuç |
+| --- | --- | --- |
+| "`Set-Cookie` tek başına oturumun döndüğünü kanıtlamaz; sayfa zaten yenileniyor olabilir" | `_events`: her `recaptcha_rejected` işareti `invalidate()` çağırıyor; `reset_account_clients()` `Set-Cookie` yolunda **koşulsuz** çağrılıyor. Logda hangi çerezin döndüğü yok; cURL'de `__Secure-sb-access-token` `Max-Age=1`, `sb-id-token`/`sb-refresh-token` 400 gün | **Kabul.** K3'ün neden iddiası çürütüldü, "kod asimetrisi"ne indirgendi. Kanıtsızlığın kendisi düzeltilebilir olan kısmı: `upstream_identity_update` bayrakları eklendi |
+| "`cookie_only` deneyini zaten yaptık, ikisi de 403 aldı" | canlı gözlem (rapor dışında) | **Kabul.** Deney §5'ten çıkarıldı, §3'te "elendi" olarak işaretlendi; negatif sonuç ayırt edici bilgi olarak kayda geçti |
+| "`reset_context()` yanlış ad; ikisi arasındaki fark ne?" | Eski gövde yalnız `_reset_warm_page = True` + bekleyen token'ı sıfırlıyordu; browser context/UA/viewport/`cf_*` çerezlerine dokunmuyordu | **Kabul.** `reset_token_context()`; dokümantasyonu neyi **kasıtlı koruduğunu** yazıyor. Ek: enjekte edilen hayalet çerezlerin budanması |
+| "60 sn'lik kısma gerçek bir rotasyonu düşürebilir" | `if now - self._last_identity_notify < 60.0: return` — bildirim ertelenmiyor, **atılıyordu** | **Kabul.** Birleştirme + değer kıyası: aynı değer bildirilmez, farklı değer hiç kaybolmaz |
+| "`ingest` düzeltmesi yarım kaldı" | `ingest()` imzası `settings` alıyordu, gövde `if not self.active:` ile global okuyordu; `/v1/upstream/deployment/refresh` bu kapağa çarpıp `ingested: False` dönüyordu | **Kabul ve tamamlandı.** `ingest()` → `active_for(settings)`; keşif GET'i de hesabın `deployment_probe_path`'ini kullanıyor. `tests/test_request_fingerprint_consistency.py` içindeki iki yeni test (biri pozitif kontrol) kilitliyor |
+
+Ayrıca küçültülen iddia: "yakalanıp tüketilmemiş token bir **sonraki** isteğe
+sızabiliyordu" **kanıtlanamadı** — `_captured_live_token` ataması ile
+`_present_live_token` arasında `await` yok; sızıntı akışı kodda kurulamadı.
+Taşıma savunma amaçlı düşürülüyor, dil "kanıtlanamadı"ya çekildi.
+
+**Kod dışı ders.** Üç itirazın ortak kökü tek hataydı: *kodda görülen asimetri*
+ile *olayın nedeni* ayrımının rapor dilinde kayması. K1/K2/K4/K5 ve `ingest`
+kapağı gibi bulgular kod okunarak kanıtlanabilir; "bu 403'ü X üretmedi" ya da
+"X üretti" ise ancak bayraklı log/ölçümle söylenebilir. İkincisi artık kodun
+içinde ölçülebilir (`upstream_identity_update`, `browser_cookie_prune`,
+`last_token_source`, `upstream_error_unclassified`).

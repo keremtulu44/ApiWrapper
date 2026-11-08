@@ -685,6 +685,14 @@ async def auth_diagnostics(
                 else None
             ),
         },
+        # "`Set-Cookie` geldi" ile "oturum gerçekten döndü" ayrı iddialardır.
+        # Son okumanın kararı; bayraklar dışında hiçbir kimlik değeri taşımaz.
+        "identity_update": dict(
+            getattr(
+                getattr(request.app.state, "upstream", None), "identity_update", {}
+            )
+            or {}
+        ),
         "configured_cookie_names": settings.upstream_token_cookie_names,
         "cookie_names_present": sorted(cookies),
         "cookie_count": len(cookies),
