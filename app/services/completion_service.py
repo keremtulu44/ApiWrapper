@@ -194,9 +194,9 @@ class CompletionService:
             )
         if isinstance(exc, UpstreamAuthRejected):
             return APIWrapperError(
-                "The upstream service rejected the session credentials (401). "
-                "Refresh UPSTREAM_COOKIE (and/or UPSTREAM_ACCESS_TOKEN) in the "
-                "environment; the extracted access_token is missing or expired.",
+                "The upstream service rejected the session credentials. "
+                "Check refresh status and the active account; UPSTREAM_COOKIE or "
+                "UPSTREAM_ACCESS_TOKEN may be expired or otherwise invalid.",
                 status_code=502,
                 err_type="upstream_error",
                 code="upstream_unauthorized",

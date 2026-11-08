@@ -74,10 +74,11 @@ _HINTS: dict[str, FailureHint] = {
         severity="critical",
     ),
     "upstream_unauthorized": FailureHint(
-        title="Upstream oturum kimliğini reddetti (HTTP 401).",
+        title="Upstream oturum kimliğini reddetti.",
         action=(
-            "Cookie/token süresi dolmuş. Tarayıcıdan taze cURL alıp UPSTREAM_CURL'ü "
-            "güncelleyin; /v1/admin/auth?slot=N ile hangi hesabın düştüğünü görün."
+            "Süre dolması veya başka bir kimlik/oturum sorunu olabilir; "
+            "yenileme durumunu ve kullanılan hesap yuvasını kontrol edin. "
+            "Gerekirse tarayıcıdan taze cURL alıp UPSTREAM_CURL'ü güncelleyin."
         ),
         severity="critical",
     ),
@@ -118,6 +119,14 @@ _HINTS: dict[str, FailureHint] = {
             "gidiyor; uvicorn farklı portu dinliyorsa bu hata görülür."
         ),
         severity="critical",
+    ),
+    "stream_empty": FailureHint(
+        title="Akış kontrolü eksik, boş veya bozuk yanıt aldı.",
+        action="Son akış kontrolünün hata ve tamamlanma kayıtlarını inceleyin.",
+    ),
+    "probe_invalid_response": FailureHint(
+        title="Kontrol tamamlanmış bir metin yanıtı alamadı.",
+        action="Kontrolün HTTP durumunu ve servis loglarını inceleyin.",
     ),
     "upstream_failure": FailureHint(
         title="Upstream isteği başarısız oldu.",

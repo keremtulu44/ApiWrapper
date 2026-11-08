@@ -167,14 +167,75 @@ def classify_response(response: Any, duration_ms: float = 0.0) -> ProbeResult:
     )
 
 
+# Hata gövdesindeki mesaj/sırlar kaydedilmez; yalnız bilinen kodlar taşınır.
+_PROBE_ERROR_CODES = frozenset({
+    "upstream_unauthorized", "upstream_challenge", "upstream_refresh_required",
+    "upstream_quota_reached", "upstream_timeout", "upstream_unavailable",
+    "upstream_failure", "upstream_not_found", "upstream_redirect", "upstream_rate_limited",
+    "recaptcha_unavailable", "recaptcha_rejected", "invalid_api_key", "missing_api_key",
+    "rate_limit_exceeded", "model_not_found", "invalid_request", "payload_too_large",
+    "permission_denied", "not_found", "internal_error",
+})
+
+
+def _safe_embedded_error_code(value: object) -> str:
+    if isinstance(value, dict):
+        code = value.get("code")
+        if isinstance(code, str) and code in _PROBE_ERROR_CODES:
+            return code
+    return "upstream_failure"
+
+
+def classify_completion_response(response: Any, duration_ms: float = 0.0) -> ProbeResult:
+    """Non-stream kontrolde HTTP 200 tek başına sağlıklı completion demek değildir."""
+    result = classify_response(response, duration_ms)
+    if not result.ok:
+        return result
+    try:
+        payload = json.loads(getattr(response, "text", "") or "")
+    except (TypeError, ValueError):
+        return ProbeResult(ok=False, status_code=result.status_code,
+                           code="probe_invalid_response", duration_ms=duration_ms)
+    if isinstance(payload, dict) and "error" in payload:
+        return ProbeResult(ok=False, status_code=result.status_code,
+                           code=_safe_embedded_error_code(payload["error"]),
+                           duration_ms=duration_ms)
+    choices = payload.get("choices") if isinstance(payload, dict) else None
+    if isinstance(choices, list):
+        for choice in choices:
+            message = choice.get("message") if isinstance(choice, dict) else None
+            content = message.get("content") if isinstance(message, dict) else None
+            if isinstance(content, str) and content.strip():
+                return result
+    return ProbeResult(ok=False, status_code=result.status_code,
+                       code="probe_invalid_response", duration_ms=duration_ms)
+
+
+def _sse_data_events(text: str) -> list[str]:
+    """SSE veri satırlarını olay sınırlarına göre birleştirir."""
+    events: list[str] = []
+    lines: list[str] = []
+    for line in text.splitlines():
+        if not line:
+            if lines:
+                events.append("\n".join(lines))
+                lines = []
+        elif line.startswith("data:"):
+            data = line[5:]
+            lines.append(data[1:] if data.startswith(" ") else data)
+    if lines:
+        events.append("\n".join(lines))
+    return events
+
+
 async def stream_smoke(
     client: Any, headers: dict[str, str], settings: Settings
 ) -> ProbeResult:
     """`stream: true` ile akış yolunu bir kez dener.
 
     Non-stream probe streaming ucundaki bir kırılmayı (SSE üretilmemesi, gövdenin
-    boş dönmesi) göremez. Bu kontrol günde bir kez çalışır; cevabın **içeriği**
-    değil, akan veri olup olmadığı ölçülür.
+    boş dönmesi) göremez. Bu kontrol hata olaylarını, boş içeriği ve akışın
+    tamamlandığını denetler; üretilen metin kaydedilmez.
     """
     payload = {
         "model": settings.upstream_keepalive_model,
@@ -212,28 +273,49 @@ async def stream_smoke(
         return classified
 
     text = getattr(response, "text", "") or ""
-    events = [line for line in text.splitlines() if line.startswith("data:")]
-    finished = "[DONE]" in text or "finish_reason" in text
-    if not events or not finished:
+    events = _sse_data_events(text)
+    finished = False
+    content_received = False
+    malformed = False
+    for data in events:
+        if data == "[DONE]":
+            finished = True
+            continue
+        try:
+            payload = json.loads(data)
+        except (TypeError, ValueError):
+            malformed = True
+            continue
+        if not isinstance(payload, dict):
+            malformed = True
+            continue
+        if "error" in payload:
+            code = _safe_embedded_error_code(payload["error"])
+            logger.warning("upstream_keepalive_stream_smoke_failed", status=classified.status_code,
+                           code=code, duration_ms=duration_ms)
+            # HTTP 200 wrapper'ın akış başlığıdır, upstream'in başarılı olduğu anlamına gelmez.
+            return ProbeResult(ok=False, status_code=classified.status_code, code=code,
+                               duration_ms=duration_ms)
+        choices = payload.get("choices")
+        if isinstance(choices, list):
+            for choice in choices:
+                delta = choice.get("delta") if isinstance(choice, dict) else None
+                content = delta.get("content") if isinstance(delta, dict) else None
+                if isinstance(content, str) and content.strip():
+                    content_received = True
+    if not events or not finished or not content_received or malformed:
         logger.warning(
             "upstream_keepalive_stream_smoke_empty",
-            events=len(events),
-            finished=finished,
-            duration_ms=duration_ms,
+            events=len(events), finished=finished, content_received=content_received,
+            malformed=malformed, duration_ms=duration_ms,
         )
-        return ProbeResult(
-            ok=False,
-            status_code=classified.status_code,
-            code="stream_empty",
-            duration_ms=duration_ms,
-        )
+        return ProbeResult(ok=False, status_code=classified.status_code,
+                           code="stream_empty", duration_ms=duration_ms)
 
-    logger.info(
-        "upstream_keepalive_stream_smoke_completed",
-        events=len(events),
-        duration_ms=duration_ms,
-    )
+    logger.info("upstream_keepalive_stream_smoke_completed", events=len(events),
+                duration_ms=duration_ms)
     return ProbeResult(ok=True, status_code=classified.status_code, duration_ms=duration_ms)
+
 
 
 async def run_upstream_keepalive(
@@ -327,7 +409,7 @@ async def run_upstream_keepalive(
                 )
             else:
                 duration_ms = round((time.monotonic() - started) * 1000, 2)
-                result = classify_response(response, duration_ms)
+                result = classify_completion_response(response, duration_ms)
                 if result.ok:
                     logger.info("upstream_keepalive_completed", duration_ms=duration_ms)
                 else:
