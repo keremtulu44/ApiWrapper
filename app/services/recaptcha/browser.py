@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import random
 from typing import Any
@@ -35,6 +36,26 @@ from app.core.logging import get_logger
 from app.services.recaptcha.base import RecaptchaProvider
 
 logger = get_logger(__name__)
+
+#: `context.cookies()` çıktısından `add_cookies()` kabul edebileceği alanlar.
+_COOKIE_FIELDS = (
+    "name",
+    "value",
+    "domain",
+    "path",
+    "expires",
+    "httpOnly",
+    "secure",
+    "sameSite",
+    "priority",
+    "sourcePort",
+    "sourceScheme",
+)
+
+
+def _cookie_payload(cookie: dict[str, Any]) -> dict[str, Any]:
+    """Anlık görüntüyü yeniden eklenebilir biçime indirger."""
+    return {key: value for key, value in cookie.items() if key in _COOKIE_FIELDS}
 
 #: Sayfa içinde çalıştırılacak betik: seçilen v3/Enterprise API hazır olunca
 #: bizim belirlediğimiz site-key/action ile token üretir (ikinci seçenek).
@@ -380,31 +401,81 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                     await self._context.add_cookies(url_payload)  # type: ignore[arg-type]
                     self._injected_cookie_names = {item["name"] for item in url_payload}
 
-    async def _prune_injected_cookies(self, names: list[str]) -> None:
-        """Yalnızca bizim enjekte ettiğimiz, artık ayarlarda olmayan çerezleri sil.
+    @staticmethod
+    def _clear_accepts_name_filter(clearer: Any) -> bool:
+        """`clear_cookies(name=...)` bu Playwright sürümünde var mı?
 
-        `remove_cookies` Playwright'ın her sürümde aynı imzayı taşımaz; hata
-        halinde sessizce vazgeçilir ve teşhis sayacına yazılır. Sayfanın kendi
-        kazandığı çerezlere (ör. `cf_clearance`) dokunulmaz.
+        Tek kaynak imzadır: yayınlanan wheel'lerde 1.42 filtresiz
+        `clear_cookies()` veriyor, 1.49 `name/domain/path` filtresi kabul
+        ediyor. `remove_cookies` ise **hiçbir sürümde yok** — onu arayan bir
+        budama yolu sessizce hiçbir şey yapmaz.
         """
-        assert self._context is not None
-        remover = getattr(self._context, "remove_cookies", None)
-        if remover is None:
+        try:
+            parameters = inspect.signature(clearer).parameters
+        except (TypeError, ValueError):  # pragma: no cover - sarmalayıcı değilse
+            return False
+        return "name" in parameters
+
+    async def _prune_injected_cookies(self, names: list[str]) -> None:
+        """Yalnız bizim enjekte ettiğimiz, artık oturumda olmayan çerezleri siler.
+
+        Sayfanın kendi kazandığı çerezlere (`cf_clearance`, `__cf_bm`) hiçbir
+        yolda dokunulmaz; onları silmek her token üretiminde Cloudflare
+        yarışını baştan tetiklerdi. Eski Playwright'ta filtresiz
+        `clear_cookies()` tek seçenek olduğundan anlık görüntü alınır ve
+        silinmeyenler geri yazılır.
+        """
+        context = self._context
+        if context is None or not names:
+            return
+        clearer = getattr(context, "clear_cookies", None)
+        if clearer is None:
             self.stats["browser_cookie_prune"] = "unsupported"
             return
+        stale = set(names)
         removed: list[str] = []
-        for name in names:
-            try:
-                await remover(name=name)
+        if self._clear_accepts_name_filter(clearer):
+            for name in names:
+                try:
+                    await clearer(name=name)
+                except Exception as exc:  # pragma: no cover - tarayıcıya bağlı
+                    logger.debug(
+                        "recaptcha_browser_cookie_prune_failed",
+                        cookie=name,
+                        error_type=type(exc).__name__,
+                    )
+                    continue
                 removed.append(name)
+            mode = "filtered"
+        else:
+            try:
+                snapshot = [dict(item) for item in await context.cookies()]
+                keep = [item for item in snapshot if item.get("name") not in stale]
+                await clearer()
+                if keep:
+                    try:
+                        await context.add_cookies(keep)
+                    except Exception:
+                        # Bazı sürümler `cookies()` çıktısındaki tanınmayan
+                        # alanları reddeder; bilinen alanlarla bir kez daha.
+                        await context.add_cookies([_cookie_payload(item) for item in keep])
             except Exception as exc:  # pragma: no cover - tarayıcıya bağlı
-                logger.debug(
+                logger.warning(
                     "recaptcha_browser_cookie_prune_failed", error_type=type(exc).__name__
                 )
+                self.stats["browser_cookie_prune"] = "failed"
+                return
+            removed = [
+                str(item.get("name")) for item in snapshot if item.get("name") in stale
+            ]
+            mode = "rewritten"
         self._injected_cookie_names -= set(removed)
         if removed:
             self.stats["browser_cookie_prune"] = len(removed)
-            logger.info("recaptcha_browser_stale_cookies_pruned", count=len(removed))
+            self.stats["browser_cookie_prune_mode"] = mode
+            logger.info(
+                "recaptcha_browser_stale_cookies_pruned", count=len(removed), mode=mode
+            )
 
     async def _wait_for_grecaptcha(self, page: Any, timeout_ms: int) -> bool:
         try:

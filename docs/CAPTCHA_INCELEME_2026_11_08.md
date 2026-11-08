@@ -126,25 +126,46 @@ bağlı dört iyileştirme:
   **kasıtlı olarak korunduğunu** da yazıyor.
 * **Hayalet çerez budama:** yenilenen oturumda enjekte ettiğimiz isimlerden
   düşenler (ör. `__Secure-sb-access-token`, `accessToken`) ertesi oturumlu
-  gezinmede **eski değeriyle** taşınıyordu; artık enjekte edilen isimler izlenir
-  ve düşenler `ctx.remove_cookies(url=...)` ile silinir. `cf_clearance` /
-  `__cf_bm` **bilerek silinmez** — onları temizlemek her token'da Cloudflare'i
-  baştan tetiklerdi. `remove_cookies` desteklemeyen context'te sessiz başarısızlık
-  yerine `stats["browser_cookie_prune"] = "unsupported"` yazılır; ayrıca
-  `add_cookies` alan reddederse URL ile yeniden denenir (sessiz kayıp olmaz).
+  gezinmede **eski değeriyle** taşınıyordu. Playwright'da bağlam çerezleri
+  **`clear_cookies()`** ile silinir — `remove_cookies` adında bir yöntem
+  **yoktur** (1.42 ve 1.49 wheel'lerinde `BrowserContext` yüzeyi
+  `add_cookies` / `clear_cookies` / `cookies` olarak doğrulandı). İlk sürümde
+  uydurma ada bakıldığı için budama gerçek tarayıcıda sessiz no-op'tu; taklit
+  context aynı uydurma yöntemi tanımladığından test bunu görmüyordu. Şimdi:
+  * `clear_cookies(name=...)` destekleniyorsa (≈1.44+) yalnız hedef ad silinir —
+    `stats["browser_cookie_prune_mode"] = "filtered"`;
+  * desteklenmiyorsa (1.42) `cookies()` anlık görüntüsü alınıp silinmeyenler
+    `add_cookies` ile geri yazılır — `"rewritten"`;
+  * yöntem hiç yoksa hata yutulmaz, `stats["browser_cookie_prune"] =
+    "unsupported"` yazılır.
+  `cf_clearance` / `__cf_bm` **hiçbir yolda silinmez** — onları temizlemek her
+  token üretiminde Cloudflare yarışını baştan tetiklerdi. `add_cookies` alan
+  biçimini reddederse URL ile bir kez daha denenir (sessiz kayıp olmaz).
+  *Test koruması:* budama yolu AST üzerinden denetlenir — Playwright'ın
+  yayınlamadığı bir ad kodlandığı anda test kırılır (`test_prune_only_uses_cookie_apis_playwright_actually_publishes`),
+  taklidin aynı uydurma yöntemle testi yeniden yeşile çekmesi mümkün değil.
 * **Bildirim atılmaz, birleştirilir:** ilk sürümde 60 sn'lik eşik *kısıyordu* —
   art arda iki gerçek rotasyonda ikinci bildirim hiç gelmiyordu. Artık aynı
   değerin tekrarı sha256 özetle bastırılır (boş yere sayfa yakmamak için),
   **farklı** değerin bildirimi sakin pencere sonuna ertelenir ama asla
   düşürülmez (`_IDENTITY_NOTIFY_QUIET_SECONDS`, `reset_account_clients()`
-  bekleyen bildirimi beklemeden teslim eder).
-* **Teşhis:** `_ingest_set_cookie` her okumada
-  `upstream_identity_update {slot, access_token_rotated, refresh_token_rotated}`
-  yazar (yalnız **bayraklar**, değer yok) ve aynı özet `identity_update` olarak
-  `GET /v1/admin/auth` cevabında görünür. "`Set-Cookie` geldi" ile "oturum döndü"
-  ayrımı bundan sonra logdan okunabilir — ilk sürümde eksik olan tam olarak buydu.
+  bekleyen bildirimi gecikmeden teslim eder **ve zamanlayıcıyı iptal eder**).
+* **Teşhis:** `_ingest_set_cookie`, **`Set-Cookie` başlığı gelen her yanıtta**
+  bir kez `upstream_identity_update {slot, reason, changed, access_token_rotated,
+  refresh_token_rotated, untracked_cookie_names}` yazar (yalnız **bayrak ve ad**,
+  değer yok) ve aynı özet `identity_update` olarak `GET /v1/admin/auth`
+  cevabında görünür. Okuma sözleşmesi bilinçli olarak dardır:
+  * satır **yoksa** → tek sonuç: *o yanıtta `Set-Cookie` yoktu*. "Kimlik
+    değişmedi" sonucu **çıkarılamaz** (erken dönüşler artık kayıt bırakıyor:
+    `no_stored_cookie`, `empty_cookie_jar`, `cookie_unchanged`);
+  * bayrak `null` → karar değerlendirilemedi; `false` → gerçekten dönmedi;
+  * `untracked_cookie_names` doluysa hedef daha önce saklamadığımız bir ad set
+    etmiştir: satıra eklenir (`replace_cookie_values`) ama
+    `UPSTREAM_TOKEN_COOKIE_NAMES` listesine eklenmedikçe token kıyasına girmez.
+  "`Set-Cookie` geldi" ile "oturum döndü" ayrımı bundan sonra logdan
+  okunabilir — ilk sürümde eksik olan tam olarak buydu.
 
-*Testler:* `tests/test_identity_rotation_captcha_context.py` (16 test) —
+*Testler:* `tests/test_identity_rotation_captcha_context.py` (23 test) —
 bildirimin `reset_account_clients`'ta yapılması, erişim token'ı döndüğünde
 bildirim, ilgisiz çerezde sıfırlama olmaması, art arda rotasyonların
 birleştirilip **hiçbirinin düşürülmemesi**, aynı değerin ikinci kez
@@ -233,8 +254,16 @@ yönlendirilir. *Test:* `test_refresh_warning_when_cookie_cannot_be_rewritten`.
 
 ## 4) Doğrulama
 
-* `python -m pytest -q` → **694 geçti** (652 taban + 42 yeni/düzeltilmiş);
-  `ruff check app tests scripts` ve `mypy app` temiz (61 kaynak dosyası).
+* `python -m pytest -q` → **700 geçti, 1 atlandı** (atlanan: Playwright kurulu
+  olmadığı için `importorskip` ile geçen API yüzeyi testi); `ruff check app tests
+  scripts` ve `mypy app` temiz (61 kaynak dosyası).
+* 3. turda Playwright iddiaları **yayınlanan wheel üzerinden** doğrulandı:
+  `pip download playwright==1.42.0` ve `playwright-1.49.1` wheel'lerindeki
+  `async_api/_generated.py` içinde `BrowserContext` çerez yöntemleri
+  `add_cookies` / `clear_cookies` / `cookies`; `remove_cookies` **hiçbir
+  sürümde yok**, filtreli `clear_cookies(name=...)` yalnız yenilerde. Aynı
+  denetim `browser.py`nin kullandığı tüm Playwright adlarına uygulandı:
+  yayınlarda bulunmayan ad çıkmadı.
 * 2. turda eklenen beş davranışın (`ingest` kapağı, bildirim birleştirme,
   hayalet çerez budama, `reset_token_context` adı, `identity_update` özeti)
   her biri için de aynı yöntem izlendi: test **önce kırıldı**, düzeltmeden
@@ -287,3 +316,21 @@ kapağı gibi bulgular kod okunarak kanıtlanabilir; "bu 403'ü X üretmedi" ya 
 "X üretti" ise ancak bayraklı log/ölçümle söylenebilir. İkincisi artık kodun
 içinde ölçülebilir (`upstream_identity_update`, `browser_cookie_prune`,
 `last_token_source`, `upstream_error_unclassified`).
+
+## 7) 3. tur itirazları (kod hataları; neden oldukları kanıtlanmadı)
+
+Operatör `dfbeff3` üzerinde üç nokta daha gösterdi. Üçü de **kodda doğruydu**;
+üçü de **canlı CAPTCHA retminin nedeni olarak kanıtlanmış değildir** — bu
+ayrım §2/§3'teki gibi korunuyor.
+
+| İtiraz | Kanıt | Sonuç |
+| --- | --- | --- |
+| Çerez budama gerçek Playwright'ta çalışmıyor; test uydurma yöntemi tanımladığı için geçiyor | 1.42 + 1.49 wheel'lerinde `BrowserContext.remove_cookies` yok, `clear_cookies()` var; kod `getattr(ctx, "remove_cookies")` arıyordu → gerçek bağlamda **sessiz no-op** | **Kabul.** `clear_cookies()` kullanılıyor; filtre destekli/filtresiz/desteklenmeyen üç yol + `stats` sayaçları. Testler artık gerçek API yüzeyini modelliyor; AST koruma testi uydurma ada dönüşü kırıyor |
+| Bekleyen bildirim kaydı kaybolabiliyor; `reset_account_clients()` zamanlayıcıyı iptal etmeden referansı siliyor | `_deliver_identity_rotated()` yalnız `self._identity_flush_handle = None` yapıyordu — `call_later` geri çağırması yaşıyor ve pencere sonunda **bir kez daha** çalıyordu | **Kabul.** `_cancel_identity_flush()` (iptal + referans + bekleyen değer özeti) hem teslimde hem kapanışta kullanılıyor; bekleyen özet teslim edilince dedupe durumu da ilerliyor. `test_reset_account_clients_cancels_the_pending_flush` fazladan bildirimi kilitliyor |
+| "`Set-Cookie` gelen her yanıt loglanır" doğru değil; kayıt yokluğu kimliğin değişmediğini kanıtlamaz | Dört erken dönüş (`set-cookie` yok / `old_cookie` yok / jar boş / değer aynı) logdan **önce** `return` ediyordu | **Kabul.** Erken dönüşler artık `reason` ile kayıt bırakıyor, değerlendirilemeyen bayrak `null` kalıyor; sözleşme (satır yok = `Set-Cookie` yok) docstring + §2'de yazılı |
+
+Beklenmedik bir bulgu da yola çıktı: `replace_cookie_values` yeni bir çerez
+adını kayıtlı satıra **ekliyor**, yani "hedef yeni ad set etti" durumu sessizce
+kaybolmuyor. Buna rağmen o ad token kıyasına girmediği için `untracked_cookie_names`
+alanı kayda eklendi; ilk sürümdeki "kıyaslama yeni adı görmez" endişesi bu
+nedenle **yarı doğruydu** ve budama dalı (ulaşılamaz `untracked_only`) kaldırıldı.

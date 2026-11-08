@@ -21,15 +21,18 @@ Gerçek hedef/gerçek token kullanılmaz; çerez ve JWT'ler sentetiktir.
 
 from __future__ import annotations
 
+import ast
 import asyncio
 import base64
 import json
+import pathlib
 import time
 from typing import Any
 
 import httpx
 import pytest
 
+import app.services.recaptcha.browser
 from app.main import create_app
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.recaptcha.browser import BrowserRecaptchaProvider
@@ -311,12 +314,18 @@ def test_refresh_warning_when_cookie_cannot_be_rewritten(capsys) -> None:
 
 
 # -------------------------------------------------- tarayıcı bağlamının kapsamı
-class _FakeContext:
-    """Playwright `BrowserContext`'inin minimal taklidi (ad/value düzeyinde)."""
+#
+# Taklitler **yalnız Playwright'ın gerçekte yayınladığı yöntemi** tanımlar.
+# `remove_cookies` diye bir yöntem yoktur (1.42 ve 1.49 wheel'lerinde doğrulandı);
+# bağlam çerezleri `clear_cookies()` ile silinir ve filtreyi yalnız yeni
+# sürümler kabul eder. Bu ikisini karıştıran test, kod gerçek tarayıcıda hiçbir
+# şey yapmazken yeşil kalıyordu — aşağıdaki üç vaka o boşluğu kapatır.
 
+
+class _ContextBase:
     def __init__(self, initial: list[dict[str, Any]]) -> None:
-        self.cookies_list = initial
-        self.removed: list[str] = []
+        self.cookies_list = [dict(item) for item in initial]
+        self.clears: list[dict[str, Any]] = []
 
     async def add_cookies(self, items: list[dict[str, Any]]) -> None:
         for item in items:
@@ -325,21 +334,53 @@ class _FakeContext:
             ]
             self.cookies_list.append(dict(item))
 
-    async def remove_cookies(self, *, name: str, **_kw: Any) -> None:
-        self.removed.append(name)
-        self.cookies_list = [c for c in self.cookies_list if c["name"] != name]
-
     def names(self) -> list[str]:
         return sorted(c["name"] for c in self.cookies_list)
 
 
-def test_reset_prunes_ghost_cookies_but_keeps_challenge_cookies() -> None:
-    """`reset_token_context` gerçekten bağlamı temizler: bizim koyduklarımız silinir.
+class _FilteredContext(_ContextBase):
+    """Playwright >=1.44: `clear_cookies(name=...)` destekli."""
 
-    Eski cURL'de olup yenisinde olmayan çerez, context'te kalırsa token eski
-    oturumun iziyle üretilir. Sayfanın challenge ile kazandığı `cf_clearance`
-    ise **korunur** — silmek her üretimde Cloudflare'ı yeniden tetiklerdi.
-    """
+    async def cookies(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.cookies_list]
+
+    async def clear_cookies(
+        self,
+        *,
+        name: Any = None,
+        domain: Any = None,
+        path: Any = None,
+    ) -> None:
+        self.clears.append({"name": name, "domain": domain, "path": path})
+        if name is None:
+            self.cookies_list = []
+            return
+        self.cookies_list = [c for c in self.cookies_list if c["name"] != name]
+
+
+class _LegacyContext(_ContextBase):
+    """Playwright 1.42: `clear_cookies()` filtresiz — anahtar kelime kabul etmez."""
+
+    async def cookies(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.cookies_list]
+
+    async def clear_cookies(self) -> None:
+        self.clears.append({})
+        self.cookies_list = []
+
+
+class _NoCookieApiContext(_ContextBase):
+    """Çerez silme yöntemi hiç olmayan bağlam (istisna değil, sayaç beklenir)."""
+
+
+_INITIAL_JAR = [
+    {"name": "sb-session", "value": "stale-old", "domain": "svc.example.test"},
+    {"name": "legacy-flag", "value": "1", "domain": "svc.example.test"},
+    {"name": "cf_clearance", "value": "from-challenge", "domain": "svc.example.test"},
+]
+
+
+def _browser_provider() -> BrowserRecaptchaProvider:
     settings = make_settings(
         recaptcha_provider="browser",
         recaptcha_site_key="6Lfake",
@@ -347,28 +388,102 @@ def test_reset_prunes_ghost_cookies_but_keeps_challenge_cookies() -> None:
         upstream_cookie="sb-session=new-value; theme=dark",
     )
     provider = BrowserRecaptchaProvider(settings)
-    provider._context = _FakeContext(
-        [
-            {"name": "sb-session", "value": "stale-old", "domain": "svc.example.test"},
-            {"name": "legacy-flag", "value": "1", "domain": "svc.example.test"},
-            {"name": "cf_clearance", "value": "from-challenge", "domain": "svc.example.test"},
-        ]
-    )
     provider._injected_cookie_names = {"sb-session", "legacy-flag"}
+    return provider
+
+
+def test_reset_prunes_ghost_cookies_but_keeps_challenge_cookies() -> None:
+    """Filtreli API: yalnız bizim koyduklarımız silinir, `cf_clearance` kalır."""
+    provider = _browser_provider()
+    provider._context = _FilteredContext(_INITIAL_JAR)
 
     async def run() -> None:
         await provider._set_cookies_from_settings()
 
     asyncio.run(run())
 
+    assert provider._context.clears == [{"name": "legacy-flag", "domain": None, "path": None}]
     names = provider._context.names()
-    # Yalnızca bizim enjekte ettiklerimiz silinir.
-    assert provider._context.removed == ["legacy-flag"]
     assert "cf_clearance" in names, "challenge çerezi korunmalı"
     assert "legacy-flag" not in names
     injected = {c["name"]: c["value"] for c in provider._context.cookies_list}
     assert injected["sb-session"] == "new-value"
     assert provider._injected_cookie_names == {"sb-session", "theme"}
+    assert provider.stats["browser_cookie_prune_mode"] == "filtered"
+
+
+def test_prune_still_works_on_playwright_without_name_filter() -> None:
+    """Filtresiz API: anlık görüntü + geri yazma; yine de `cf_*` korunur.
+
+    Bu vaka olmadan tek-imzaya kodlanmış budama, `playwright==1.42` kullanan
+    kurulumlarda sessizce çalışmazdı.
+    """
+    provider = _browser_provider()
+    provider._context = _LegacyContext(_INITIAL_JAR)
+
+    async def run() -> None:
+        await provider._prune_injected_cookies(["sb-session", "legacy-flag"])
+
+    asyncio.run(run())
+
+    context = provider._context
+    assert context.clears == [{}], "tek filtresiz temizlik beklenirdi"
+    names = context.names()
+    assert "legacy-flag" not in names and "sb-session" not in names
+    assert "cf_clearance" in names, "geri yazılanlar arasında kalmalı"
+    assert provider._injected_cookie_names == set()
+    assert provider.stats["browser_cookie_prune_mode"] == "rewritten"
+
+
+def test_prune_reports_unsupported_instead_of_silently_doing_nothing() -> None:
+    provider = _browser_provider()
+    provider._context = _NoCookieApiContext(_INITIAL_JAR)
+
+    async def run() -> None:
+        await provider._prune_injected_cookies(["sb-session"])
+
+    asyncio.run(run())
+
+    assert provider.stats["browser_cookie_prune"] == "unsupported"
+    # Silme yöntemi yoksa hiçbir çerez kaybolmaz (yanlışlıkla toplu temizlik yok).
+    assert provider._context.names() == ["cf_clearance", "legacy-flag", "sb-session"]
+    assert provider._injected_cookie_names == {"sb-session", "legacy-flag"}
+
+
+def test_prune_only_uses_cookie_apis_playwright_actually_publishes() -> None:
+    """Koruma testi: Playwright'ta olmayan bir metoda kodmak sessiz no-op'tur.
+
+    Yorum satırları değil, **AST'deki nitelik erişimleri** incelenir: taklidin
+    uydurma bir yöntemi tanımlayıp testi yeşile çekmesi burada işe yaramaz.
+    """
+    tree = ast.parse(
+        pathlib.Path(app.services.recaptcha.browser.__file__).read_text(),
+        filename="browser.py",
+    )
+    accessed = {
+        node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
+    }
+    getattr_calls = {
+        node.args[1].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "getattr"
+        and len(node.args) > 1
+        and isinstance(node.args[1], ast.Constant)
+    }
+    looked_up = accessed | getattr_calls
+
+    assert "remove_cookies" not in looked_up, "Playwright böyle bir yöntem yayınlamıyor"
+    assert "clear_cookies" in looked_up, "bağlam çerezleri bununla silinir"
+
+
+def test_prune_against_the_installed_playwright_package() -> None:
+    """Tarayıcı extras kuruluysa yöntemi gerçek sınıftan doğrula."""
+    playwright_api = pytest.importorskip("playwright.async_api")
+    context_cls = playwright_api.BrowserContext
+    assert not hasattr(context_cls, "remove_cookies")
+    assert hasattr(context_cls, "clear_cookies")
 
 
 async def test_identity_update_reports_whether_the_access_token_rotated() -> None:
@@ -410,10 +525,15 @@ async def test_identity_update_reports_whether_the_access_token_rotated() -> Non
         # Özet yalnız bayrak taşır: token değerlerinin hiçbiri saklanmaz/loglanmaz.
         assert set(second) == {
             "slot",
+            "reason",
+            "changed",
             "access_token_rotated",
             "refresh_token_rotated",
+            "untracked_cookie_names",
             "at",
         }
+        assert second["reason"] == "applied" and second["changed"] is True
+        assert second["untracked_cookie_names"] == []
         assert new_token not in json.dumps(second) and old_token not in json.dumps(second)
     finally:
         await upstream.shutdown()
@@ -449,3 +569,166 @@ def test_diagnostics_expose_the_rotation_decision_without_values() -> None:
     assert payload["identity_update"]["access_token_rotated"] is True
     body = json.dumps(payload)
     assert old_token not in body and new_token not in body
+
+# -------------------------------------------------- bekleyen bildirimin akıbeti
+def test_reset_account_clients_cancels_the_pending_flush() -> None:
+    """Bekleyen bildirim teslim edilir **ve zamanlayıcı iptal edilir**.
+
+    `reset_account_clients()` bekleyen kaydı yalnız referans düzeyinde
+    temizliyordu; `loop.call_later` geri çağırması yaşadığı için aynı bildirim
+    sonraki bir döngü turunda bir daha çalışıyordu (gereksiz sayfa yakma).
+    """
+    old_token = _fake_jwt(sub="user-1")
+    settings = make_settings(upstream_cookie=f"sb-session={old_token}")
+    upstream = UpstreamClient(settings)
+    recorder = _Recorder()
+    upstream.add_identity_listener(recorder)
+    upstream._identity_quiet_seconds = 0.2
+
+    async def run() -> None:
+        await upstream.startup()
+        try:
+            http = upstream.client
+            first = _fake_jwt(sub="user-1", iat=11)
+            http.cookies.set("sb-session", first, domain="upstream.test", path="/")
+            upstream._ingest_set_cookie(
+                httpx.Response(200, headers={"set-cookie": f"sb-session={first}; Path=/"}),
+                http,
+                None,
+            )
+            assert recorder.calls == 1, "ilk dönüş pencere dışında, gecikmesiz"
+
+            second = _fake_jwt(sub="user-1", iat=12)
+            http.cookies.set("sb-session", second, domain="upstream.test", path="/")
+            upstream._ingest_set_cookie(
+                httpx.Response(200, headers={"set-cookie": f"sb-session={second}; Path=/"}),
+                http,
+                None,
+            )
+            assert recorder.calls == 1, "ikinci dönüş sessiz pencereye girmeli"
+
+            await upstream.reset_account_clients()
+            assert recorder.calls == 2, "bekleyen bildirim transport yenilenirken teslim edilmeli"
+
+            await asyncio.sleep(0.35)  # iptal edilmemiş bir zamanlayıcı burada çalar
+            assert recorder.calls == 2, "iptal edilmeyen zamanlayıcı fazladan bildirim üretti"
+        finally:
+            await upstream.shutdown()
+
+    asyncio.run(run())
+
+
+def test_shutdown_cancels_a_pending_flush_without_calling_listeners() -> None:
+    """Kapanışta bekleyen bildirim çalmaz; dinleyici kapanmış sayfaya dokunmaz."""
+    old_token = _fake_jwt(sub="user-1")
+    settings = make_settings(upstream_cookie=f"sb-session={old_token}")
+    upstream = UpstreamClient(settings)
+    recorder = _Recorder()
+    upstream.add_identity_listener(recorder)
+    upstream._identity_quiet_seconds = 5.0
+
+    async def run() -> None:
+        await upstream.startup()
+        first = _fake_jwt(sub="user-1", iat=21)
+        upstream._notify_identity_rotated(coalesce=True, identity=first)
+        assert recorder.calls == 1  # ilki gecikmesiz teslim edilir
+        second = _fake_jwt(sub="user-1", iat=22)
+        upstream._notify_identity_rotated(coalesce=True, identity=second)
+        assert recorder.calls == 1
+        assert upstream._identity_flush_handle is not None
+        await upstream.shutdown()
+        assert upstream._identity_flush_handle is None
+
+    asyncio.run(run())
+
+
+# ------------------------------------------ teşhis kaydının kapsadığı/covermediği
+def test_set_cookie_response_always_leaves_an_identity_record() -> None:
+    """Kaydın yokluğu yalnız "`Set-Cookie` yok" demektir; ihmal edilmiş vaka kalmaz."""
+    token = _fake_jwt(sub="user-1")
+
+    async def case(
+        *,
+        cookie: str,
+        headers: dict[str, str],
+        empty_jar: bool = False,
+        extra_jar: dict[str, str] | None = None,
+    ) -> dict[str, object]:
+        settings = make_settings(upstream_cookie=cookie)
+        upstream = UpstreamClient(settings)
+        await upstream.startup()
+        try:
+            http = upstream.client
+            if empty_jar:
+                http.cookies.clear()
+            for name, value in (extra_jar or {}).items():
+                http.cookies.set(name, value, domain="upstream.test", path="/")
+            upstream._ingest_set_cookie(
+                httpx.Response(200, headers=headers), http, None
+            )
+            return upstream.identity_update
+        finally:
+            await upstream.shutdown()
+
+    # 1) Yanıtta `Set-Cookie` yok → kayıt yok (ve bu "kimlik sabit" demek değil).
+    async def no_header() -> None:
+        settings = make_settings(upstream_cookie=f"sb-session={token}")
+        upstream = UpstreamClient(settings)
+        await upstream.startup()
+        try:
+            upstream._ingest_set_cookie(httpx.Response(200), upstream.client, None)
+            assert upstream.identity_update == {}
+        finally:
+            await upstream.shutdown()
+
+    asyncio.run(no_header())
+
+    # 2) Saklanmış çerez satırı yok → karar verilemez.
+    record = asyncio.run(
+        case(
+            cookie="",
+            headers={"set-cookie": "sb-session=x; Path=/"},
+            extra_jar={"sb-session": "x"},
+        )
+    )
+    assert record["reason"] == "no_stored_cookie"
+    assert record["access_token_rotated"] is None
+    assert record["untracked_cookie_names"] == ["sb-session"]
+
+    # 3) Jar okunamıyor → yine "değerlendirilemedi".
+    record = asyncio.run(
+        case(
+            cookie=f"sb-session={token}",
+            headers={"set-cookie": "sb-session=y; Path=/"},
+            empty_jar=True,
+        )
+    )
+    assert record["reason"] == "empty_cookie_jar"
+    assert record["access_token_rotated"] is None
+
+    # 4) Çerez geldi ama değer değişmedi → `false` değil, `changed: false`.
+    record = asyncio.run(
+        case(
+            cookie=f"sb-session={token}",
+            headers={"set-cookie": f"sb-session={token}; Path=/"},
+        )
+    )
+    assert record["reason"] == "cookie_unchanged"
+    assert record["changed"] is False
+    assert record["access_token_rotated"] is None
+
+    # 5) Hedef *yeni bir ad* set etti: satıra eklenir (değişti sayılır) ama token
+    #    kıyası bu adı görmez → kayıt hangi adların "izlenmiyor" olduğunu söyler.
+    record = asyncio.run(
+        case(
+            cookie=f"sb-session={token}",
+            headers={"set-cookie": "sb-next-gen=abc; Path=/"},
+            extra_jar={"sb-next-gen": "abc"},
+        )
+    )
+    assert record["reason"] == "applied"
+    assert record["changed"] is True
+    assert record["access_token_rotated"] is False
+    assert record["untracked_cookie_names"] == ["sb-next-gen"]
+    # Adlar sır değildir; değer değil yalnız ad listelenir.
+    assert "abc" not in json.dumps(record)

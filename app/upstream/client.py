@@ -153,6 +153,8 @@ class UpstreamClient:
         #: erişim token'ı için bildirim yinelenmez.
         self._last_notified_identity = ""
         self._identity_flush_handle: object | None = None
+        #: Sessiz pencereye alınmış bildirimin değer özeti (değerin kendisi değil).
+        self._identity_flush_digest: str = ""
         #: Son `Set-Cookie` okumasının **kararı**: yalnız bayraklar, değer yok.
         #: `identity_update` üzerinden okunur (admin/teşhis ve testler için).
         self._last_identity_update: dict[str, object] = {}
@@ -227,11 +229,7 @@ class UpstreamClient:
         return client
 
     async def shutdown(self) -> None:
-        handle = self._identity_flush_handle
-        self._identity_flush_handle = None
-        if handle is not None:
-            with suppress(Exception):
-                handle.cancel()  # type: ignore[attr-defined]
+        self._cancel_identity_flush()
         sync_task = self._render_sync_task
         self._render_sync_task = None
         self._render_sync_pending = False
@@ -304,6 +302,35 @@ class UpstreamClient:
             return
         await client.aclose()
 
+    def _record_identity_update(
+        self,
+        slot: int,
+        *,
+        reason: str,
+        changed: bool = False,
+        access_rotated: bool | None = None,
+        refresh_rotated: bool | None = None,
+        untracked: list[str] | None = None,
+    ) -> None:
+        """Son `Set-Cookie` okumasının kararını yazar (değerler hariç).
+
+        "`Set-Cookie` geldi" ile "erişim token'ı gerçekten döndü" ayrı
+        iddialardır; kimlik/CAPTCHA tartışması ancak bu satırla doğrulanabilir
+        ya da çürütülebilir. `None` bayrak = değerlendirilemedi, `False` ≠
+        belirlenmiş "dönmedi".
+        """
+        payload: dict[str, object] = {
+            "slot": slot,
+            "reason": reason,
+            "changed": changed,
+            "access_token_rotated": access_rotated,
+            "refresh_token_rotated": refresh_rotated,
+            "untracked_cookie_names": list(untracked or []),
+            "at": time.time(),
+        }
+        self._last_identity_update = payload
+        logger.info("upstream_identity_update", **payload)
+
     @property
     def identity_update(self) -> dict[str, object]:
         """Son kimlik güncellemesinin özeti (boş dict: hiç `Set-Cookie` yok)."""
@@ -356,12 +383,32 @@ class UpstreamClient:
         handle = self._identity_flush_handle
         if handle is not None:
             handle.cancel()  # type: ignore[attr-defined]
+        self._identity_flush_digest = digest
         self._identity_flush_handle = loop.call_later(
             delay, self._deliver_identity_rotated, digest
         )
 
-    def _deliver_identity_rotated(self, digest: str = "") -> None:
+    def _cancel_identity_flush(self) -> None:
+        """Planlanmış ama henüz teslim edilmemiş bildirimi iptal eder.
+
+        Referansı silmek yetmez: `loop.call_later` geri çağırması存活 olduğu için
+        sonraki bir olay döngüsü turunda **tekrar** çalışır ve dinleyiciler
+        (ör. tarayıcı sayfasını yakmak) beklenmedik bir anda tetiklenir.
+        """
+        handle = self._identity_flush_handle
         self._identity_flush_handle = None
+        self._identity_flush_digest = ""
+        if handle is not None:
+            with suppress(Exception):
+                handle.cancel()  # type: ignore[attr-defined]
+
+    def _deliver_identity_rotated(self, digest: str = "") -> None:
+        # argmansız çağrı (ör. transport yenilenmesi) bekleyen bildirimi
+        # teslim eder ve onu iptal eder; bekleyen hiçbir şey yoksa doğrudan
+        # bildirir. `identity_update` kaydındaki bayraklar okunabilir kalsın.
+        if not digest:
+            digest = self._identity_flush_digest
+        self._cancel_identity_flush()
         self._last_identity_notify = time.monotonic()
         if digest:
             self._last_notified_identity = digest
@@ -512,7 +559,15 @@ class UpstreamClient:
         client: httpx.AsyncClient,
         account: Account | None,
     ) -> None:
-        """Sunucudan gelen `Set-Cookie` başlıklarını ayarlara ve durum deposuna yansıtır."""
+        """Sunucudan gelen `Set-Cookie` başlıklarını ayarlara ve durum deposuna yansıtır.
+
+        Teşhis sözleşmesi (bilinçli dar): `upstream_identity_update` satırı
+        **`Set-Cookie` başlığı gelen her yanıtta tam bir kez** yazılır. Yanıtta
+        `Set-Cookie` yoksa satır da yoktur; bu nedenle satırın yokluğu yalnız
+        "hedef bu yanıtta çerez set etmedi" demektir — kimliğin değişmediğinin
+        kanıtı **değildir**. Karar değerlendirilemediyse bayraklar `null` döner
+        (`reason` alanına bakın), yanlışlıkla `false` yazılmaz.
+        """
         if not response.headers.get("set-cookie"):
             return
         slot = account.slot if account is not None else 1
@@ -523,12 +578,30 @@ class UpstreamClient:
             else str(getattr(self.settings, cookie_attr, "") or "")
         ).strip()
         if not old_cookie:
+            self._record_identity_update(
+                slot,
+                reason="no_stored_cookie",
+                untracked=sorted(
+                    {c.name for c in client.cookies.jar if c.value}
+                ),
+            )
             return
         jar_cookies = {c.name: c.value for c in client.cookies.jar if c.value}
         if not jar_cookies:
+            self._record_identity_update(
+                slot,
+                reason="empty_cookie_jar",
+            )
             return
         new_cookie = replace_cookie_values(old_cookie, jar_cookies)
+        # Hedef daha önce saklamadığımız bir ad set ettiiyse `replace_cookie_values`
+        # onu satıra *ekler* (auth.py), yani çerez değişmiş sayılır — fakat bu ad
+        # `UPSTREAM_TOKEN_COOKIE_NAMES` listesinde olmadıkça erişim/refresh token
+        # kıyasına girmez. Bu yüzden `untracked_cookie_names` her kayıtla birlikte
+        # taşınır: "çerez değişti ama token kıyası bu adı görmedi" okunabilir kalsın.
+        untracked = sorted(set(jar_cookies) - set(parse_cookie_header(old_cookie)))
         if new_cookie == old_cookie:
+            self._record_identity_update(slot, reason="cookie_unchanged")
             return
 
         if account is not None:
@@ -578,14 +651,13 @@ class UpstreamClient:
             "refresh_token_rotated": refresh_rotated,
             "at": time.time(),
         }
-        #: Teşhis kanıtı. "`Set-Cookie` geldi" ile "erişim token'ı gerçekten
-        #: döndü" ayrı iddialardır; kimlik/CAPTCHA tartışması ancak bu satırla
-        #: doğrulanabilir ya da çürütülebilir. Değerlerin kendisi loglanmaz.
-        logger.info(
-            "upstream_identity_update",
-            slot=slot,
-            access_token_rotated=access_rotated,
-            refresh_token_rotated=refresh_rotated,
+        self._record_identity_update(
+            slot,
+            reason="applied",
+            changed=True,
+            access_rotated=access_rotated,
+            refresh_rotated=refresh_rotated,
+            untracked=untracked,
         )
 
         if slot <= 1:
