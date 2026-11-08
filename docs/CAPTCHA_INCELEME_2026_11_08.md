@@ -133,7 +133,8 @@ bağlı dört iyileştirme:
   uydurma ada bakıldığı için budama gerçek tarayıcıda sessiz no-op'tu; taklit
   context aynı uydurma yöntemi tanımladığından test bunu görmüyordu. Şimdi:
   * `clear_cookies(name=...)` destekleniyorsa (1.42'de yok, 1.49'da var;
-    sürüm tahmini yapılmaz, imza çalışırken okunur) yalnız hedef ad silinir —    `stats["browser_cookie_prune_mode"] = "filtered"`;
+    sürüm tahmini yapılmaz, imza çalışırken okunur) yalnız hedef ad silinir —
+    `stats["browser_cookie_prune_mode"] = "filtered"`;
   * desteklenmiyorsa (1.42) `cookies()` anlık görüntüsü alınıp silinmeyenler
     `add_cookies` ile geri yazılır — `"rewritten"`;
   * yöntem hiç yoksa hata yutulmaz, `stats["browser_cookie_prune"] =
