@@ -14,6 +14,7 @@ kalkar: cURL ne veriyorsa birebir o yazılır.
   * ``TARGET_DOMAIN``        — URL'nin alan adı (şemasız)
   * ``UPSTREAM_STREAM_PATH`` — gerçek akış yolu (``{chat_id}`` varsa parametreleştirilir)
   * ``UPSTREAM_MODE``        — gövdedeki ``mode`` (örn. ``direct``)
+  * ``UPSTREAM_CX``           — gövdedeki ``cx`` (oturuma bağlı; yoksa temizlenir)
   * ``UPSTREAM_COOKIE``      — ``cookie`` başlığının tamamı
   * ``UPSTREAM_ACCEPT_LANGUAGE``
   * ``UPSTREAM_USER_AGENT``
@@ -63,6 +64,8 @@ ENV_ORDER: tuple[str, ...] = (
     "TARGET_DOMAIN",
     "UPSTREAM_STREAM_PATH",
     "UPSTREAM_MODE",
+    "UPSTREAM_CX",
+    "UPSTREAM_CX_SEND",
     "UPSTREAM_RECAPTCHA_FIELD",
     "UPSTREAM_ACCEPT_LANGUAGE",
     "UPSTREAM_USER_AGENT",

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 
@@ -37,6 +38,11 @@ from app.upstream.quota import find_quota_marker, normalize_markers, quota_error
 from app.utils.backoff import full_jitter_delay, parse_retry_after
 
 logger = get_logger(__name__)
+
+#: `Set-Cookie` her yanıtta gelirse tarayıcı bağlamının sürekli yenilenmesini
+#: engellemek için otomatik kimlik bildirimi bu aralığa sıkıştırılır (saniye).
+#: Yönetici/refresh kaynaklı `reset_account_clients()` bunu beklemez.
+_IDENTITY_NOTIFY_MIN_INTERVAL = 60.0
 
 #: Free Render env yazımı başarısız olduğunda artan aralıkla yeniden deneme.
 #: İlk denemeler hızlıdır (geçici Render 5xx/ağ hatası), üst sınır log ve API
@@ -135,6 +141,12 @@ class UpstreamClient:
             reset_timeout=settings.breaker_reset_timeout,
             enabled=settings.breaker_enabled,
         )
+        #: Oturum kimliği döndüğünde çağrılan geri çağrımlar. CAPTCHA token'ı
+        #: üreten bağlam (tarayıcı sayfası, harici çözücü oturumu) da eski
+        #: kimlikle çalışıyordu; cookie jar yenilenip onun yenilenmemesi
+        #: yarı-taze kimlik üretiyordu. bkz. `_notify_identity_rotated`.
+        self._identity_listeners: list[Callable[[], None]] = []
+        self._last_identity_notify = 0.0
         self._semaphore = asyncio.Semaphore(max(1, settings.max_concurrent_upstream))
         self._client: httpx.AsyncClient | None = None
         # Cookie jar ve bağlantı havuzu hesaplar arasında paylaşılmaz. Ortak jar,
@@ -278,6 +290,36 @@ class UpstreamClient:
             return
         await client.aclose()
 
+    def add_identity_listener(self, callback: Callable[[], None]) -> None:
+        """Oturum kimliği döndüğünde çağrılacak geri çağrımı kaydeder.
+
+        Çağıran taraf kendi durumunu (ör. CAPTCHA üreten tarayıcı sayfasını)
+        yalnızca *yeni* kimlikle kurmalı. Geri çağrım senkronik ve hızlı olmalı;
+        hata fırlatırsa yutulur — kimlik dönüşü hiçbir zaman isteği kırmasın.
+        """
+        if callback not in self._identity_listeners:
+            self._identity_listeners.append(callback)
+
+    def _notify_identity_rotated(self, *, throttle: bool = False) -> None:
+        """Kimlik döndüğünde dinleyicileri haberdar eder (hatalar yutulur).
+
+        `throttle=True` yalnız `Set-Cookie` kaynaklı bildirimler için: hedef her
+        yanıtta çerez tazeliyorsa token üretim bağlamının her istekte
+        sıfırlanması ilk token süresini katlar.
+        """
+        if throttle:
+            now = time.monotonic()
+            if now - self._last_identity_notify < _IDENTITY_NOTIFY_MIN_INTERVAL:
+                return
+            self._last_identity_notify = now
+        for listener in list(self._identity_listeners):
+            try:
+                listener()
+            except Exception as exc:  # pragma: no cover - dinleyici hatası kritik değil
+                logger.debug(
+                    "upstream_identity_listener_failed", error_type=type(exc).__name__
+                )
+
     async def reset_account_clients(self) -> int:
         """Hesap client'larını yeniler; devam eden akışları kapatmadan.
 
@@ -298,6 +340,7 @@ class UpstreamClient:
             for name, value in initial_cookies.items():
                 self._client.cookies.set(name, value, domain=cookie_host, path="/")
         self.deployment.reset()
+        self._notify_identity_rotated()
         return len(clients)
 
     # ------------------------------------------------------------- helpers
@@ -449,6 +492,10 @@ class UpstreamClient:
         old_access = extract_access_token(old_cookie, cookie_names=cookie_names)
         new_access = extract_access_token(new_cookie, cookie_names=cookie_names)
         if new_access and new_access != old_access:
+            # Erişim token'ı döndü: token üreten bağlam (tarayıcı sayfası) eski
+            # oturumun çerezleriyle ayakta kalırsa, yeni kimlikle gönderilen POST
+            # eski bağlamdan üretilmiş bir CAPTCHA tokenı taşır.
+            self._notify_identity_rotated(throttle=True)
             if (
                 account is not None
                 and account.access_token
@@ -490,7 +537,7 @@ class UpstreamClient:
         if not request_settings.deployment_id_auto_retry:
             logger.info("deployment_stamp_retry_disabled", status=status)
             return False
-        if not self.deployment.active:
+        if not self.deployment.active_for(request_settings):
             logger.error(
                 "deployment_stamp_unmanaged",
                 status=status,
@@ -503,7 +550,7 @@ class UpstreamClient:
             return False
 
         reading = await self.deployment.refresh(
-            client, request_settings.base_url, force=True
+            client, request_settings.base_url, force=True, settings=request_settings
         )
         if reading.value and reading.value != sent_value:
             logger.warning(
@@ -562,7 +609,9 @@ class UpstreamClient:
             )
             self._ingest_set_cookie(response, client, account)
             # Aynı yanıtı damga için de değerlendir (ek istek yok).
-            self.deployment.ingest(response, request_settings.base_url)
+            self.deployment.ingest(
+                response, request_settings.base_url, settings=request_settings
+            )
             logger.debug(
                 "upstream_warmup",
                 status=response.status_code,
@@ -615,6 +664,24 @@ class UpstreamClient:
             return False
         lowered = body.lower()
         return any(marker in lowered for marker in CAPTCHA_MARKERS)
+
+    #: Teşhis için işaret aileleri. Sınıflandırmayı **değiştirmez**; yalnızca
+    #: logda "bu gövde neye benziyor" sorusunu gizli bilgi sızmadan yanıtlar.
+    _SIGNATURE_WORDS: dict[str, tuple[str, ...]] = {
+        "captcha_like": ("captcha", "recaptcha", "turnstile", "hcaptcha"),
+        "bot_like": ("robot", "automated", "unusual traffic", "browser verification"),
+        "verify_like": ("verif", "challenge", "just a moment", "attention required"),
+        "forbidden_like": ("forbidden", "denied", "not allowed"),
+    }
+
+    @classmethod
+    def _body_signature(cls, body: str) -> dict[str, bool]:
+        """Hata gövdesinin işaret aileleri (yalnızca bool; metin loglanmaz)."""
+        lowered = (body or "").lower()
+        return {
+            key: any(word in lowered for word in words)
+            for key, words in cls._SIGNATURE_WORDS.items()
+        }
 
     def _is_quota_body(self, status: int, body: str) -> str | None:
         """Gövde upstream'in hesap kısıtlama mesajını taşıyorsa işareti döndürür.
@@ -761,7 +828,9 @@ class UpstreamClient:
 
         # Sürüm damgasını tazele (önbellek sıcaksa ağa çıkmaz). Okunamazsa
         # `UPSTREAM_CURL`'deki donmuş değer kullanılır: kanarya isteği bozmaz.
-        reading = await self.deployment.refresh(client, request_settings.base_url)
+        reading = await self.deployment.refresh(
+            client, request_settings.base_url, settings=request_settings
+        )
         deployment_id = reading.value
         headers = build_stream_headers(
             request_settings,
@@ -1089,6 +1158,19 @@ class UpstreamClient:
                             url=url,
                         )
 
+                    # Hiçbir işaret ailesi eşleşmedi: hata "jenerik" görünür ve
+                    # operatör yanlış katmana bakabilir. Gövdenin kendisi
+                    # loglanmaz (token/kimlik taşıyabilir); yalnızca hangi
+                    # ailelere *benzediği* bildirilir. Bu satır, `captcha`
+                    # kelimesi geçen ama `CAPTCHA_MARKERS` listesindeki özgü
+                    # ifadeleri taşımayan bir 403'ü ilk bakışta ayırt ettirir.
+                    if 400 <= status < 500:
+                        logger.warning(
+                            "upstream_error_unclassified",
+                            status=status,
+                            body_length=len(error_body),
+                            **self._body_signature(error_body),
+                        )
                     last_error = UpstreamHTTPError(
                         f"Upstream returned HTTP {status} for {url}.",
                         status_code=status,

@@ -466,6 +466,22 @@ def build_settings(
     if isinstance(cx, str) and cx.strip():
         env["UPSTREAM_CX"] = cx.strip()
         env["UPSTREAM_CX_SEND"] = "true"
+    elif body:
+        # Taze cURL'ün gövdesi ayrıştırılabilir JSON ama `cx` taşımıyorsa hedef
+        # bu alanı artık göndermiyor demektir. `cx` oturuma bağlı bir bağlam
+        # işareti olduğu için **eski oturumun değeri hayatta kalmamalı**: eski
+        # davranışta yeni cURL yalnızca çerez/token tazeliyor, yarım-taze
+        # istemci bağlamı gönderilmeye devam ediyordu. (Gövde hiç
+        # ayrıştırılamadıysa "yok" demek kanıtsız olur; o durumda alan
+        # olduğu gibi bırakılır ve yukarıdaki uyarı yönlendirir.)
+        env["UPSTREAM_CX"] = ""
+        env["UPSTREAM_CX_SEND"] = "false"
+        if (existing or {}).get("UPSTREAM_CX_SEND", "").strip().lower() == "true":
+            warnings.append(
+                "Bu cURL'ün gövdesinde 'cx' yok; önceki oturumdan kalan "
+                "UPSTREAM_CX/UPSTREAM_CX_SEND temizlendi (oturuma bağlı bir alan "
+                "olduğu için eski değer yeni kimlikle gönderilmez)."
+            )
 
     # Site key yalnız açıkça etiketlenmiş bir alandan alınabilir. Cookie,
     # response token veya serbest metinde biçim eşleşmesi yeterli değildir.

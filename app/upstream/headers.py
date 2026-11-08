@@ -77,6 +77,94 @@ def is_mobile_ua(user_agent: str) -> bool:
                                  "windows phone"))
 
 
+#: Client Hint başlıkları; değerleri User-Agent ile **aynı tarayıcıya** ait
+#: olmalıdır. `UPSTREAM_EXTRA_HEADERS` tarayıcıdan birebir kopyalandığı için
+#: normalde örtüşür. Çoklu hesapta (`UPSTREAM_USER_AGENT_2`) veya kısmen
+#: yenilenmiş bir `.env`'de ise yuva-1'in donmuş ipuçları başka bir UA ile
+#: gönderilir; UA ile çelişen ipucu gerçek bir isteğin asla üretemeyeceği bir
+#: parmak izi çelişkisi yaratır.
+_CLIENT_HINT_HEADERS: tuple[str, ...] = ("sec-ch-ua", "sec-ch-ua-mobile", "sec-ch-ua-platform")
+
+_CHROME_BRAND_MAJOR_RE = re.compile(r'"[^"]*";\s*v="?(\d+)')
+
+#: Aynı çelişki uyarısı logda tekrarlanmasın (değer başına tek satır).
+_warned_hint_conflicts: set[str] = set()
+
+
+def client_hint_conflicts(
+    user_agent: str, overrides: dict[str, str]
+) -> dict[str, str]:
+    """`overrides` içinde bu UA ile **çelişen** client hint'lerini döndürür.
+
+    Yalnızca Chromium ailesi için değerlendirilir: `sec-ch-*` başlıklarını
+    Firefox/Safari hiç göndermez, dolayısıyla orada "bilinmeyen UA" yüzünden
+    doğru bir ipucunu atmak yanlış olurdu. Dönen sözlük `{başlık: UA'ya göre
+    beklenen değer}` biçimindedir.
+    """
+    if "chrome/" not in user_agent.lower():
+        return {}
+    conflicts: dict[str, str] = {}
+    for name, value in overrides.items():
+        lowered = name.lower()
+        if lowered not in _CLIENT_HINT_HEADERS:
+            continue
+        current = value.strip()
+        if not current:
+            continue
+        if lowered == "sec-ch-ua-mobile":
+            expected = "?1" if is_mobile_ua(user_agent) else "?0"
+            if current != expected:
+                conflicts[lowered] = expected
+        elif lowered == "sec-ch-ua-platform":
+            expected = platform_from_ua(user_agent)
+            # UA'dan platform çıkarılamıyorsa çelişki kanıtlanmış sayılmaz.
+            if expected != '"Unknown"' and current != expected:
+                conflicts[lowered] = expected
+        elif lowered == "sec-ch-ua":
+            expected_major = chrome_major_version(user_agent)
+            majors = set(_CHROME_BRAND_MAJOR_RE.findall(current))
+            # Marka sürümleri UA'daki Chrome ana sürümünü hiç içermiyorsa bu
+            # ipucu başka bir tarayıcıdan kopyalanmıştır.
+            if majors and expected_major and expected_major not in majors:
+                conflicts[lowered] = sec_ch_ua(user_agent)
+    return conflicts
+
+
+def _drop_conflicting_hints(headers: dict[str, str], settings: Settings) -> None:
+    """UA ile çelişen donmuş client hint'lerini başlık kümesinden çıkarır.
+
+    Çıkarılan değerlerin yerini `build_*_headers`'ın UA'dan hesapladığı
+    tutarlı değerler alır; yani istek "eksik" değil, **kendisiyle barışık**
+    olur. Ham değer loglanmaz, yalnızca başlık adı ve UA'dan beklenen değer
+    paylaşılır (ikisi de gizli bilgi değildir).
+    """
+    if not settings.upstream_client_hint_autofix:
+        return
+    conflicts = client_hint_conflicts(settings.upstream_user_agent, headers)
+    if not conflicts:
+        return
+    for name, expected in conflicts.items():
+        for key in [k for k, v in headers.items() if k.lower() == name]:
+            del headers[key]
+        headers[name] = expected
+    fingerprint = f"{settings.target_domain}:{','.join(sorted(conflicts))}"
+    if fingerprint not in _warned_hint_conflicts:
+        _warned_hint_conflicts.add(fingerprint)
+        if len(_warned_hint_conflicts) > 32:  # pragma: no cover - savunmacı
+            _warned_hint_conflicts.clear()
+        logger.warning(
+            "upstream_client_hint_mismatch",
+            hints=sorted(conflicts),
+            user_agent=settings.upstream_user_agent[:80],
+            hint=(
+                "UPSTREAM_EXTRA_HEADERS içindeki client hint değerleri gönderilen "
+                "User-Agent ile çelişiyor; UA'dan hesaplanan değerler kullanıldı. "
+                "Başlıklar aynı tarayıcının taze cURL'ünden kopyalanmalı "
+                "(çok hesaplı kurulumda UPSTREAM_USER_AGENT_2 gibi alanlar için de)."
+            ),
+        )
+
+
 def sec_ch_ua(user_agent: str) -> str:
     version = chrome_major_version(user_agent)
     edge = _EDGE_VERSION_RE.search(user_agent)
@@ -186,13 +274,16 @@ def build_stream_headers(
     _apply_auth(headers, settings)
     # Kullanıcı tanımlı başlıklar en son uygulanır; bilinçli override'a izin verilir.
     headers.update(settings.parsed_extra_headers())
+    # Donmuş parmak izi, gönderilen UA ile çelişiyorsa UA kazanır.
+    _drop_conflicting_hints(headers, settings)
     if settings.upstream_auth_header_mode == "cookie_only":
         # Ek başlıklardaki farklı harfli Authorization da bu açık modda gitmez.
         headers = {key: value for key, value in headers.items() if key.lower() != "authorization"}
     if deployment_id:
-        for name in DEPLOYMENT_HEADERS:
-            if name in headers:
-                headers[name] = deployment_id
+        # Adlar küçük harfe indirgenmiş olsa da eşleşme yine de kapsayıcı
+        # yapılsın: başka bir yerden gelen başlık demeti burada birikebilir.
+        for key in [k for k in headers if k.lower() in DEPLOYMENT_HEADERS]:
+            headers[key] = deployment_id
     return headers
 
 
@@ -213,13 +304,15 @@ def build_page_headers(settings: Settings, *, include_cookie: bool = True) -> di
     }
     if include_cookie and settings.upstream_cookie:
         headers["cookie"] = settings.upstream_cookie
-    headers.update(
-        {
-            name: value
-            for name, value in settings.parsed_extra_headers().items()
-            if name.lower() not in _STREAM_ONLY_EXTRA_HEADERS
-            and not (settings.upstream_auth_header_mode == "cookie_only"
-                     and name.lower() == "authorization")
-        }
-    )
+    page_extras = {
+        name: value
+        for name, value in settings.parsed_extra_headers().items()
+        if name.lower() not in _STREAM_ONLY_EXTRA_HEADERS
+        and not (settings.upstream_auth_header_mode == "cookie_only"
+                 and name.lower() == "authorization")
+    }
+    headers.update(page_extras)
+    # Isınma/kanarya GET'i aynı oturumu temsil eder: UA ile çelişen ipuçları
+    # burada da düşürülür, aksi halde POST ile GET farklı tarayıcı gibi görünür.
+    _drop_conflicting_hints(headers, settings)
     return headers

@@ -252,7 +252,18 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
         Eşzamanlı bir üretimin kullandığı sayfayı burada kapatmak onu bozardı.
         """
         super().invalidate()
+
+    def reset_context(self) -> None:
+        """Red veya kimlik dönüşünden sonra bağlamı sıfırla.
+
+        Yalnız bayrağı değil, **henüz tüketilmemiş yakalanmış token'ı** da
+        düşürür: `invalidate()` ağ yanıtının ardından kilit dışında çağrıldığı
+        için, sıcak sayfanın ürettiği token bir sonraki isteğe sızmaya devam
+        edebiliyordu. Tek kullanımlık bir token'ın çöpe atılması güvenlidir;
+        bayat bir token'ın gönderilmesi değildir.
+        """
         self._reset_warm_page = True
+        self._captured_live_token = None
 
     async def shutdown(self) -> None:
         for closer in (self._warm_page, self._context, self._browser):
@@ -299,6 +310,7 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
         if not cookie_header:
             return
         to_add: list[dict[str, Any]] = []
+        skipped_session = 0
         for piece in cookie_header.split(";"):
             piece = piece.strip()
             if "=" not in piece:
@@ -313,6 +325,7 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
             # bootstrap için gereksiz ve tarayıcının cookie kotasını
             # şişirir.
             if name.lower().startswith("arena-auth"):
+                skipped_session += 1
                 continue
             to_add.append({
                 "name": name,
@@ -323,6 +336,22 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                 "secure": parsed.scheme == "https",
                 "sameSite": "Lax",
             })
+        self.stats["browser_session_cookies_skipped"] = skipped_session
+        if skipped_session and not getattr(self, "_warned_anon_page", False):
+            # Teşhis: tıklama yakalaması giriş gerektiren bir form arar. Oturum
+            # çerezleri bilinçli olarak enjekte edilmediği için sayfa anonim
+            # açılmış olabilir; bu, token'ın hangi bağlamda üretildiğini açıklar.
+            self._warned_anon_page = True
+            logger.warning(
+                "recaptcha_browser_anonymous_context",
+                skipped=skipped_session,
+                injected=len(to_add),
+                hint=(
+                    "Canlı sayfa oturum çerezleri olmadan açılıyor; giriş gerektiren "
+                    "form bulunamazsa token sentetik bootstrap sayfasından üretilir. "
+                    "Bu, token'ın reddedildiğini kanıtlamaz — yalnız bağlamı bildirir."
+                ),
+            )
         if to_add:
             with contextlib.suppress(Exception):
                 await self._context.add_cookies(to_add)  # type: ignore[arg-type]

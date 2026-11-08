@@ -102,6 +102,12 @@ class Settings(BaseSettings):
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
         "(KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36"
     )
+    #: `UPSTREAM_EXTRA_HEADERS` içindeki client hint'leri (`sec-ch-ua*`)
+    #: gönderilen `User-Agent` ile çelişiyorsa UA''ya göre düzelt.
+    #: Çelişen ipucu, gerçek bir tarayıcının asla üretemeyeceği bir parmak izi
+    #: demektir ve bot korumalarını tetikleyebilir. Kasıtlı bir taklit
+    #: yapıyorsanız (ör. masaüstü UA + Android ipucu) kapatın.
+    upstream_client_hint_autofix: bool = True
     #: Ham Cookie başlığı (oturum gerekiyorsa).
     upstream_cookie: str = ""
     #: Doğrudan bearer token. Verilirse çerezden ayıklamaya gerek kalmaz (en yüksek öncelik).

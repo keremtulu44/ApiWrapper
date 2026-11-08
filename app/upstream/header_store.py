@@ -11,7 +11,15 @@ import json
 
 
 def parse_extra_headers(raw: str) -> dict[str, str]:
-    """JSON veya eski noktalı virgüllü biçimi başlık sözlüğüne çevirir."""
+    """JSON veya eski noktalı virgüllü biçimi başlık sözlüğüne çevirir.
+
+    Adlar **küçük harfe** indirgenir. HTTP başlık adları bayır büyük/küçük harf
+    duyarlı değildir, ama üretilen sözlük `dict` olarak birleştiriliyor:
+    `sec-ch-ua` (kodun hesapladığı) yanına `Sec-CH-UA` (kullanıcının yazdığı)
+    eklenirse httpx **aynı başlıktan iki farklı değerle** iki satır gönderir
+    (`X-Deployment-Id=dpl_ESKİ` taze damganın yerini alamaz). Tarayıcılar böyle
+    bir istek asla üretmez; bot koruması bunu parmak izi çelişkisi olarak görür.
+    """
     text = (raw or "").strip()
     if not text:
         return {}
@@ -23,7 +31,7 @@ def parse_extra_headers(raw: str) -> dict[str, str]:
         if not isinstance(parsed, dict):
             return {}
         return {
-            str(key).strip(): str(value).strip()
+            str(key).strip().lower(): str(value).strip()
             for key, value in parsed.items()
             if str(key).strip() and value is not None
         }
@@ -34,7 +42,7 @@ def parse_extra_headers(raw: str) -> dict[str, str]:
         if not part or "=" not in part:
             continue
         key, _, value = part.partition("=")
-        key, value = key.strip(), value.strip()
+        key, value = key.strip().lower(), value.strip()
         if key:
             headers[key] = value
     return headers

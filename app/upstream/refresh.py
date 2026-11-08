@@ -697,6 +697,20 @@ def apply_refresh(
     if cookie_changed and rewritten != current_cookie:
         setattr(settings, cookie_attr, rewritten)
         changed.append(cookie_attr)
+    elif current_cookie.strip() and access_attr in changed:
+        # Kimliğin iki yarısı farklı kuşaktan kaldı: `Authorization` taze,
+        # `Cookie` eski. Bu, tek başına bir ret sebebi olduğunu kanıtlamaz ama
+        # sessizce yarı-taze kimlik göndermek yerine görünür bir iz bırakır.
+        logger.warning(
+            "upstream_refresh_cookie_not_rewritten",
+            slot=slot,
+            hint=(
+                "Yeni erişim token'ı ayarlara yazıldı fakat oturum çerezi "
+                "güncellenemedi (çerez biçimi tanınmadı). İstek taze Authorization "
+                "+ bayat Cookie ile gidebilir; tarayıcıdan taze cURL/çerez "
+                "uygulayın (/upstream/cookie)."
+            ),
+        )
 
     if slot <= 1 and changed:
         save_runtime_state(settings, source="token_refresh")

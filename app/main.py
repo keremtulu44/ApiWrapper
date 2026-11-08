@@ -168,6 +168,18 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("upstream_curl_model_loaded", model=entry.id)
     accounts = build_account_pool(settings)
 
+    #: Kimlik dönüşü CAPTCHA bağlamına da yansısın. Yönetici uçları bunu elle
+    #: yapıyordu (`/upstream/refresh`, `/upstream/cookie`); otomatik yollar
+    #: (arka plan yenileyici, 401 sonrası tek deneme, `Set-Cookie`) yapmıyordu:
+    #: POST taze çerezle gider, token ise ölü oturumun sayfasından üretilirdi.
+    #: `app.state` üzerinden çözümlenir: `/settings` sağlayıcıyı değiştirebilir.
+    def _reset_captcha_context() -> None:
+        provider = getattr(app.state, "recaptcha", None)
+        if provider is not None:
+            provider.reset_context()
+
+    upstream.add_identity_listener(_reset_captcha_context)
+
     app.state.upstream = upstream
     app.state.recaptcha = recaptcha
     app.state.sessions = sessions

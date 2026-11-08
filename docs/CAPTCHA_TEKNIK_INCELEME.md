@@ -1,5 +1,11 @@
 # CAPTCHA ve ağ bağlamı: teknik inceleme
 
+> **2026-11-08 dilimi:** maskelenmiş cURL ile kodun karşılaştırması, kanıtlanan
+K1–K7 hataları ve düzeltmeleri için bkz. `docs/CAPTCHA_INCELEME_2026_11_08.md`. O dilimde
+buradaki "tarayıcı mobil/Android client hint gönderiyor" hükmünün paylaşılan cURL için
+geçerli olmadığı görüldü (masaüstü Edge, `sec-ch-ua-mobile: ?0`).
+
+
 Tarih: 2026-11-07. İnceleme, çalışma ağacındaki kodun okunması ve aşağıdaki
 resmî Google, Cloudflare, Playwright, HTTPX ve MDN belgelerinin karşılaştırılmasıyla
 hazırlandı. Canlı upstream, Google assessment sonucu ve Render çalışma zamanı

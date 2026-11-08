@@ -90,20 +90,42 @@ class DeploymentIdResolver:
         self._warned: set[str] = set()
 
     # ------------------------------------------------------------- helpers
-    @property
-    def configured(self) -> str | None:
+    def _resolve(self, settings: Settings | None) -> Settings:
+        """İsteği gönderecek hesabın ayarları; verilmezse global ayarlar.
+
+        Kanarya **aynı hesabın** istemcisini (cookie jar'ını) kullanıyor; başlık
+        ve damga keşfi de o hesabın parmak izine göre olmalı. Aksi halde çok
+        hesaplı kurulumda GET global UA ile, POST ise hesabın UA'sı ile gider
+        ve yuva 2-4'ün damgası hiç tazelenmez.
+        """
+        return settings if settings is not None else self.settings
+
+    def _configured(self, settings: Settings) -> str | None:
         """`UPSTREAM_EXTRA_HEADERS` içinde gelen (donmuş) deployment kimliği."""
-        for key, value in self.settings.parsed_extra_headers().items():
+        for key, value in settings.parsed_extra_headers().items():
             if key.lower() in DEPLOYMENT_HEADERS and value.strip():
                 return value.strip()
         return None
 
+    def _active(self, settings: Settings) -> bool:
+        """Kanarya yalnızca bu başlığı zaten gönderiyorsak devreye girer."""
+        return bool(settings.deployment_id_refresh_enabled) and (
+            self._configured(settings) is not None
+        )
+
+    @property
+    def configured(self) -> str | None:
+        """Global ayarlardaki donmuş deployment kimliği (geriye uyumlu)."""
+        return self._configured(self.settings)
+
     @property
     def active(self) -> bool:
-        """Kanarya yalnızca bu başlığı zaten gönderiyorsak devreye girer."""
-        return bool(self.settings.deployment_id_refresh_enabled) and (
-            self.configured is not None
-        )
+        """Kanarya global ayarlarla aktif mi? (geriye uyumlu)."""
+        return self._active(self.settings)
+
+    def active_for(self, settings: Settings) -> bool:
+        """Kanarya verilen hesabın ayarlarıyla aktif mi?"""
+        return self._active(settings)
 
     def cached(self, base_url: str) -> str | None:
         entry = self._entries.get(base_url)
@@ -122,11 +144,13 @@ class DeploymentIdResolver:
             path = "/" + path
         return f"{base_url.rstrip('/')}{path}"
 
-    def _fallback(self, base_url: str, *, changed: bool = False) -> DeploymentReading:
+    def _fallback(
+        self, base_url: str, *, changed: bool = False, settings: Settings | None = None
+    ) -> DeploymentReading:
         cached = self.cached(base_url)
         if cached:
             return DeploymentReading(cached, "cache", changed)
-        configured = self.configured
+        configured = self._configured(self._resolve(settings))
         return DeploymentReading(configured, "configured" if configured else "none", changed)
 
     # ---------------------------------------------------------------- read
@@ -136,17 +160,20 @@ class DeploymentIdResolver:
         base_url: str,
         *,
         force: bool = False,
+        settings: Settings | None = None,
     ) -> DeploymentReading:
         """Güncel kimliği döndürür; gerekirse sayfayı bir kez okur.
 
-        `force=True` TTL'i atlar (409 sonrası kullanılır). Hata durumunda
-        istisna fırlatmaz: önbelleğe/yapılandırılmış değere düşer.
+        `force=True` TTL'i atlar (409 sonrası kullanılır). `settings` isteği
+        gönderecek hesabın ayarlarıdır; verilmezse global ayarlar kullanılır.
+        Hata durumunda istisna fırlatmaz: önbelleğe/yapılandırılmış değere düşer.
         """
-        if not self.active:
-            configured = self.configured
+        request_settings = self._resolve(settings)
+        if not self._active(request_settings):
+            configured = self._configured(request_settings)
             return DeploymentReading(configured, "configured" if configured else "none")
 
-        ttl = max(0.0, self.settings.deployment_id_ttl_seconds)
+        ttl = max(0.0, request_settings.deployment_id_ttl_seconds)
         entry = self._entries.setdefault(base_url, _Entry())
         now = time.monotonic()
         if not force and entry.value and now - entry.checked_at < ttl:
@@ -161,13 +188,13 @@ class DeploymentIdResolver:
             try:
                 response = await client.get(
                     probe_url,
-                    headers=build_page_headers(self.settings, include_cookie=False),
-                    timeout=httpx.Timeout(self.settings.deployment_probe_timeout),
+                    headers=build_page_headers(request_settings, include_cookie=False),
+                    timeout=httpx.Timeout(request_settings.deployment_probe_timeout),
                     follow_redirects=True,
                 )
             except Exception as exc:
                 self._warn_once(base_url, "probe_failed", error_type=type(exc).__name__)
-                return self._fallback(base_url)
+                return self._fallback(base_url, settings=request_settings)
 
             value: str | None = None
             source = "none"
@@ -193,7 +220,7 @@ class DeploymentIdResolver:
             if not value:
                 # Okunamadı: önbelleği koru, yapılandırılmış değere düş.
                 entry.checked_at = now
-                return self._fallback(base_url)
+                return self._fallback(base_url, settings=request_settings)
 
             previous = entry.value
             changed = previous is not None and previous != value
@@ -206,7 +233,7 @@ class DeploymentIdResolver:
                     "deployment_id_detected",
                     source=source,
                     deployment_id=value,
-                    configured=bool(self.configured),
+                    configured=bool(self._configured(request_settings)),
                 )
             elif changed:
                 logger.warning(
@@ -230,7 +257,9 @@ class DeploymentIdResolver:
         # Domain loglanmaz: yalnızca kanaryanın hangi aşamada takıldığı görünür.
         logger.warning(event, **fields)
 
-    def ingest(self, response: httpx.Response, base_url: str) -> str | None:
+    def ingest(
+        self, response: httpx.Response, base_url: str, *, settings: Settings | None = None
+    ) -> str | None:
         """Zaten yapılmış bir sayfa yanıtından damgayı önbelleğe alır.
 
         Ek istek üretmez: `warmup()` (sohbet sayfası GET'i) ve 409 sonrası
