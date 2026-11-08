@@ -582,6 +582,10 @@ class UpstreamClient:
         yazmak, hedefin hata sayfasının ürettiği değeri kimlik sanmak olurdu.
         Ama "403 hangi çerezlerle geldi?" sorusu teşhis açısından değerlidir:
         kaydı düşürmeyiz, değeri değil — yalnız adlar ve adet yazılır.
+
+        Tek politika, iki yol: akış POST'unda ve ısıtma GET'inde `status >= 400`
+        ise yalnız gözlem, altında ise gözlem + uygulama. Jar bundan
+        etkilenmez; httpx onu her durumda doldurur.
         """
         pairs = response.headers.get_list("set-cookie")
         if not pairs:
@@ -814,7 +818,16 @@ class UpstreamClient:
                 ),
                 timeout=httpx.Timeout(request_settings.connect_timeout + 10.0),
             )
-            self._ingest_set_cookie(response, client, account)
+            # Politika, akış yoluyla aynı: httpx jar'ı her durumda dolar
+            # (tarayıcı davranışı), fakat **kalıcı** `UPSTREAM_COOKIE` yalnız
+            # başarılı yanıttan güncellenir; ısıtma 403/challenge dönerse
+            # yanıt yalnız kaydedilir.
+            if response.status_code < 400:
+                self._ingest_set_cookie(response, client, account)
+            else:
+                self._observe_set_cookie(
+                    response, account=account, status=response.status_code
+                )
             # Aynı yanıtı damga için de değerlendir (ek istek yok).
             self.deployment.ingest(
                 response, request_settings.base_url, settings=request_settings

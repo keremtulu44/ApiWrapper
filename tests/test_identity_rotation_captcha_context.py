@@ -879,3 +879,67 @@ def test_rejected_response_is_recorded_but_not_applied() -> None:
     assert settings.upstream_cookie == f"sb-session={old_token}"
     body = json.dumps(record)
     assert seen_value not in body and rotated not in body and old_token not in body
+
+
+def test_warmup_applies_cookies_only_for_non_error_responses() -> None:
+    """Isıtma GET'i ile akış POST'u aynı politikayı kullanır.
+
+    İlk sürümde warmup durumu hiç sorgulamadan `_ingest_set_cookie` çağırıyordu:
+    403/challenge sayfasının çerezleri kalıcı oturum satırına yazılabiliyordu —
+    azaltmak istediğimiz tam kirlenme.
+    """
+    old_token = _fake_jwt(sub="user-1")
+    challenge_value = "warmup-cok-42"
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(
+                403,
+                headers=[("set-cookie", f"__cf_bm={challenge_value}; Path=/")],
+                text="error code: 1020",
+            )
+        return httpx.Response(200, text="ok")
+
+    settings = make_settings(upstream_cookie=f"sb-session={old_token}")
+    upstream = UpstreamClient(settings)
+    upstream._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(handler), base_url="https://upstream.test"
+    )
+
+    async def run() -> None:
+        await upstream.warmup("chat-1")
+
+    asyncio.run(run())
+
+    record = upstream.identity_update
+    assert record["reason"] == "rejected_not_ingested"
+    assert record["status"] == 403
+    assert record["set_cookie_names"] == ["__cf_bm"]
+    # Kalıcı satır değişmedi; jar değişti (tarayıcı gibi) — ayrım bilinçli.
+    assert settings.upstream_cookie == f"sb-session={old_token}"
+    assert upstream.client.cookies.get("__cf_bm") == challenge_value
+    assert challenge_value not in json.dumps(record)
+
+    # Pozitif kontrol: 200 + çerez DÖNERSE warmup kalıcı satırı günceller.
+    fresh_token = _fake_jwt(sub="user-1", iat=55)
+
+    async def ok_handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers=[("set-cookie", f"sb-session={fresh_token}; Path=/")],
+            text="<html></html>",
+        )
+
+    ok_settings = make_settings(upstream_cookie=f"sb-session={old_token}")
+    upstream_ok = UpstreamClient(ok_settings)
+    upstream_ok._client = httpx.AsyncClient(
+        transport=httpx.MockTransport(ok_handler), base_url="https://upstream.test"
+    )
+
+    async def run_ok() -> None:
+        await upstream_ok.warmup("chat-1")
+
+    asyncio.run(run_ok())
+
+    assert upstream_ok.identity_update["reason"] == "applied"
+    assert ok_settings.upstream_cookie == f"sb-session={fresh_token}"

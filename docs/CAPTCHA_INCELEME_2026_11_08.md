@@ -181,10 +181,15 @@ bağlı dört iyileştirme:
     rejected_not_ingested` ile **yalnız gözlemler**: `status`,
     `set_cookie_count`, `set_cookie_names` yazılır, çerezler **kasıtlı olarak**
     uygulanmaz (hata sayfasının değeri kalıcı oturum satırına sızmaz).
+  * Tek politika, iki yol: akış POST'u **ve ısıtma GET'i** için `status >= 400`
+    → yalnız gözlem, altı → gözlem + uygulama. Isıtma bu satır yazılırken
+    durumu hiç sorgulamadan kalıcı satırı güncelliyordu — yani tam
+    kaçınmak istediğimiz kirlenme oradaydı; kapatıldı (§8). httpx jar'ı
+    her durumda dolar; ayrım kalıcı `UPSTREAM_COOKIE` içindir.
   "`Set-Cookie` geldi" ile "oturum döndü" ayrımı bundan sonra logdan
   okunabilir — ilk sürümde eksik olan tam olarak buydu.
 
-*Testler:* `tests/test_identity_rotation_captcha_context.py` (27 test) —
+*Testler:* `tests/test_identity_rotation_captcha_context.py` (28 test) —
 bildirimin `reset_account_clients`'ta yapılması, erişim token'ı döndüğünde
 bildirim, ilgisiz çerezde sıfırlama olmaması, art arda rotasyonların
 birleştirilip **hiçbirinin düşürülmemesi**, aynı değerin ikinci kez
@@ -273,7 +278,7 @@ yönlendirilir. *Test:* `test_refresh_warning_when_cookie_cannot_be_rewritten`.
 
 ## 4) Doğrulama
 
-* `python -m pytest -q` → **704 geçti, 1 atlandı** (atlanan: Playwright kurulu
+* `python -m pytest -q` → **705 geçti, 1 atlandı** (atlanan: Playwright kurulu
   olmadığı için `importorskip` ile geçen API yüzeyi testi); `ruff check app tests
   scripts` ve `mypy app` temiz (61 kaynak dosyası).
 * 3. turda Playwright iddiaları **yayınlanan wheel üzerinden** doğrulandı:
@@ -366,3 +371,11 @@ Bu üçü de **kod hatasıdır**; hiçbiri canlı CAPTCHA reddinin nedeni olarak
 kanıtlanmış değildir. İlk ikisi düzeltmenin kendi güvenliğini (yanlış çerez
 silme, hiç silmeme), üçüncüsü gözlemin kapsamını ilgilendirir — yani
 bir dahaki olayda elimizdeki kanıtın kalitesini.
+
+**Kendi bulduğumuz tutarsızlık (itiraz dışı).** Üçüncü madde kapatılırken
+`warmup()`'ın `Set-Cookie`yi **duruma bakmadan** kalıcı satıra uyguladığı görüldü
+(`_ingest_set_cookie` çağrısı yanıt kodundan bağımsızdı). Yani "hata yanıtının
+çerezini uygulamıyoruz" kuralı tek yolda geçerliydi. Politika iki yolda da
+aynılaştırıldı ve pozitif/negatif kontrol testleriyle bağlandı:
+`test_warmup_applies_cookies_only_for_non_error_responses`. Bu, itirazlarınızın
+doğruluğunu değil kapsamını genişleten bir bulgudur — bu yüzden ayrıca yazıldı.
