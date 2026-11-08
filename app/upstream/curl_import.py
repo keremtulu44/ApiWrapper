@@ -247,8 +247,8 @@ def build_settings(
 ) -> tuple[dict[str, str], list[str], str | None]:
     """cURL çıktısından `.env` çiftlerini, uyarıları ve model kimliğini üretir.
 
-    `existing` mevcut `.env` içeriğidir; yalnızca alan adı tutarlılık uyarısı
-    için kullanılır.
+    `existing` mevcut `.env` içeriğidir; alan adı, sağlayıcı ve başlık modu
+    uyarıları için kullanılır.
     """
     headers: dict[str, str] = parsed["headers"]
     body = load_body(parsed["body"])
@@ -354,6 +354,11 @@ def build_settings(
         env["UPSTREAM_ACCESS_TOKEN"] = token
         env["UPSTREAM_AUTH_FROM_COOKIE"] = "false"
         env["UPSTREAM_AUTH_SCHEME"] = scheme
+        if (existing or {}).get("UPSTREAM_AUTH_HEADER_MODE") == "cookie_only":
+            warnings.append(
+                "cURL'de authorization başlığı var; cookie_only modu bu başlığı "
+                "upstream isteklerinde göndermeyecek."
+            )
         if not scheme:
             warnings.append(
                 "authorization başlığı şemasız (örn. 'Bearer' yok); token ham "
@@ -375,11 +380,17 @@ def build_settings(
             cookie_token = None
         if cookie_token:
             env["UPSTREAM_AUTH_FROM_COOKIE"] = "true"
-            warnings.append(
-                "cURL'de 'authorization' başlığı yok ama oturum çerezi token "
-                "taşıyor: UPSTREAM_AUTH_FROM_COOKIE=true yapıldı, token çerezden "
-                "ayıklanıp Authorization başlığı olarak gönderilecek."
-            )
+            if (existing or {}).get("UPSTREAM_AUTH_HEADER_MODE") == "cookie_only":
+                warnings.append(
+                    "cURL'de 'authorization' başlığı yok; cookie_only modu "
+                    "bu başlığı upstream isteklerinde göndermeyecek."
+                )
+            else:
+                warnings.append(
+                    "cURL'de 'authorization' başlığı yok ama oturum çerezi token "
+                    "taşıyor: UPSTREAM_AUTH_FROM_COOKIE=true yapıldı, token çerezden "
+                    "ayıklanıp Authorization başlığı olarak gönderilecek."
+                )
         else:
             env["UPSTREAM_AUTH_FROM_COOKIE"] = "false"
             # Cookie-only kimlik doğrulama meşru bir kurulum; oturum çerezi zaten
@@ -394,12 +405,18 @@ def build_settings(
                     "istekten cURL alın."
                 )
             else:
-                warnings.append(
-                    "cURL'de 'authorization' başlığı yok ve çerezden erişim token'ı "
-                    "okunamadı; istek yalnızca Cookie ile gönderilecek. Hedef 401 "
-                    "dönerse taze çerez gönderin (/cookie) veya "
-                    "UPSTREAM_ACCESS_TOKEN ayarlayın."
-                )
+                if (existing or {}).get("UPSTREAM_AUTH_HEADER_MODE") == "cookie_only":
+                    warnings.append(
+                        "cURL'de 'authorization' başlığı yok; cookie_only modu "
+                        "bu başlığı upstream isteklerinde göndermeyecek."
+                    )
+                else:
+                    warnings.append(
+                        "cURL'de 'authorization' başlığı yok ve çerezden erişim token'ı "
+                        "okunamadı; istek yalnızca Cookie ile gönderilecek. Hedef 401 "
+                        "dönerse taze çerez gönderin (/cookie) veya "
+                        "UPSTREAM_ACCESS_TOKEN ayarlayın."
+                    )
 
     # --- captcha
     configured_field = (existing or {}).get("UPSTREAM_RECAPTCHA_FIELD", "").strip()

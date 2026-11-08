@@ -371,3 +371,20 @@ kendisi gösterilmez. Bu, üretim yolunun teşhisidir, doğrulama sonucu değild
 Upstream 403 döndürürse site key/action/version/alan eşleşmesini ve hedefin
 kendi yetkilendirme ve erişim politikasını kontrol edin; tek başına JWT expiry
 veya token üretilmesi kabul kanıtı değildir.
+
+### Authorization başlığı ve cookie-only modu
+
+JWT içeren bir cURL'de `Authorization` yoksa mevcut importer çerezden başlık
+üretimini otomatik açabilir; bu, kopyalanan isteğe ek bir başlıktır. Bu farkın
+401 veya CAPTCHA reddine neden olduğu **kanıtlanmış değildir**. Hedefin açıkça
+cookie-only istekleri desteklediği bir kurulumda `UPSTREAM_AUTH_HEADER_MODE`
+değeri `cookie_only` yapılarak bu başlık upstream sayfa ve stream isteklerinden
+kaldırılabilir. Bu mod tüm hesaplara uygulanır; açıkça ayarlanmış veya ek
+başlıklardaki Authorization'ı da göndermez. Tokenlar silinmez, refresh API'sinin
+kendi kimlik doğrulama başlıkları etkilenmez. `/tani` ilgili başlığın gidip
+gitmeyeceğini gösterir.
+
+Varsayılan `configured`, önceki davranışı korur. `cookie_only` bir CAPTCHA veya
+401 çözümü garantisi değildir; hedef Authorization gerektiriyorsa başarısız olur.
+Önceki davranışa dönmek için değer `configured` yapılır. Render ortam değişkeni
+seçiminin uygulanması servis yeniden başlatmasını/deploy'unu gerektirebilir.

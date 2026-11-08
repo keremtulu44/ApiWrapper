@@ -107,9 +107,12 @@ class Settings(BaseSettings):
     #: Doğrudan bearer token. Verilirse çerezden ayıklamaya gerek kalmaz (en yüksek öncelik).
     upstream_access_token: str = ""
     #: Cookie içinden `access_token` ayıklanıp `Authorization: Bearer` olarak eklensin mi?
-    #: Varsayılan False: tarayıcı cURL'inde bu başlık yoksa eklemek parmak izini bozar.
-    #: Hedef 401 döndürüyorsa true yapın.
+    #: Varsayılan False; UPSTREAM_CURL importer JWT varsa bunu açabilir.
+    #: Açık cookie_only modu Authorization başlığını yine de engeller.
     upstream_auth_from_cookie: bool = False
+    #: configured: mevcut davranış; cookie_only: upstream isteklerinde
+    #: Authorization başlığını gönderme (tokenları silmez, refresh'i etkilemez).
+    upstream_auth_header_mode: Literal["configured", "cookie_only"] = "configured"
     #: Token'ın aranacağı çerez adları (virgülle ayrılmış). Boşsa sezgisel arama yapılır.
     upstream_token_cookie_names: Annotated[list[str], NoDecode] = Field(default_factory=list)
     #: Authorization başlığının şeması. Boş bırakılırsa token ham olarak gönderilir.
