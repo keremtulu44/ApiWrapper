@@ -139,9 +139,21 @@ bağlı dört iyileştirme:
     `add_cookies` ile geri yazılır — `"rewritten"`;
   * yöntem hiç yoksa hata yutulmaz, `stats["browser_cookie_prune"] =
     "unsupported"` yazılır.
-  `cf_clearance` / `__cf_bm` **hiçbir yolda silinmez** — onları temizlemek her
-  token üretiminde Cloudflare yarışını baştan tetiklerdi. `add_cookies` alan
-  biçimini reddederse URL ile bir kez daha denenir (sessiz kayıp olmaz).
+  `cf_clearance` / `__cf_bm` / `__cf_turn` / `__cfruid` / `_cfuvid` / `cf_chl_*`
+  **hiçbir yolda silinmez** — onları temizlemek her token üretiminde Cloudflare
+  yarışını baştan tetiklerdi. Bu koruma **ad üzerinden** çalışır: bu çerezler
+  `UPSTREAM_COOKIE` içinde gelebildiği (paylaşılan cURL örneğinde
+  `cf_clearance` vardı) ve biz onları jar'a enjekte ettiğimiz için "sayfanın
+  kendi kazandığı çerez" varsayımı yeterli değildi — 3. turdaki hâl, korunan ad
+  ayardan düşünce *bizim koyduğumuz* kopyayı siliyordu. Korunan ad
+  `_injected_cookie_names`te tutulmaya devam edilir ve
+  `stats["browser_cookie_prune_skipped_protected"]` listelenir. `add_cookies`
+  alan biçimini reddederse URL ile bir kez daha denenir (sessiz kayıp olmaz).
+* **Boşalan çerez ayarı:** `UPSTREAM_COOKIE` temizlendiğinde fonksiyon
+  `if not cookie_header: return` ile budamaya **hiç gelmiyordu** — yani
+  enjekte ettiğimiz çerezler tam da "herkes silinsin" denilen anda jar'da
+  kalıyordu. Artık boş ayarda da budama çalışır (korunanlar hariç) ve takip
+  listesi sıfırlanır.
   *Test koruması:* budama yolu AST üzerinden denetlenir — Playwright'ın
   yayınlamadığı bir ad kodlandığı anda test kırılır (`test_prune_only_uses_cookie_apis_playwright_actually_publishes`),
   taklidin aynı uydurma yöntemle testi yeniden yeşile çekmesi mümkün değil.
@@ -163,10 +175,16 @@ bağlı dört iyileştirme:
   * `untracked_cookie_names` doluysa hedef daha önce saklamadığımız bir ad set
     etmiştir: satıra eklenir (`replace_cookie_values`) ama
     `UPSTREAM_TOKEN_COOKIE_NAMES` listesine eklenmedikçe token kıyasına girmez.
+  * kayıt `Set-Cookie` **taşayan ve bizim işlediğimiz** yanıtlar içindir. Ret
+    yolu (4xx) `_ingest_set_cookie`yi çağırmıyordu — yani olaydaki 403 için
+    kayıt hiç yoktu. Artık `_observe_set_cookie` ret yanıtını `reason =
+    rejected_not_ingested` ile **yalnız gözlemler**: `status`,
+    `set_cookie_count`, `set_cookie_names` yazılır, çerezler **kasıtlı olarak**
+    uygulanmaz (hata sayfasının değeri kalıcı oturum satırına sızmaz).
   "`Set-Cookie` geldi" ile "oturum döndü" ayrımı bundan sonra logdan
   okunabilir — ilk sürümde eksik olan tam olarak buydu.
 
-*Testler:* `tests/test_identity_rotation_captcha_context.py` (23 test) —
+*Testler:* `tests/test_identity_rotation_captcha_context.py` (27 test) —
 bildirimin `reset_account_clients`'ta yapılması, erişim token'ı döndüğünde
 bildirim, ilgisiz çerezde sıfırlama olmaması, art arda rotasyonların
 birleştirilip **hiçbirinin düşürülmemesi**, aynı değerin ikinci kez
@@ -255,7 +273,7 @@ yönlendirilir. *Test:* `test_refresh_warning_when_cookie_cannot_be_rewritten`.
 
 ## 4) Doğrulama
 
-* `python -m pytest -q` → **700 geçti, 1 atlandı** (atlanan: Playwright kurulu
+* `python -m pytest -q` → **704 geçti, 1 atlandı** (atlanan: Playwright kurulu
   olmadığı için `importorskip` ile geçen API yüzeyi testi); `ruff check app tests
   scripts` ve `mypy app` temiz (61 kaynak dosyası).
 * 3. turda Playwright iddiaları **yayınlanan wheel üzerinden** doğrulandı:
@@ -335,3 +353,16 @@ adını kayıtlı satıra **ekliyor**, yani "hedef yeni ad set etti" durumu sess
 kaybolmuyor. Buna rağmen o ad token kıyasına girmediği için `untracked_cookie_names`
 alanı kayda eklendi; ilk sürümdeki "kıyaslama yeni adı görmez" endişesi bu
 nedenle **yarı doğruydu** ve budama dalı (ulaşılamaz `untracked_only`) kaldırıldı.
+
+## 8) 4. tur itirazları (budama güvenliği ve teşhis kapsamı)
+
+| İtiraz | Kanıt | Sonuç |
+| --- | --- | --- |
+| "`cf_clearance`/`__cf_bm` hiçbir yolda silinmez" doğru değil: wrapper enjekte ettiyse silinebiliyordu | Enjekte filtresi yalnız `arena-auth*` adlarını atlıyordu; dolayısıyla `UPSTREAM_COOKIE`deki `cf_clearance` jar'a **bizim tarafımızdan** girip `_injected_cookie_names`e yazılıyordu. Ad ayardan düşünce `stale` kümesine girdi → silinme adayı | **Kabul.** Koruma artık **ad tabanlı** ve iki katmanda: budama kümesi `_is_protected_browser_cookie()` ile filtrelenir, `_prune_injected_cookies()` de aynı filtreyi uygular (iç çağrı hatalarına karşı). Atlananlar `stats["browser_cookie_prune_skipped_protected"]`de görünür. Test: `test_protected_challenge_cookies_survive_even_when_we_injected_them`, `test_prune_never_targets_protected_names_even_if_asked` |
+| Yeni çerez ayarı tamamen boşsa fonksiyon budamaya gelmeden dönüyordu | `if not cookie_header: return` satırı `stale` hesabından **önceydi** | **Kabul.** Erken dönüş kaldırıldı; boş ayarda da budama çalışır, korunanlar kalır, takip listesi sıfırlanır. Test: `test_empty_cookie_setting_still_prunes_what_we_injected` |
+| Teşhis kaydı yalnız `_ingest_set_cookie()` çağrılan yanıtlarda var; 403 gibi hata yanıtlarında çağrılmıyor | Akış yolunda kayıt `if status < 400:` bloğunun içindeydi; challenge/`RecaptchaRejected` dalları ondan **önce** raise ediyor | **Kabul.** `status >= 400` için `_observe_set_cookie()` eklendi: iz bırakır, **uygulamaz**. Test: `test_rejected_response_is_recorded_but_not_applied` (ayar dizesinin değişmediği de doğrulanıyor). Kaydın yokluğunun anlamı §2'de üç nedene indirildi; "kimlik değişmedi" yine kanıtlanamaz |
+
+Bu üçü de **kod hatasıdır**; hiçbiri canlı CAPTCHA reddinin nedeni olarak
+kanıtlanmış değildir. İlk ikisi düzeltmenin kendi güvenliğini (yanlış çerez
+silme, hiç silmeme), üçüncüsü gözlemin kapsamını ilgilendirir — yani
+bir dahaki olayda elimizdeki kanıtın kalitesini.

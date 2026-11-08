@@ -53,6 +53,29 @@ _COOKIE_FIELDS = (
 )
 
 
+#: Cloudflare yarış/oturum çerezleri. Bunlar **biz enjekte etmiş olsak bile**
+#: budama dışı tutulur: silindiklerinde bir sonraki gezinme baştan challenge
+#: görür ve token üretimi yeni bir yarışa sürüklenir. Eski değerin jar'da
+#: kalması ise bugünkü davranışın kendisidir — zararı, yarışı yeniden
+#: tetiklemekten küçüktür. `UPSTREAM_COOKIE` içinde geldikleri için (paylaşılan
+#: cURL örneğinde `cf_clearance` vardı) "sayfanın kendi çerezi" varsayımı
+#: güvenli değil; ad üzerinden korunuyorlar.
+_PROTECTED_BROWSER_COOKIES = frozenset(
+    {
+        "cf_clearance",
+        "__cf_bm",
+        "__cf_turn",
+        "__cfruid",
+        "_cfuvid",
+    }
+)
+
+
+def _is_protected_browser_cookie(name: str) -> bool:
+    lowered = name.lower()
+    return lowered in _PROTECTED_BROWSER_COOKIES or lowered.startswith("cf_chl_")
+
+
 def _cookie_payload(cookie: dict[str, Any]) -> dict[str, Any]:
     """Anlık görüntüyü yeniden eklenebilir biçime indirger."""
     return {key: value for key, value in cookie.items() if key in _COOKIE_FIELDS}
@@ -336,9 +359,9 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
         parsed = urlparse(self.settings.base_url)
         if not parsed.hostname:
             return
+        # Boş ayar erken dönüş **değildir**: enjekte edilmiş eski çerezler o
+        # durumda da geride kalmamalı. Döngü boş başlıkta boş liste üretir.
         cookie_header = self.settings.upstream_cookie or ""
-        if not cookie_header:
-            return
         to_add: list[dict[str, Any]] = []
         skipped_session = 0
         for piece in cookie_header.split(";"):
@@ -382,13 +405,27 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                     "Bu, token'ın reddedildiğini kanıtlamaz — yalnız bağlamı bildirir."
                 ),
             )
-        stale = sorted(self._injected_cookie_names - {item["name"] for item in to_add})
+        injected_now = {item["name"] for item in to_add}
+        stale_all = self._injected_cookie_names - injected_now
+        protected = {name for name in stale_all if _is_protected_browser_cookie(name)}
+        stale = sorted(stale_all - protected)
+        if protected:
+            # "Bu çerezler hiçbir yolda silinmez" iddiasının garantisi burada:
+            # korunan ad, biz enjekte etmiş olsak bile budama kümesine girmez.
+            self.stats["browser_cookie_prune_skipped_protected"] = sorted(protected)
+            logger.debug(
+                "recaptcha_browser_stale_cookie_protected",
+                cookies=sorted(protected),
+                hint="challenge cookies are kept even when they left UPSTREAM_COOKIE",
+            )
+        else:
+            self.stats.pop("browser_cookie_prune_skipped_protected", None)
         if stale:
             await self._prune_injected_cookies(stale)
         if to_add:
             try:
                 await self._context.add_cookies(to_add)  # type: ignore[arg-type]
-                self._injected_cookie_names = {item["name"] for item in to_add}
+                self._injected_cookie_names = injected_now | protected
             except Exception as exc:  # pragma: no cover - tarayıcıya bağlı
                 # Domain biçimi bazı sürümlerde reddediliyor; URL ile bir kez daha.
                 logger.debug(
@@ -399,7 +436,12 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
                     item.pop("domain", None)
                 with contextlib.suppress(Exception):
                     await self._context.add_cookies(url_payload)  # type: ignore[arg-type]
-                    self._injected_cookie_names = {item["name"] for item in url_payload}
+                    self._injected_cookie_names = (
+                        {item["name"] for item in url_payload} | protected
+                    )
+        else:
+            # Ayar boşaldı: bizim koyduklarımız (korunanlar hariç) geride kalmaz.
+            self._injected_cookie_names = set(protected)
 
     @staticmethod
     def _clear_accepts_name_filter(clearer: Any) -> bool:
@@ -419,11 +461,11 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
     async def _prune_injected_cookies(self, names: list[str]) -> None:
         """Yalnız bizim enjekte ettiğimiz, artık oturumda olmayan çerezleri siler.
 
-        Sayfanın kendi kazandığı çerezlere (`cf_clearance`, `__cf_bm`) hiçbir
-        yolda dokunulmaz; onları silmek her token üretiminde Cloudflare
-        yarışını baştan tetiklerdi. Eski Playwright'ta filtresiz
-        `clear_cookies()` tek seçenek olduğundan anlık görüntü alınır ve
-        silinmeyenler geri yazılır.
+        `cf_clearance` / `__cf_bm` gibi yarış çerezleri **bu listede adları
+        üzerinden** dışarıda tutulur — o çerezleri biz enjekte etmiş olsak bile
+        silinmezler, çünkü silmek her token üretiminde Cloudflare yarışını
+        baştan tetikler. Eski Playwright'ta filtresiz `clear_cookies()` tek
+        seçenek olduğundan anlık görüntü alınıp silinmeyenler geri yazılır.
         """
         context = self._context
         if context is None or not names:
@@ -432,10 +474,12 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
         if clearer is None:
             self.stats["browser_cookie_prune"] = "unsupported"
             return
-        stale = set(names)
+        stale = {name for name in names if not _is_protected_browser_cookie(name)}
+        if not stale:
+            return
         removed: list[str] = []
         if self._clear_accepts_name_filter(clearer):
-            for name in names:
+            for name in sorted(stale):
                 try:
                     await clearer(name=name)
                 except Exception as exc:  # pragma: no cover - tarayıcıya bağlı

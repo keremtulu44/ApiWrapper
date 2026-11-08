@@ -39,6 +39,7 @@ from app.services.recaptcha.browser import BrowserRecaptchaProvider
 from app.services.recaptcha.external import ExternalRecaptchaProvider
 from app.services.recaptcha.static import NoopRecaptchaProvider, StaticRecaptchaProvider
 from app.upstream.client import UpstreamClient
+from app.upstream.exceptions import RecaptchaRejected
 from tests.conftest import TEST_API_KEY, make_settings
 
 
@@ -337,6 +338,12 @@ class _ContextBase:
     def names(self) -> list[str]:
         return sorted(c["name"] for c in self.cookies_list)
 
+    def value_of(self, name: str) -> Any:
+        for item in self.cookies_list:
+            if item["name"] == name:
+                return item["value"]
+        return None
+
 
 class _FilteredContext(_ContextBase):
     """Playwright >=1.44: `clear_cookies(name=...)` destekli."""
@@ -526,13 +533,18 @@ async def test_identity_update_reports_whether_the_access_token_rotated() -> Non
         assert set(second) == {
             "slot",
             "reason",
+            "status",
             "changed",
             "access_token_rotated",
             "refresh_token_rotated",
+            "set_cookie_count",
+            "set_cookie_names",
             "untracked_cookie_names",
             "at",
         }
         assert second["reason"] == "applied" and second["changed"] is True
+        assert second["status"] == 200
+        assert second["set_cookie_names"] == ["sb-session"]
         assert second["untracked_cookie_names"] == []
         assert new_token not in json.dumps(second) and old_token not in json.dumps(second)
     finally:
@@ -732,3 +744,138 @@ def test_set_cookie_response_always_leaves_an_identity_record() -> None:
     assert record["untracked_cookie_names"] == ["sb-next-gen"]
     # Adlar sır değildir; değer değil yalnız ad listelenir.
     assert "abc" not in json.dumps(record)
+
+# ------------------------------------------- korunan çerezler ve boşalan ayar
+def test_protected_challenge_cookies_survive_even_when_we_injected_them() -> None:
+    """`cf_clearance` biz enjekte etmiş olsak bile budanmaz.
+
+    `UPSTREAM_COOKIE` içinde yarış çerezi gelebiliyor (paylaşılan cURL
+    örneğinde vardı) — yani jar'daki `cf_clearance` "sayfanın kendi kazandığı"
+    olmak zorunda değil. Yeni ayarda adı geçince eski sürüm onu "bizim
+    enjekte ettiğimiz eski çerez" sayıp siliyordu; bu, her token üretiminde
+    Cloudflare yarışını baştan tetiklerdi.
+    """
+    provider = _browser_provider()
+    # Ayar `cf_clearance` taşımıyor (yukarıdaki fixture yalnız sb-session+theme
+    # içeriyor), ama jar'da bizim enjekte ettiğimiz bir kopyası var.
+    provider._context = _FilteredContext(
+        [
+            {"name": "sb-session", "value": "stale-old", "domain": "svc.example.test"},
+            {"name": "cf_clearance", "value": "injected-by-us", "domain": "svc.example.test"},
+        ]
+    )
+    provider._injected_cookie_names = {"sb-session", "cf_clearance"}
+
+    async def run() -> None:
+        await provider._set_cookies_from_settings()
+
+    asyncio.run(run())
+
+    names = provider._context.names()
+    assert "cf_clearance" in names, "korunan ad silinemez"
+    assert "sb-session" in names and provider._context.value_of("sb-session") == "new-value"
+    assert provider.stats["browser_cookie_prune_skipped_protected"] == ["cf_clearance"]
+    # Takip listesi korunanı içeride tutar: sonraki turda da korunacağı biliniyor.
+    assert "cf_clearance" in provider._injected_cookie_names
+
+
+def test_prune_never_targets_protected_names_even_if_asked() -> None:
+    """Doğrudan çağrıda da koruma geçerli (davranış garantisi, iç çağrı değil)."""
+    provider = _browser_provider()
+    provider._context = _FilteredContext(
+        [{"name": "cf_clearance", "value": "x", "domain": "svc.example.test"}]
+    )
+
+    async def run() -> None:
+        await provider._prune_injected_cookies(["cf_clearance", "__cf_bm"])
+
+    asyncio.run(run())
+    assert provider._context.clears == []
+    assert provider._context.names() == ["cf_clearance"]
+
+
+def test_empty_cookie_setting_still_prunes_what_we_injected() -> None:
+    """Ayar boşaldıysa budama **atlanmaz**; bizim koyduklarımız geride kalmaz.
+
+    Eski sürüm `if not cookie_header: return` ile budamaya hiç gelmiyordu, yani
+    çerez temizliği iptal edilirken hayalet çerezler jar'da kalıyordu.
+    """
+    settings = make_settings(
+        recaptcha_provider="browser",
+        recaptcha_site_key="6Lfake",
+        target_domain="svc.example.test",
+        upstream_cookie="",
+    )
+    provider = BrowserRecaptchaProvider(settings)
+    provider._context = _FilteredContext(
+        [
+            {"name": "sb-session", "value": "old", "domain": "svc.example.test"},
+            {"name": "legacy-flag", "value": "1", "domain": "svc.example.test"},
+            {"name": "cf_clearance", "value": "keep", "domain": "svc.example.test"},
+        ]
+    )
+    provider._injected_cookie_names = {"sb-session", "legacy-flag"}
+
+    async def run() -> None:
+        await provider._set_cookies_from_settings()
+
+    asyncio.run(run())
+
+    assert provider._context.names() == ["cf_clearance"]
+    assert provider._injected_cookie_names == set()
+    assert provider._context.clears == [
+        {"name": "legacy-flag", "domain": None, "path": None},
+        {"name": "sb-session", "domain": None, "path": None},
+    ]
+
+
+# ------------------------------------------------ ret yanıtlarının gözlemi
+def test_rejected_response_is_recorded_but_not_applied() -> None:
+    """403 `Set-Cookie` taşıyorsa iz kalır; çerez **kasıtlı olarak** uygulanmaz.
+
+    Kaydın varlığı "reddedilen yanıtta çerez vardı" demektir; `reason`
+    `rejected_not_ingested` ise o çerezin oturuma yazılmadığını ayrıca söyler.
+    Böylece "her yanıt loglanıyor" cümlesinin kapsamı testte sabitlenir.
+    """
+    old_token = _fake_jwt(sub="user-1")
+    settings = make_settings(
+        upstream_cookie=f"sb-session={old_token}",
+        deployment_id_refresh_enabled=False,
+        retry_max_attempts=1,
+    )
+    seen_value = "cf-deger-42"
+    rotated = _fake_jwt(sub="user-1", iat=77)
+
+    async def handler(_request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            403,
+            headers=[
+                ("set-cookie", f"__cf_bm={seen_value}; Path=/"),
+                ("set-cookie", f"sb-session={rotated}; Path=/"),
+            ],
+            text='{"error":"recaptcha verification failed"}',
+        )
+
+    upstream = UpstreamClient(settings)
+    upstream._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    async def run() -> None:
+        try:
+            # CAPTCHA işaretli gövde → `RecaptchaRejected`; olayın biçimi bu.
+            with pytest.raises(RecaptchaRejected):
+                async with upstream.stream_completion("chat", {"id": "chat"}):
+                    pass  # pragma: no cover
+        finally:
+            await upstream.shutdown()
+
+    asyncio.run(run())
+
+    record = upstream.identity_update
+    assert record["reason"] == "rejected_not_ingested"
+    assert record["status"] == 403
+    assert record["set_cookie_count"] == 2
+    assert record["set_cookie_names"] == ["__cf_bm", "sb-session"]
+    # Ret yanıtının çerezleri oturuma yazılmadı: teşhis gözlemi, uygulama değil.
+    assert settings.upstream_cookie == f"sb-session={old_token}"
+    body = json.dumps(record)
+    assert seen_value not in body and rotated not in body and old_token not in body

@@ -308,23 +308,32 @@ class UpstreamClient:
         *,
         reason: str,
         changed: bool = False,
+        status: int | None = None,
         access_rotated: bool | None = None,
         refresh_rotated: bool | None = None,
         untracked: list[str] | None = None,
+        set_cookie_count: int | None = None,
+        set_cookie_names: list[str] | None = None,
     ) -> None:
         """Son `Set-Cookie` okumasının kararını yazar (değerler hariç).
 
         "`Set-Cookie` geldi" ile "erişim token'ı gerçekten döndü" ayrı
         iddialardır; kimlik/CAPTCHA tartışması ancak bu satırla doğrulanabilir
         ya da çürütülebilir. `None` bayrak = değerlendirilemedi, `False` ≠
-        belirlenmiş "dönmedi".
+        belirlenmiş "dönmedi". `reason` hangi yoldan geldiğini ayırır:
+        `applied` (ayar + jar güncellendi), `cookie_unchanged`,
+        `no_stored_cookie`, `empty_cookie_jar` ve `rejected_not_ingested`
+        (hata yanıtı — **kasıtlı olarak uygulanmadı**, yalnız gözlem).
         """
         payload: dict[str, object] = {
             "slot": slot,
             "reason": reason,
+            "status": status,
             "changed": changed,
             "access_token_rotated": access_rotated,
             "refresh_token_rotated": refresh_rotated,
+            "set_cookie_count": set_cookie_count,
+            "set_cookie_names": list(set_cookie_names or []),
             "untracked_cookie_names": list(untracked or []),
             "at": time.time(),
         }
@@ -553,6 +562,38 @@ class UpstreamClient:
             await asyncio.sleep(delay)
             delay = min(delay * 2, _RENDER_SYNC_RETRY_MAX_SECONDS)
 
+    @staticmethod
+    def _set_cookie_names(response: httpx.Response) -> list[str]:
+        """`Set-Cookie` başlıklarındaki **adlar** (değerler değil)."""
+        names: set[str] = set()
+        for pair in response.headers.get_list("set-cookie"):
+            head, _, _rest = pair.partition(";")
+            name, sep, _value = head.partition("=")
+            if sep and name.strip():
+                names.add(name.strip())
+        return sorted(names)
+
+    def _observe_set_cookie(
+        self, response: httpx.Response, *, account: Account | None, status: int
+    ) -> None:
+        """Ret yanıtındaki `Set-Cookie`'yi **yalnız kaydeder**, uygulamaz.
+
+        Reddedilmiş/challenge yanıtının çerezlerini kalıcı oturum satırına
+        yazmak, hedefin hata sayfasının ürettiği değeri kimlik sanmak olurdu.
+        Ama "403 hangi çerezlerle geldi?" sorusu teşhis açısından değerlidir:
+        kaydı düşürmeyiz, değeri değil — yalnız adlar ve adet yazılır.
+        """
+        pairs = response.headers.get_list("set-cookie")
+        if not pairs:
+            return
+        self._record_identity_update(
+            account.slot if account is not None else 1,
+            reason="rejected_not_ingested",
+            status=status,
+            set_cookie_count=len(pairs),
+            set_cookie_names=self._set_cookie_names(response),
+        )
+
     def _ingest_set_cookie(
         self,
         response: httpx.Response,
@@ -561,14 +602,17 @@ class UpstreamClient:
     ) -> None:
         """Sunucudan gelen `Set-Cookie` başlıklarını ayarlara ve durum deposuna yansıtır.
 
-        Teşhis sözleşmesi (bilinçli dar): `upstream_identity_update` satırı
-        **`Set-Cookie` başlığı gelen her yanıtta tam bir kez** yazılır. Yanıtta
-        `Set-Cookie` yoksa satır da yoktur; bu nedenle satırın yokluğu yalnız
-        "hedef bu yanıtta çerez set etmedi" demektir — kimliğin değişmediğinin
-        kanıtı **değildir**. Karar değerlendirilemediyse bayraklar `null` döner
-        (`reason` alanına bakın), yanlışlıkla `false` yazılmaz.
+        Teşhis sözleşmesi (bilinçli dar): **uygulanan yolda** `Set-Cookie`
+        başlığı gelen her yanıt tam bir `upstream_identity_update` kaydı
+        bırakır; reddedilen yanıtlar `_observe_set_cookie` üzerinden `reason =
+        rejected_not_ingested` ile kaydedilir (uygulanmaz). Kaydın yokluğu şu
+        üçünden birine işaret eder ve **kimliğin değişmediğini kanıtlamaz**:
+        yanıtta `Set-Cookie` yoktu, kayıt hiç çağrılmayan bir yol kullanıldı
+        (ör. 401 yenileyicisi) ya da log seviyesi INFO'nun üstünde.
+        Değerlendirilemeyen kararlar `null` döner, `false` yazılmaz.
         """
-        if not response.headers.get("set-cookie"):
+        set_cookie_pairs = response.headers.get_list("set-cookie")
+        if not set_cookie_pairs:
             return
         slot = account.slot if account is not None else 1
         cookie_attr = "upstream_cookie" if slot <= 1 else f"upstream_cookie_{slot}"
@@ -580,6 +624,9 @@ class UpstreamClient:
         if not old_cookie:
             self._record_identity_update(
                 slot,
+                status=response.status_code,
+                set_cookie_count=len(set_cookie_pairs),
+                set_cookie_names=self._set_cookie_names(response),
                 reason="no_stored_cookie",
                 untracked=sorted(
                     {c.name for c in client.cookies.jar if c.value}
@@ -590,6 +637,9 @@ class UpstreamClient:
         if not jar_cookies:
             self._record_identity_update(
                 slot,
+                status=response.status_code,
+                set_cookie_count=len(set_cookie_pairs),
+                set_cookie_names=self._set_cookie_names(response),
                 reason="empty_cookie_jar",
             )
             return
@@ -601,7 +651,13 @@ class UpstreamClient:
         # taşınır: "çerez değişti ama token kıyası bu adı görmedi" okunabilir kalsın.
         untracked = sorted(set(jar_cookies) - set(parse_cookie_header(old_cookie)))
         if new_cookie == old_cookie:
-            self._record_identity_update(slot, reason="cookie_unchanged")
+            self._record_identity_update(
+                slot,
+                reason="cookie_unchanged",
+                status=response.status_code,
+                set_cookie_count=len(set_cookie_pairs),
+                set_cookie_names=self._set_cookie_names(response),
+            )
             return
 
         if account is not None:
@@ -655,9 +711,12 @@ class UpstreamClient:
             slot,
             reason="applied",
             changed=True,
+            status=response.status_code,
             access_rotated=access_rotated,
             refresh_rotated=refresh_rotated,
             untracked=untracked,
+            set_cookie_count=len(set_cookie_pairs),
+            set_cookie_names=self._set_cookie_names(response),
         )
 
         if slot <= 1:
@@ -1038,6 +1097,12 @@ class UpstreamClient:
                     last_error = UpstreamNetworkError(f"Upstream network error {detail}.", url=url)
                 else:
                     status = response.status_code
+                    if status >= 400:
+                        # Ret yanıtındaki çerezler **uygulanmaz** (hata
+                        # sayfasının değeri kalıcı oturum satırına sızmamalı),
+                        # ama iz bırakır: "403 Set-Cookie ile mi geldi?"
+                        # sorusu ancak böyle okunabilir.
+                        self._observe_set_cookie(response, account=account, status=status)
                     if self._is_cloudflare_challenge(
                         status, "", response.headers.get("cf-mitigated", "")
                     ):
