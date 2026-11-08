@@ -97,9 +97,10 @@ make run                  # http://localhost:8000/docs
 
 Kimlik doğrulama hedefe göre yalnızca `Cookie` ile veya ayrıca
 `Authorization: Bearer <access_token>` başlığıyla yapılabilir. Son alınan normal sohbet
-cURL'ünde Authorization başlığı **yoktu**; bu kurulumda `UPSTREAM_AUTH_FROM_COOKIE=false`
-kalır. Hedef gerçekten Bearer başlığı isterse ApiWrapper token'ı cookie'den otomatik
-ayıklayıp ekleyebilir.
+cURL'ünde Authorization başlığı **yoktu**; `UPSTREAM_CURL` importer JWT varsa
+`UPSTREAM_AUTH_FROM_COOKIE` ayarını otomatik açabilir. Authorization göndermemek için
+`UPSTREAM_AUTH_HEADER_MODE=cookie_only` seçilebilir. Hedef gerçekten Bearer
+başlığı isterse ApiWrapper token'ı cookie'den otomatik ayıklayıp ekleyebilir.
 
 ```bash
 # Tarayıcıdan kopyalanan ham Cookie başlığı yeterlidir:
@@ -121,14 +122,16 @@ Desteklenen çerez biçimleri (`app/upstream/auth.py`):
 
 | Değişken | Varsayılan | Açıklama |
 |---|---|---|
-| `UPSTREAM_AUTH_FROM_COOKIE` | `false` | Cookie'den ayıklanan tokenla ayrıca Authorization üret; yalnız hedef bunu istiyorsa aç |
+| `UPSTREAM_AUTH_FROM_COOKIE` | `false` | Cookie'den Authorization üret; JWT içeren cURL importu bunu otomatik açabilir |
+| `UPSTREAM_AUTH_HEADER_MODE` | `configured` | `cookie_only` upstream Authorization başlığını kapatır; tokenları silmez |
 | `UPSTREAM_ACCESS_TOKEN` | — | Token'ı doğrudan ver (en yüksek öncelik) |
 | `UPSTREAM_TOKEN_COOKIE_NAMES` | — | Token'ı taşıyan çerez adları (virgülle); boşsa sezgisel arama |
 | `UPSTREAM_AUTH_SCHEME` | `Bearer` | Boş bırakılırsa token ham gönderilir |
 | `UPSTREAM_WARN_ON_EXPIRED_TOKEN` | `true` | JWT `exp` dolmuşsa logda uyar |
 
 > `UPSTREAM_EXTRA_HEADERS` en son uygulanır; `authorization=...` yazarak
-> otomatik üretilen başlığı bilinçli olarak ezebilirsiniz.
+> otomatik üretilen başlığı bilinçli olarak ezebilirsiniz. `cookie_only` modu
+> Authorization başlığını bu ek alanlardan da kaldırır.
 >
 > **Otomatik Token Yenileme & Kalıcılık (`app/upstream/refresh.py`, `app/upstream/state_store.py`):**
 > Oturum çerezindeki `refresh_token` ayrıştırılır; `access_token` bitmesine 10 dk
@@ -191,7 +194,7 @@ python scripts/compare_curl.py request.txt
 |---|---|
 | Gövdede `recaptchaV2Token` var, biz `recaptchaV3Token` yolluyoruz | `UPSTREAM_RECAPTCHA_FIELD=recaptchaV2Token` |
 | `accept-language` farklı (örn. `tr-TR,...`) | `UPSTREAM_ACCEPT_LANGUAGE=tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7` |
-| cURL'de `authorization` başlığı **yok** | `UPSTREAM_AUTH_FROM_COOKIE=false` (varsayılan) |
+| cURL'de `authorization` başlığı **yok** | İçe aktarıcı JWT varsa Authorization üretebilir; cookie-only denemesi için `UPSTREAM_AUTH_HEADER_MODE=cookie_only` |
 | `cx` her istekte değişiyor | Sabit değer yazılmaz. İlk canlı test alan olmadan yapılır; zorunluysa istemci JS'sindeki üretim yöntemi gerekir |
 
 > **Cloudflare:** İsteğinizde `cf_clearance` çerezi varsa onu da `UPSTREAM_COOKIE`
@@ -331,8 +334,9 @@ Ayar dosyası çalışma sırasında yeniden okunmadığından, değişiklikten 
 yeniden başlatın.
 
 Araç artık cURL'deki `authorization` başlığını da yazıyor (`UPSTREAM_ACCESS_TOKEN` +
-`UPSTREAM_AUTH_SCHEME`, `UPSTREAM_AUTH_FROM_COOKIE=false`). Başlık yoksa istek yalnızca
-Cookie ile gider ve bunu belirten bir uyarı üretilir; ne başlık ne oturum çerezi varsa
+`UPSTREAM_AUTH_SCHEME`, `UPSTREAM_AUTH_FROM_COOKIE=false`). Başlık yok ve çerezde JWT
+varsa çerezden Authorization üretimi açılır; `UPSTREAM_AUTH_HEADER_MODE=cookie_only`
+seçimi bu başlığı upstream'e göndermez. Ne başlık ne oturum çerezi varsa
 "istek anonim gider" uyarısı çıkar. `referer`'dan da `UPSTREAM_REFERER_PATH` şablonu üretilir.
 
 Kaydedilen hesaplar hesap havuzu tarafından okunur ve istekler aralarında dağıtılır

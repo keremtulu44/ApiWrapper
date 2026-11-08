@@ -149,7 +149,10 @@ def apply_upstream_curl(
     # ömürlü token bu seçimi static'e geri döndürmemeli.
     env, warnings, model_id = build_settings(
         parsed,
-        existing={"RECAPTCHA_PROVIDER": settings.recaptcha_provider},
+        existing={
+            "RECAPTCHA_PROVIDER": settings.recaptcha_provider,
+            "UPSTREAM_AUTH_HEADER_MODE": settings.upstream_auth_header_mode,
+        },
     )
 
     critical = [item for item in warnings if item.startswith("KRİTİK")]

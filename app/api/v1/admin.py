@@ -603,6 +603,10 @@ async def auth_diagnostics(
     # tahmin etmek yerine gösterebilir.
     cookie_inspection = inspect_cookie(settings.upstream_cookie)
     header_value = build_authorization(settings)
+    # Ek başlıklar stream isteğinde en son uygulanır; teşhis onu da hesaba katar.
+    extra_auth_present = settings.upstream_auth_header_mode != "cookie_only" and any(
+        key.lower() == "authorization" for key in settings.parsed_extra_headers()
+    )
     from app.services.token_refresh import refresh_state
 
     # Kullanılan token `UPSTREAM_AUTH_FROM_COOKIE` kapalıyken boş görünebilir;
@@ -617,7 +621,7 @@ async def auth_diagnostics(
     return {
         "slot": slot,
         "account": account.label if account is not None else None,
-        "authorization_header_will_be_sent": bool(header_value),
+        "authorization_header_will_be_sent": bool(header_value) or extra_auth_present,
         "auth_scheme": settings.upstream_auth_scheme,
         "source": (
             f"UPSTREAM_ACCESS_TOKEN{suffix}"
