@@ -8,6 +8,19 @@ döner.
 
 > Sır kuralı: bu dosyada token, çerez değeri, e-posta **yok**. Yalnız adlar,
 > zaman damgaları, süreler ve kısaltılmış kimlikler var.
+>
+> Uyarı: `base64-` ön eki **gizleme değildir**. Oturum çerezi tek satırda
+> base64'e çevrilmiş JSON'dur; çözüldüğünde `access_token`, `refresh_token`,
+> `provider_token` ve Google'ın **offline** (`1//…`) refresh token'ı düz
+> metindir. Yakalama dosyası bu yüzden secret gibi saklanır, paylaşılmaz.
+
+> **Alan adı notu:** yakalamada ana alan adı `arena.ai` olarak **maskelenmişti**;
+> gerçek hedef host farklı. Bu belgedeki ölçümlerin hiçbiri host'a bağlı değil —
+> okunan her şey çerez/başlık/gövde içinden geldi (çerez ve başlık adları hedef
+> yığından geliyor: `arena-auth-prod-v1*`, `x-arena-web-deployment`). Host'a bağlı
+> olan **tek** şey `TARGET_DOMAIN` üzerinden üretilen `origin`, `referer` ve
+> çerez alanıdır (`app/core/config.py:415-440`, `app/upstream/headers.py`).
+> Maskeli adı yapılandırmaya yazmak, kimlik doğru olsa bile 401/403 üretir.
 
 ## 0. Ölçüm yöntemi
 
