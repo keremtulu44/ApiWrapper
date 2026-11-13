@@ -186,8 +186,15 @@ def build_stream_headers(
     # Kullanıcı tanımlı başlıklar en son uygulanır; bilinçli override'a izin verilir.
     headers.update(settings.parsed_extra_headers())
     if deployment_id:
-        for name in DEPLOYMENT_HEADERS:
-            if name in headers:
+        # Değiştirme **ada duyarsız** olmalı: başlık adları cURL'den küçük harfle
+        # geliyor (`curl_import` satır 93) ama `UPSTREAM_EXTRA_HEADERS` elle
+        # yazıldığında `X-Arena-Web-Deployment` gibi karışık yazılabiliyor. Duyarlı
+        # karşılaştırmada kanarya taze değeri okuyor ama yazamıyordu: istek donmuş
+        # damgayla gidip 409 `refresh_required` alıyor ve operatör yanlış yöne
+        # (CAPTCHA token'ı) bakıyordu. Anahtarın kendi yazımı korunur.
+        wanted = set(DEPLOYMENT_HEADERS)
+        for name in list(headers):
+            if name.lower() in wanted:
                 headers[name] = deployment_id
     return headers
 

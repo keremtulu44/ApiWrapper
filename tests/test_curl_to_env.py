@@ -609,3 +609,17 @@ def test_empty_cx_is_not_sent():
         userMessage=UserMessage(content="x"), mode="direct-battle",
     )
     assert "cx" not in payload.to_wire()
+
+
+def test_escaped_ampersand_in_cookie_is_normalized(sample):
+    """DevTools/eklenti çıktısında çerez `&amp;` ile kaçışlı gelebilir.
+
+    Kaçışın kendi `;` karakteri olduğu gibi saklanırsa `UPSTREAM_COOKIE` bozulur:
+    tek bir telemetri çerezi (`_dd_s`) upstream tarafında altı sahte çereze
+    ayrılır. Temizlik içe aktarma anında yapılır.
+    """
+    cookie = sample["cookie"] + "; _dd_s=aid=abc&amp;rum=2&amp;id=sess-1"
+    env, _, _ = build_settings(parse_curl(_curl(cookie, sample["body"])))
+
+    assert "&amp;" not in env["UPSTREAM_COOKIE"]
+    assert "_dd_s=aid=abc&rum=2&id=sess-1" in env["UPSTREAM_COOKIE"]

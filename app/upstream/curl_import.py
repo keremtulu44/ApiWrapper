@@ -12,7 +12,11 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
-from app.upstream.auth import extract_access_token, looks_like_jwt
+from app.upstream.auth import (
+    extract_access_token,
+    looks_like_jwt,
+    normalize_cookie_header,
+)
 from app.upstream.header_store import format_extra_headers
 
 
@@ -307,7 +311,10 @@ def build_settings(
             )
 
     # --- başlıklar
-    cookie = headers.get("cookie", "").strip()
+    # HTML kaçışlı (`&amp;`) çerez metni olduğu gibi saklanırsa hem ayrıştırma
+    # hem upstream'e gönderilen başlık bozulur (kaçışın kendi `;` karakteri
+    # paketi böler). Temizlik burada, tek noktada yapılır.
+    cookie = normalize_cookie_header(headers.get("cookie", "").strip())
     # Yuva tazeleme tam bir kimlik anlık görüntüsüdür: authorization-only yeni
     # cURL'de eski cookie'nin hayatta kalıp başka oturumla karışmasını önle.
     env["UPSTREAM_COOKIE"] = cookie
