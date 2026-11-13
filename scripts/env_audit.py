@@ -25,11 +25,14 @@ Kullanım::
 from __future__ import annotations
 
 import argparse
+import io
 import json
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
+
+from pydantic import ValidationError
 
 from app.core.config import (
     _PLACEHOLDER_VALUE_RE,
@@ -74,9 +77,17 @@ DEVICE_KEYS: tuple[str, ...] = (
     "RECAPTCHA_ACTION",
 )
 
-_SEVERITY: dict[str, int] = {"dead": 0, "never_pin": 1, "placeholder": 1, "shadow": 1, "gap": 2}
+_SEVERITY: dict[str, int] = {
+    "broken": 0,
+    "dead": 0,
+    "never_pin": 1,
+    "placeholder": 1,
+    "shadow": 1,
+    "gap": 2,
+}
 
 _SECTIONS: tuple[tuple[str, str], ...] = (
+    ("broken", "DOSYA BU HÂLİYLE AÇILMIYOR (değer ayrıştırılamıyor)"),
     ("dead", "ÖLÜ ANAHTARLAR (uygulama bu adı okumuyor)"),
     ("placeholder", "YER TUTUCU GİZLİLER (yüklenirken boşaltılır)"),
     ("never_pin", "SABİTLENMEMESİ GEREKENLER"),
@@ -155,25 +166,17 @@ class AuditReport:
 
 
 def parse_env_text(text: str) -> dict[str, str]:
-    """``KEY=VALUE`` satırlarını sözlüğe çevirir; yorumları ve tırnakları atar."""
-    values: dict[str, str] = {}
-    for raw in text.splitlines():
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        if line.startswith("export "):
-            line = line[len("export ") :].strip()
-        if "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        if not key:
-            continue
-        value = value.strip()
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
-            value = value[1:-1]
-        values[key] = value
-    return values
+    """``KEY=VALUE`` satırlarını sözlüğe çevirir.
+
+    Ayrıştırma **runtime ile aynı** olsun diye ``python-dotenv`` kullanılır:
+    tırnaklar, ``export`` öneki ve satır sonu yorumları uygulamanın gördüğü
+    şekilde elenir. Kendi mini ayrıştırıcımızı yazmak, ``KEY=false  # not``
+    gibi satırlarda denetim ile çalışma zamanını ayrı düşürüyordu.
+    """
+    from dotenv import dotenv_values
+
+    raw = dotenv_values(stream=io.StringIO(text))
+    return {key.strip().upper(): value for key, value in raw.items() if value is not None}
 
 
 def known_fields() -> dict[str, str]:
@@ -290,7 +293,27 @@ def audit_env(path: Path) -> AuditReport:
             )
         )
 
-    settings = settings_from(values, known)
+    try:
+        settings = settings_from(values, known)
+    except ValidationError as exc:
+        first = exc.errors()[0]
+        key = str(first.get("loc", ("?",))[0]).upper()
+        report.findings.append(
+            Finding(
+                key,
+                "broken",
+                "config",
+                f"Ayarlar bu dosyayla yüklenemiyor: {first.get('msg', 'geçersiz değer')}",
+                "Değeri tırnaksız, tek satırda ve yorumsuz yaz; "
+                "satır sonu yorumları bazı sürümlerde değere karışır.",
+            )
+        )
+        report.layer = "config"
+        report.summary = "Dosya bu hâliyle açılmıyor; uygulama başlamaz."
+        report.device = {key: bool(values.get(key, "").strip()) for key in DEVICE_KEYS}
+        report.findings.sort(key=lambda item: (_SEVERITY.get(item.kind, 9), item.key))
+        return report
+
     verdict = build_layer_verdict(settings)
     for check in verdict.checks:
         if check.status in {"ok", "unknown"}:

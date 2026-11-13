@@ -192,3 +192,28 @@ def test_env_example_audit_is_clean() -> None:
     assert report.of_kind("dead") == []
     assert report.of_kind("placeholder") == []
     assert report.of_kind("shadow") == []
+
+
+def test_inline_comment_is_parsed_like_runtime(tmp_path: Path) -> None:
+    """`KEY=false  # not` runtime'da `false` demek; denetim de öyle görmeli."""
+    path = _write(
+        tmp_path,
+        "TARGET_DOMAIN=example.com\nUPSTREAM_CX_SEND=false  # gönderilmesin\n",
+    )
+
+    report = audit_env(path)
+
+    assert report.of_kind("broken") == []
+    values = parse_env_text(path.read_text(encoding="utf-8"))
+    assert values["UPSTREAM_CX_SEND"] == "false"
+
+
+def test_unparseable_value_is_reported_instead_of_crashing(tmp_path: Path) -> None:
+    """Bozuk değer denetimi patlatmamalı; 'dosya açılmıyor' demeli."""
+    path = _write(tmp_path, "TARGET_DOMAIN=example.com\nUPSTREAM_CX_SEND=belki\n")
+
+    report = audit_env(path)
+
+    assert _kinds(report, "broken") == ["UPSTREAM_CX_SEND"]
+    assert report.layer == "config"
+    assert "açılmıyor" in report.summary

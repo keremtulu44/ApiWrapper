@@ -111,6 +111,14 @@ python -m scripts.env_audit .env --strict # ölü/yer tutucu/ezilen varsa çık�
 (`UPSTREAM_CURL` açılışta `UPSTREAM_COOKIE`'yi ezer) ve **katman eksikleri**
 (`/v1/admin/auth` ile aynı karar katmanından gelir).
 
+Tam liste (150 anahtar, alfabetik, her satırda "ne yazacaksın") için
+[`docs/ENV_FULL.md`](docs/ENV_FULL.md). O dosya üretilir, elle düzenlenmez:
+
+```bash
+python -m scripts.env_template          # docs/ENV_FULL.md'yi yeniler
+python -m scripts.env_template --env    # kopyalanabilir .env iskeleti
+```
+
 ---
 
 ## Upstream Kimlik Doğrulama (`Authorization: Bearer`)
