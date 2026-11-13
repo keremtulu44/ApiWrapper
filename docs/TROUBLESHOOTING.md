@@ -245,6 +245,10 @@ düştüğüne bakın (`expires_in_seconds: -1` = süresi dolmuş).
   edilir). Bu sürümden sonra bu tür yer tutucular yüklenirken boşaltılır
   (`env_placeholder_ignored` uyarısı verilir); yine de alanı tamamen silmek
   doğrusudur.
+* **İki kaynak çelişkisi:** `UPSTREAM_CURL` doluysa açılışta çerez ve hedef alan
+  adı **cURL'den** okunur; ayrı verilen `UPSTREAM_COOKIE` ve `TARGET_DOMAIN` yok
+  sayılır (log: `upstream_cookie_shadowed_by_curl`). Taze çerez verip "hiçbir
+  şey değişmedi" görüyorsanız güncellenmesi gereken alan `UPSTREAM_CURL`'dür.
 * `UPSTREAM_REFRESH_API_KEY` boşsa Supabase tarzı token uç noktası `apikey`
   ister: yenileme `No API key found in request` ile döner. Public anon anahtarı
   bir kez elle yazın (sır değildir).
