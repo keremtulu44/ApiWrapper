@@ -235,7 +235,19 @@ düştüğüne bakın (`expires_in_seconds: -1` = süresi dolmuş).
   taşınıyor) ve elle verilmiş token korunur.
 * Çok hesaplı kurulumda istek otomatik olarak **sonraki hesaba devredilir**
   (`account_switched ... reason=auth_rejected`); tek hesapta kimlik tazelemek gerekir.
-* Token sabit süreliyse (genelde ~1 saat) `UPSTREAM_CURL`'ü yenilemek tek çözümdür.
+* Token sabit süreli değildir: ölçülen `expires_in` değerleri 3600 s ve 1200 s
+  olarak değişti (`docs/CAPTURE_TIMELINE.md`). Karar `exp` alanına dayanır; sabit
+  süre varsaymayın.
+* **Yer tutucu token tuzağı:** `UPSTREAM_ACCESS_TOKEN` içine "boş" anlamında
+  `APIWRAPPER_EMPTY_VALUE_V1` gibi bir metin yazıldıysa istek
+  `Authorization: Bearer APIWRAPPER_EMPTY_VALUE_V1` ile gider ve çerez ne kadar
+  taze olursa olsun **her istek 401 alır** (açık token çerezden önce tercih
+  edilir). Bu sürümden sonra bu tür yer tutucular yüklenirken boşaltılır
+  (`env_placeholder_ignored` uyarısı verilir); yine de alanı tamamen silmek
+  doğrusudur.
+* `UPSTREAM_REFRESH_API_KEY` boşsa Supabase tarzı token uç noktası `apikey`
+  ister: yenileme `No API key found in request` ile döner. Public anon anahtarı
+  bir kez elle yazın (sır değildir).
 
 ### 401 mi 429 mu? (karıştırılan iki arıza)
 

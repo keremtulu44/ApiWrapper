@@ -6,10 +6,11 @@ Hedef domain ve model kimlikleri KODA GÖMÜLMEZ; config'den gelir.
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 from app.upstream.header_store import parse_extra_headers
@@ -17,6 +18,37 @@ from app.upstream.header_store import parse_extra_headers
 UnsupportedParamPolicy = Literal["ignore", "hint", "error"]
 RecaptchaProviderName = Literal["static", "noop", "browser", "external"]
 RecaptchaVersion = Literal["v3", "enterprise"]
+
+#: Env arayüzlerinde (Render panosu, docker-compose) bir değeri boşaltmak
+#: her zaman mümkün olmuyor; kullanıcı bunun yerine "boş" anlamına gelen bir yer
+#: tutucu yazıyor (`APIWRAPPER_EMPTY_VALUE_V1`, `__APIWRAPPER_EMPTY_VALUE_V1__`).
+#: Bu değer **token sanılırsa** `Authorization: Bearer APIWRAPPER_EMPTY_VALUE_V1`
+#: gider ve upstream her istekte 401 döner — çerez ne kadar taze olursa olsun,
+#: çünkü açık token çerezden önce tercih edilir. Bu yüzden yer tutucular
+#: yüklenirken boşaltılır ve tek satır uyarı loglanır.
+_PLACEHOLDER_VALUE_RE = re.compile(
+    r"^_*(?:(?:APIWRAPPER[_-]?)?EMPTY(?:[_-]?VALUE)?(?:[_-]?V\d+)?|NULL|NONE|CHANGEME|TODO)_*$",
+    re.IGNORECASE,
+)
+
+#: Yer tutucu gelirse boşaltılan gizli değer alanları.
+PLACEHOLDER_SECRET_FIELDS: tuple[str, ...] = (
+    "upstream_access_token",
+    "upstream_access_token_2",
+    "upstream_access_token_3",
+    "upstream_access_token_4",
+    "upstream_refresh_token",
+    "upstream_refresh_api_key",
+    "upstream_cookie",
+    "upstream_cookie_2",
+    "upstream_cookie_3",
+    "upstream_cookie_4",
+    "recaptcha_static_token",
+    "recaptcha_static_token_2",
+    "recaptcha_static_token_3",
+    "recaptcha_static_token_4",
+    "upstream_cx",
+)
 
 #: cURL içe aktarıcı ve hesap havuzu yalnızca aşağıda açıkça tanımlanan
 #: soneksiz/_2/_3/_4 yuvalarını destekler. Araçların daha fazla yuvaya
@@ -403,6 +435,26 @@ class Settings(BaseSettings):
             # Yanlislikla tam URL yapistirilmissa yol kismini at.
             if "/" in v:
                 v = v.split("/", 1)[0]
+        return v
+
+    @field_validator(*PLACEHOLDER_SECRET_FIELDS, mode="before")
+    @classmethod
+    def _blank_placeholder_secrets(cls, v: object, info: ValidationInfo) -> object:
+        """Yer tutucu "boş" değerlerini boşaltır (token sanılıp gönderilmesin)."""
+        if isinstance(v, str):
+            text = v.strip()
+            if text and _PLACEHOLDER_VALUE_RE.match(text):
+                from app.core.logging import get_logger
+
+                get_logger(__name__).warning(
+                    "env_placeholder_ignored",
+                    field=info.field_name,
+                    hint=(
+                        "Bu alan bir yer tutucu içeriyordu ve boş kabul edildi. "
+                        "Değeri ya tamamen silin ya da gerçek değeri yazın."
+                    ),
+                )
+                return ""
         return v
 
     @field_validator("log_level", mode="before")
