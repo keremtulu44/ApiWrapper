@@ -595,6 +595,26 @@ async def auth_diagnostics(
     cookie_remaining = token_seconds_remaining(cookie_token) if cookie_token else None
     remaining = token_seconds_remaining(effective) if effective else None
     suffix = f"_{slot}" if slot is not None and slot > 1 else ""
+    # Hangi katmanın bozuk olduğunu tek cümleyle söyle (yapılandırma / kimlik /
+    # damga / anti-bot). Operatörün CAPTCHA'ya bakması gereken tek durum, diğer
+    # üç katman temizken ortaya çıkan durumdur.
+    from app.services.layer_verdict import build_layer_verdict
+
+    deployment_stamp: str | None = None
+    resolver = getattr(getattr(request.app.state, "upstream", None), "deployment", None)
+    if resolver is not None:
+        try:
+            deployment_stamp = resolver.cached(settings.base_url)
+        except Exception:  # pragma: no cover - teşhis asla 500 üretmemeli
+            deployment_stamp = None
+    verdict = build_layer_verdict(
+        settings,
+        recaptcha_stats=getattr(
+            getattr(request.app.state, "recaptcha", None), "stats", None
+        ),
+        deployment_stamp=deployment_stamp,
+        refresh_last_error=str((refresh_state() or {}).get("last_error") or ""),
+    )
     return {
         "slot": slot,
         "account": account.label if account is not None else None,
@@ -670,6 +690,7 @@ async def auth_diagnostics(
         },
         "configured_cookie_names": settings.upstream_token_cookie_names,
         "cookie_names_present": sorted(cookies),
+        "verdict": verdict.as_dict(),
         "cookie_count": len(cookies),
         "cookie_inspection": cookie_inspection,
         "session_cookie_candidates": _session_cookie_candidates(cookies),
