@@ -92,6 +92,25 @@ make run                  # http://localhost:8000/docs
 > `/nextjs-api/stream/create-evaluation` yolunu kullanır. Hedef değişirse yolu yeni
 > cURL'den içe aktarın; yanlış yol upstream **HTTP 404** üretir.
 
+### `.env` denetimi
+
+Değer değiştirip hiçbir şeyin değişmediği durum neredeyse her zaman **okunmayan
+bir addan** kaynaklanır: `Settings` bilinmeyen adı sessizce yok sayar. Denetim
+betiği dosyayı uygulamanın gerçek alanlarıyla karşılaştırır ve yalnız durum
+bildirir (gizli değer yazdırmaz):
+
+```bash
+python -m scripts.env_audit .env          # metin
+python -m scripts.env_audit .env --json   # makine okunur
+python -m scripts.env_audit .env --strict # ölü/yer tutucu/ezilen varsa çıkış 1
+```
+
+Çıktı beş bölümdür: **ölü anahtarlar** (yakın doğru ad varsa önerilir),
+**yer tutucu gizliler**, **sabitlenmemesi gerekenler** (istek/oturum başına
+üretilen `cx` ve statik captcha token'ı gibi), **birbirini ezen anahtarlar**
+(`UPSTREAM_CURL` açılışta `UPSTREAM_COOKIE`'yi ezer) ve **katman eksikleri**
+(`/v1/admin/auth` ile aynı karar katmanından gelir).
+
 ---
 
 ## Upstream Kimlik Doğrulama (`Authorization: Bearer`)
