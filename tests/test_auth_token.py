@@ -571,3 +571,35 @@ def test_merge_keeps_base_when_it_already_has_refresh_token():
 
     # Kök değer refresh token taşıdığı için parçalar onun yerine geçmez.
     assert extract_refresh_token(combined) == "rt-from-base"
+
+
+def test_parse_cookie_header_unescapes_html_entities_before_splitting():
+    """Tarayıcı arayüzünden kopyalanan çerezde `&amp;` bölmeyi bozmamalı.
+
+    `&amp;` kendi içinde `;` taşıdığı için temizlenmezse tek çerez altı sahte
+    çereze ayrılıyordu (`_dd_s`, `rum`, `id`, `created`, `expire`, `logs`).
+    """
+    raw = (
+        "arena-auth-prod-v1=; "
+        "_dd_s=aid=abc&amp;rum=2&amp;id=sess-1&amp;created=1&amp;expire=2&amp;logs=1; "
+        "arena_visit_id=%7B%22id%22%3A%22v1%22%2C%22started%22%3A1%2C%22lastSeen%22%3A2%7D"
+    )
+    cookies = parse_cookie_header(raw)
+
+    assert set(cookies) == {"arena-auth-prod-v1", "_dd_s", "arena_visit_id"}
+    assert cookies["_dd_s"] == "aid=abc&rum=2&id=sess-1&created=1&expire=2&logs=1"
+
+
+def test_escaped_cookie_bundle_still_yields_access_and_refresh_tokens():
+    """HTML kaçışlı pakette de token çıkarımı (ve parçalı birleştirme) çalışır.
+
+    Gerçek biçim: yalnız **değer** içindeki `&` kaçışlanır; çerezleri ayıran
+    `; ` korunur. Kaçışın kendi `;` karakteri paketi bölmemelidir.
+    """
+    escaped = (
+        "_dd_s=aid=abc&amp;rum=2&amp;id=sess-1; "
+        "arena-auth-prod-v1=; "
+        + _chunked_session_cookie()
+    )
+    assert extract_access_token(escaped) is not None
+    assert extract_refresh_token(escaped) == "rt-fresh"

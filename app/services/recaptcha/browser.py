@@ -33,8 +33,36 @@ from app.core.config import Settings
 from app.core.errors import RecaptchaError
 from app.core.logging import get_logger
 from app.services.recaptcha.base import RecaptchaProvider
+from app.upstream.headers import is_mobile_ua
 
 logger = get_logger(__name__)
+
+#: Masaüstü ve telefon için tutarlı tarayıcı penceresi. UA telefon diyorsa
+#: ekran metrikleri de telefon olmalı: iPhone UA'sı + 1366x768 viewport,
+#: reCAPTCHA Enterprise'ın topladığı ekran/gesture sinyallerinde kendi
+#: kendisiyle çelişir ve skoru düşürür.
+_DESKTOP_PROFILE: dict[str, Any] = {
+    "viewport": {"width": 1366, "height": 768},
+    "device_scale_factor": 1,
+    "is_mobile": False,
+    "has_touch": False,
+}
+_MOBILE_PROFILE: dict[str, Any] = {
+    "viewport": {"width": 393, "height": 852},
+    "device_scale_factor": 3,
+    "is_mobile": True,
+    "has_touch": True,
+}
+
+
+def context_profile(user_agent: str) -> dict[str, Any]:
+    """Playwright ``new_context`` için UA ile uyumlu cihaz profili."""
+    profile = _MOBILE_PROFILE if is_mobile_ua(user_agent) else _DESKTOP_PROFILE
+    return {
+        key: (dict(value) if isinstance(value, dict) else value)
+        for key, value in profile.items()
+    }
+
 
 #: Sayfa içinde çalıştırılacak betik: seçilen v3/Enterprise API hazır olunca
 #: bizim belirlediğimiz site-key/action ile token üretir (ikinci seçenek).
@@ -209,7 +237,7 @@ class BrowserRecaptchaProvider(RecaptchaProvider):
             self._context = await self._browser.new_context(
                 user_agent=self.settings.upstream_user_agent,
                 locale=locale,
-                viewport={"width": 1366, "height": 768},
+                **context_profile(self.settings.upstream_user_agent),
                 extra_http_headers={
                     "Accept-Language": (
                         self.settings.upstream_accept_language or "en-US,en;q=0.9"

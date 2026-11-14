@@ -150,3 +150,16 @@ Authorization: hayır → istek kimliksiz gidiyor
    `arena-auth-prod-v1`, `.0`, `.1`) → `/cookie`. Sonrasında `/tani`'de
    `Çerezde token: var (≈N dk kaldı)` görülmeli.
 5. Kalıcı çıkış: çerez setinde `refresh_token` varsa §5'teki akış.
+
+## 7. Ölçümle doğrulanan düzeltmeler (2026-11, üç cURL)
+
+Ayrıntı ve zaman çizelgesi: **[`docs/CAPTURE_TIMELINE.md`](CAPTURE_TIMELINE.md)**.
+Bu bölüm yalnız bu belgedeki ifadeleri düzeltir.
+
+| Bu belgede yazan | Ölçülen | Sonuç |
+|---|---|---|
+| Erişim token'ı "~1 saat" | cURL 1: `expires_in=3600`; cURL 2 ve 3: **`expires_in=1200`** | Ömür sunucu ayarıdır ve **kısaldı**. Kod kararı `exp` + leeway (600 s) üzerinden verdiği için davranış doğru; "1 saat" beklentisi yanlış. TTL'i asla sabit varsayma, `expires_in`/`exp` oku. |
+| `_dd_s` "15 dk boşta" | `expire = lastSeen + 900 s` (her istekte kayan) | Doğrulandı. Kayan alan olduğu için donmuş çerez setinde "saatlerdir boşta" görünür; kimlik değeri değil. |
+| `_vcrr_*` "Vercel hız/izleme, kısa" | Değeri **her zaman** bir önceki deploy'un `dpl_` kimliği; `x-arena-web-deployment` başlığıyla asla eşleşmiyor | Damga **çerezden türetilemez**; `deployment.py`'nin sayfayı okuması doğru tasarım. |
+| `.0`/`.1` "4 KB sınırı için bölünmüş" | 3180 + 1958 karakter; bölünme noktası base64 bloğunun **ortasında** ve oturum JSON'u uzadıkça **kayıyor** | Birleştirme ayırıcısız (`""`) yapılmalı; `rewrite_session_cookie` boyları koruyarak yeniden böler. |
+| `arena-auth-prod-v1` "oturumun anahtarı" | Çerez **boş**; gerçek değer yalnız `.0`+`.1` | Boş kök çerez "oturum yok" sayılmamalı (`merge_chunked_cookies` bunu zaten doğru yapıyor). |

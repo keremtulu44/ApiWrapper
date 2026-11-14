@@ -966,3 +966,30 @@ async def test_apikey_discovery_failure_shows_why_and_how_many_scripts_were_scan
     text = sent[-1]["text"]
     assert "403" in text
     assert "/apikey <anahtar>" in text
+
+
+@pytest.mark.asyncio
+async def test_diagnose_puts_layer_verdict_first_with_its_fix():
+    """`/tani` önce hangi katmanın bozuk olduğunu söyler, sonra ayrıntı verir."""
+    text = await _run_diagnose(
+        _auth_payload(
+            verdict={
+                "layer": "identity",
+                "summary": "Engel · identity katmanı: Erişim token'ının süresi dolmuş.",
+                "checks": [
+                    {
+                        "id": "refresh_api_key",
+                        "layer": "identity",
+                        "status": "warn",
+                        "detail": "apikey boş",
+                        "fix": "UPSTREAM_REFRESH_API_KEY yazın.",
+                    }
+                ],
+            }
+        )
+    )
+    assert "🎯 identity" in text
+    assert "süresi dolmuş" in text
+    assert "✎ UPSTREAM_REFRESH_API_KEY yazın." in text
+    # Katman satırı çerez ayrıntısından önce gelir.
+    assert text.index("🎯 identity") < text.index("Çerez:")

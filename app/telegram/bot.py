@@ -419,6 +419,21 @@ class TelegramBot:
             return
 
         lines = ["🔎 Teşhis"]
+        # Katman kararı en üstte: telefonda tek bakışta "hangi katman" cevabı.
+        verdict_raw = payload.get("verdict")
+        verdict: dict[str, Any] = verdict_raw if isinstance(verdict_raw, dict) else {}
+        if verdict.get("summary"):
+            icon = "✅" if verdict.get("layer") == "ok" else "🎯"
+            lines.append(f"{icon} {verdict.get('layer')} · {verdict.get('summary')}")
+            fixes = [
+                str(item.get("fix"))
+                for item in (verdict.get("checks") or [])
+                if isinstance(item, dict)
+                and item.get("status") in {"warn", "fail"}
+                and item.get("fix")
+            ]
+            for fix in fixes[:2]:
+                lines.append("✎ " + fix)
         names = [str(item) for item in (payload.get("cookie_names_present") or [])]
         shown = ", ".join(names[:8]) + (f" (+{len(names) - 8})" if len(names) > 8 else "")
         lines.append(

@@ -190,6 +190,76 @@ kurulumu/Android sürüm kısıtları nedeniyle zahmetlidir. Önerilmez.
 Bir kereliğine masaüstü/başka bir cihazda: DevTools → Network → ilgili istek →
 **Copy as cURL** → Telegram `/curl <...>`. Sonrasında sunucu tarayıcısı devralır.
 
+## 4. Mobil cURL'ü nereye koyacaksın (alan alan)
+
+Üç yol var; **birini** seç. Üçünde de cURL'ün içindeki hiçbir değeri elle
+kopyalaman gerekmiyor — ayrıştırma zaten yapılıyor.
+
+### Yol A — Telefondan, hiçbir şey doldurmadan (en pratik)
+
+Telegram'da bota cURL'ün tamamını yapıştır:
+
+```
+/curl curl 'https://<host>/nextjs-api/stream/create-evaluation' -H 'cookie: ...' ...
+```
+
+Bot; hedef host, akış yolu, `mode`, captcha alanı, `accept-language`,
+`user-agent`, `Cookie`, `Authorization`, referer yolu ve parmak izi
+başlıklarını **o an** uygular. `.env`'e hiçbir şey yazmazsın, deploy gerekmez.
+Telegram 4 KB sınırına takılırsa parametresiz `/curl` parça modunu açar;
+parçaları sırayla gönder, sonunda `/curl bitir`.
+
+### Yol B — Render panosunda tek satır
+
+| Anahtar | Değer |
+|---|---|
+| `UPSTREAM_CURL` | cURL'ün **tamamı**, tek satır (satır sonlarını boşluk yap) |
+
+Diğer `UPSTREAM_*` kimlik alanlarını **boş bırak**: açılışta cURL'i onların
+üzerine uygular. `UPSTREAM_COOKIE`'yi ayrıca doldurursan cURL onu ezer
+(`upstream_cookie_shadowed_by_curl` uyarısı loglanır).
+
+### Yol C — Yerelde ayrıştırıp `.env` üretmek
+
+cURL'ü bir dosyaya koy (telefondan kendine mesaj at), sonra:
+
+```bash
+python -m scripts.curl_to_env mesaj.txt         # çıkarılanları göster
+python -m scripts.curl_to_env mesaj.txt --write  # .env'e yaz
+```
+
+### cURL'ün hangi parçası hangi anahtara gider
+
+| cURL'de | Anahtar | Not |
+|---|---|---|
+| URL'in host'u | `TARGET_DOMAIN` | şemasız; `UPSTREAM_SCHEME` ayrı |
+| URL'in yolu | `UPSTREAM_STREAM_PATH` | şablonlaştırılır (`{chat_id}`) |
+| `cookie:` | `UPSTREAM_COOKIE` | `.0/.1` parçalı çerez birleştirilir |
+| `authorization:` | `UPSTREAM_ACCESS_TOKEN` + `UPSTREAM_AUTH_SCHEME` | başlık yoksa ikisi de boş kalır |
+| `user-agent:` | `UPSTREAM_USER_AGENT` | **telefonun** UA'sı; masaüstüyle değiştirme |
+| `accept-language:` | `UPSTREAM_ACCEPT_LANGUAGE` | telefonunki neyse o |
+| `referer:` | `UPSTREAM_REFERER_PATH` | `/text/direct` gibi |
+| gövdedeki `mode` | `UPSTREAM_MODE` | `direct-battle` |
+| gövdedeki captcha alanı | `UPSTREAM_RECAPTCHA_FIELD` | `recaptchaV3Token` |
+| gövdedeki `modelAId` | `UPSTREAM_CAPTURED_MODEL_ID` | otomatik; elle yazma |
+| gövdedeki `cx` | — | **yazma**: istek başına üretilir |
+| gövdedeki captcha **token'ı** | — | **yazma**: tek kullanımlık |
+| `x-deployment-id`, `sec-ch-*`, `sec-fetch-*`, `dnt`, `accept` | `UPSTREAM_EXTRA_HEADERS` | otomatik; damga kanaryayla tazelenir |
+
+### Mobilde parmak izi kuralları
+
+* `UPSTREAM_USER_AGENT` **telefonun** UA'sı olmalı. Android Chrome UA'sında
+  `Mobile`, iPhone'da `iPhone; CPU iPhone OS ... like Mac OS X` geçer.
+* Client Hint başlıkları (`sec-ch-ua*`) yalnız Chromium gönderir. iPhone Safari,
+  iPad Safari ve iOS'taki Chrome (`CriOS`) **hiç göndermez**; wrapper bu
+  durumda bu üç başlığı eklemez. Eklenirse cihaz kendi kendisiyle çelişir.
+* `sec-ch-ua-mobile: ?1` değeri yakalanan cURL'de varsa `UPSTREAM_EXTRA_HEADERS`
+  içinde korunur; üretilen değer onu ezmez.
+* reCAPTCHA token'ını üreten tarayıcı da yakalanan cihazın profilini kullanır
+  (telefon UA'sı → mobil viewport + dokunma). Masaüstü pencereyle telefon UA'sı
+  birleştirmek skoru düşürür.
+* `UPSTREAM_SNAPSHOT_VERSION=1` yaz: kimlik + parmak izi birlikte saklanır.
+
 ## 4. Sınırlar (dürüstçe)
 
 * Sunucu **senin yerine giriş yapamaz**: şifre/2FA/OAuth akışı senin cihazında
