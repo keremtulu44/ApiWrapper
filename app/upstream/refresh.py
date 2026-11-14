@@ -600,6 +600,9 @@ async def _refresh_upstream_token_locked(
                 status_code=response.status_code,
                 endpoint_path=path,
                 slot=slot,
+                reason=failure_code(response.status_code, payload),
+                apikey_configured=bool(api_key),
+                apikey_discovered="apikey otomatik keşfedildi" in notes,
             )
             return RefreshOutcome(
                 ok=False,
@@ -636,6 +639,34 @@ async def _refresh_upstream_token_locked(
     finally:
         if owns_client:
             await http.aclose()
+
+
+def failure_code(status: int, payload: dict[str, Any]) -> str:
+    """Yenileme reddinin **makine okunur** nedenini döndürür (gizli değer yok).
+
+    Log satırında yalnız kod görünür; canlı tail'de "401" tek başına hangi
+    düzeltmenin gerektiğini söylemiyordu.
+    """
+    message = str(
+        payload.get("error_description")
+        or payload.get("msg")
+        or payload.get("message")
+        or payload.get("error")
+        or ""
+    ).lower()
+    if "api key" in message or "apikey" in message:
+        return "missing_apikey"
+    if "already used" in message:
+        return "refresh_token_already_used"
+    if "invalid refresh token" in message or "refresh token not found" in message:
+        return "invalid_refresh_token"
+    if status == 429 or "rate limit" in message:
+        return "rate_limited"
+    if status == 400:
+        return "bad_request"
+    if status == 401:
+        return "unauthorized"
+    return "unknown"
 
 
 def _describe_failure(status: int, payload: dict[str, Any], endpoint: str) -> str:

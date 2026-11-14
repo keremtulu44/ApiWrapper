@@ -21,6 +21,7 @@ from app.core.security import api_key_dependency, require_admin
 from app.services.account import AccountPool
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
+from app.services.token_refresh import reset_failure_backoff
 from app.upstream.auth import (
     DEFAULT_COOKIE_HINTS,
     NEVER_TOKEN_COOKIES,
@@ -135,6 +136,10 @@ async def update_upstream_cookie(
     geldi, oturum çerezi var mı, token süresi dolmuş mu. Telefonda yanlış seti
     uygulayıp çalışan oturumu ezmeyi önler.
     """
+    # Kimlik elle değişti: ardışık hata sayacı sıfırlanır ki yenileme
+    # döngüsü geri çekilmiş bekleme süresini beklemeden hemen denesin.
+    reset_failure_backoff()
+
     from app.core.logging import get_logger
 
     logger = get_logger(__name__)
@@ -209,6 +214,10 @@ async def refresh_upstream_credentials(
     nokta aynı işi elle tetikler; arka plan döngüsü de aynı fonksiyonu kullanır.
     Token değerleri yanıta **yazılmaz**.
     """
+    # Kimlik elle değişti: ardışık hata sayacı sıfırlanır ki yenileme
+    # döngüsü geri çekilmiş bekleme süresini beklemeden hemen denesin.
+    reset_failure_backoff()
+
     from app.services.token_refresh import record_refresh, refresh_state
     from app.upstream.refresh import refresh_upstream_token
 
@@ -265,6 +274,10 @@ async def update_upstream_apikey(
     oturumun 401'e düşmesini bekliyordu. Artık cevap gerçek sonucu söyler:
     anahtar doğruysa token tazelenir, değilse hata nedeni döner.
     """
+    # Kimlik elle değişti: ardışık hata sayacı sıfırlanır ki yenileme
+    # döngüsü geri çekilmiş bekleme süresini beklemeden hemen denesin.
+    reset_failure_backoff()
+
     from app.services.token_refresh import record_refresh
     from app.upstream.refresh import (
         discover_refresh_api_key_report,
@@ -347,6 +360,10 @@ async def update_upstream_curl(
     env'e de yazılır. Dağıtım tohumunu da güncel tutmak için Render'daki
     `UPSTREAM_CURL` secret'ını yenilemek yine önerilir.
     """
+    # Kimlik elle değişti: ardışık hata sayacı sıfırlanır ki yenileme
+    # döngüsü geri çekilmiş bekleme süresini beklemeden hemen denesin.
+    reset_failure_backoff()
+
     from app.core.logging import get_logger
 
     logger = get_logger(__name__)
@@ -408,6 +425,10 @@ async def capture_upstream_session(
     isteği yakalanamazsa mevcut `UPSTREAM_STREAM_PATH` değiştirilmez. Hiçbir
     gizli değer yanıta konmaz.
     """
+    # Kimlik elle değişti: ardışık hata sayacı sıfırlanır ki yenileme
+    # döngüsü geri çekilmiş bekleme süresini beklemeden hemen denesin.
+    reset_failure_backoff()
+
     from app.core.logging import get_logger
 
     logger = get_logger(__name__)

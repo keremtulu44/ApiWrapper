@@ -152,6 +152,7 @@ takılınan adımda çıkış kodu 1.
 >
 > Klonlamadan, tek dosyayla çalıştırma ve `curl` karşılıkları: [docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md).
 > Windows PowerShell kullanıyorsan: [docs/POWERSHELL.md](docs/POWERSHELL.md).
+> `/auth/v1/token` 401 döngüsü: [docs/REFRESH_401.md](docs/REFRESH_401.md).
 
 ---
 

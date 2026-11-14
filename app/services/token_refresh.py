@@ -37,6 +37,35 @@ _LAST_SUCCESS: float | None = None
 _LAST_ERROR: str = ""
 #: Aynı token için tekrar tekrar "10 dk kaldı" uyarısı atmamak için özet.
 _WARNED_TOKEN_HASH: str = ""
+#: Üst üste başarısız yenileme sayısı (geri çekilme için).
+_CONSECUTIVE_FAILURES: int = 0
+
+#: Üst üste hatada en fazla bu kadar beklenir (sn).
+_MAX_BACKOFF_SECONDS = 300.0
+
+
+def next_interval(base_interval: float, consecutive_failures: int) -> float:
+    """Ardışık hatalarda bekleme süresini büyütür (en fazla 5 dk).
+
+    Kalıcı hata (ör. eksik `apikey`) her dakika aynı isteği atıp canlı tail'i
+    dolduruyor ve upstream'in `rate_limit_token_refresh` kotasını yakıyordu.
+    Başarıda sayaç sıfırlanır; `/v1/admin/upstream/*` uçları da sıfırlar.
+    """
+    if consecutive_failures <= 0:
+        return base_interval
+    factor = 2 ** min(consecutive_failures - 1, 3)
+    return min(max(base_interval, base_interval * factor), _MAX_BACKOFF_SECONDS)
+
+
+def reset_failure_backoff() -> None:
+    """Ardışık hata sayacını sıfırlar (anahtar/çerez elle değiştirildiğinde)."""
+    global _CONSECUTIVE_FAILURES
+    _CONSECUTIVE_FAILURES = 0
+
+
+def failure_backoff_state() -> dict[str, object]:
+    """Geri çekilme durumu (tanılama uçları için)."""
+    return {"consecutive_failures": _CONSECUTIVE_FAILURES}
 
 
 def _token_hash(token: str) -> str:
@@ -46,13 +75,16 @@ def _token_hash(token: str) -> str:
 def record_refresh(*, ok: bool, detail: str = "") -> None:
     """Yenileme sonucunu süreç içinde saklar (yanıtlarda gizli değer yok)."""
     global _LAST_ATTEMPT, _LAST_SUCCESS, _LAST_ERROR, _WARNED_TOKEN_HASH
+    global _CONSECUTIVE_FAILURES
     _LAST_ATTEMPT = time.time()
     if ok:
         _LAST_SUCCESS = _LAST_ATTEMPT
         _LAST_ERROR = ""
         _WARNED_TOKEN_HASH = ""
+        _CONSECUTIVE_FAILURES = 0
     else:
         _LAST_ERROR = detail
+        _CONSECUTIVE_FAILURES += 1
 
 
 def refresh_state() -> dict[str, object]:
@@ -61,15 +93,18 @@ def refresh_state() -> dict[str, object]:
         "last_attempt_at": _LAST_ATTEMPT,
         "last_success_at": _LAST_SUCCESS,
         "last_error": _LAST_ERROR,
+        "consecutive_failures": _CONSECUTIVE_FAILURES,
     }
 
 
 def reset_refresh_state() -> None:
     """Testlerde durumu sıfırlar."""
     global _LAST_ATTEMPT, _LAST_SUCCESS, _LAST_ERROR, _WARNED_TOKEN_HASH
+    global _CONSECUTIVE_FAILURES
     _LAST_ATTEMPT = _LAST_SUCCESS = None
     _LAST_ERROR = ""
     _WARNED_TOKEN_HASH = ""
+    _CONSECUTIVE_FAILURES = 0
 
 
 def describe_refresh(now: float | None = None) -> str:
@@ -241,11 +276,14 @@ async def run_token_refresher(
                         "token_refresher_cycle",
                         ok=result["ok"],
                         expires_in=result["expires_in"],
+                        consecutive_failures=_CONSECUTIVE_FAILURES,
                     )
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # pragma: no cover - savunmacı
                 logger.warning("token_refresher_error", error_type=type(exc).__name__)
             # `CancelledError` sleep'te de yutulmaz; uygulama kapanışı
-            # bir sonraki aralığı beklemeden tamamlanır.
-            await asyncio.sleep(interval)
+            # bir sonraki aralığı beklemeden tamamlanır. Kalıcı hatada aralık
+            # büyür (60 → 120 → 300 sn), böylece aynı istek dakikada bir
+            # tekrarlanıp logu ve upstream kotasını doldurmaz.
+            await asyncio.sleep(next_interval(interval, _CONSECUTIVE_FAILURES))

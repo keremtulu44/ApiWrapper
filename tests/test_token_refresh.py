@@ -945,3 +945,98 @@ async def test_apikey_discovery_scans_more_than_four_scripts():
     assert report.key == anon
     assert report.found_in == "script"
     assert settings.upstream_refresh_api_key == anon
+
+
+@pytest.mark.parametrize(
+    ("status", "payload", "code"),
+    [
+        (401, {"message": "No API key found in request"}, "missing_apikey"),
+        (
+            400,
+            {"error_description": "Invalid Refresh Token: Already Used"},
+            "refresh_token_already_used",
+        ),
+        (
+            400,
+            {"error": "invalid_grant", "error_description": "Invalid Refresh Token"},
+            "invalid_refresh_token",
+        ),
+        (429, {"message": "rate limit exceeded"}, "rate_limited"),
+        (400, {"error": "invalid_grant"}, "bad_request"),
+        (401, {"error": "unauthorized"}, "unauthorized"),
+        (500, {"message": "boom"}, "unknown"),
+    ],
+)
+def test_failure_code_classifies_rejection(status: int, payload: dict[str, Any], code: str) -> None:
+    from app.upstream.refresh import failure_code
+
+    assert failure_code(status, payload) == code
+
+
+@pytest.mark.asyncio
+async def test_rejection_log_names_the_reason_without_secrets(monkeypatch) -> None:
+    """Canlı tail'de tek başına `401` hangi düzeltmeyi istediğini söylemiyordu."""
+    import app.upstream.refresh as refresh_module
+
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    class _Logger:
+        def warning(self, event: str, **kwargs: Any) -> None:
+            events.append((event, kwargs))
+
+        def __getattr__(self, name: str):
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(refresh_module, "logger", _Logger())
+    settings = _settings()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "POST":
+            return httpx.Response(401, json={"message": "No API key found in request"})
+        return httpx.Response(200, text="<html><body>no key</body></html>")
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        outcome = await refresh_upstream_token(settings, client)
+
+    assert outcome.ok is False
+    rejected = [kwargs for event, kwargs in events if event == "upstream_token_refresh_rejected"]
+    assert rejected, events
+    logged = rejected[-1]
+    assert logged["reason"] == "missing_apikey"
+    assert logged["apikey_configured"] is False
+    assert logged["apikey_discovered"] is False
+    assert logged["status_code"] == 401
+    assert SECRET_REFRESH not in json.dumps(logged)
+
+
+def test_refresher_backs_off_after_consecutive_failures() -> None:
+    from app.services.token_refresh import next_interval
+
+    assert next_interval(60.0, 0) == 60.0
+    assert next_interval(60.0, 1) == 60.0
+    assert next_interval(60.0, 2) == 120.0
+    assert next_interval(60.0, 3) == 240.0
+    assert next_interval(60.0, 4) == 300.0          # tavan
+    assert next_interval(60.0, 99) == 300.0
+
+
+def test_failure_counter_resets_on_success_and_manual_reset() -> None:
+    from app.services.token_refresh import (
+        failure_backoff_state,
+        record_refresh,
+        reset_failure_backoff,
+        reset_refresh_state,
+    )
+
+    reset_refresh_state()
+    record_refresh(ok=False, detail="eksik apikey")
+    record_refresh(ok=False, detail="eksik apikey")
+    assert failure_backoff_state()["consecutive_failures"] == 2
+
+    record_refresh(ok=True, detail="yenilendi")
+    assert failure_backoff_state()["consecutive_failures"] == 0
+
+    record_refresh(ok=False)
+    reset_failure_backoff()
+    assert failure_backoff_state()["consecutive_failures"] == 0
+    reset_refresh_state()
