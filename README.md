@@ -151,6 +151,7 @@ takılınan adımda çıkış kodu 1.
 > (açılışta `admin_keys_not_in_api_keys` uyarısı loglanır).
 >
 > Klonlamadan, tek dosyayla çalıştırma ve `curl` karşılıkları: [docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md).
+> Windows PowerShell kullanıyorsan: [docs/POWERSHELL.md](docs/POWERSHELL.md).
 
 ---
 

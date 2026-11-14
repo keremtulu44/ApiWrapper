@@ -25,6 +25,7 @@ Gizli değer yazdırmaz; anahtarlar maskelenir.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import sys
 import time
@@ -85,11 +86,19 @@ class Report:
             ],
         }
 
-    def render(self) -> str:
+    def render(self, ascii_only: bool = False) -> str:
+        """Raporu metne çevirir.
+
+        ``ascii_only`` Windows PowerShell/CI günlükleri içindir: emoji yerine
+        ``[OK]``/``[!]``/``[X]`` yazar (cp1254 konsolunda emoji satırı bozmasın).
+        """
         icons = {"ok": "✅", "warn": "⚠️", "fail": "❌"}
+        if ascii_only:
+            icons = {"ok": "[OK]", "warn": "[!]", "fail": "[X]"}
         lines = [f"Duman testi — {self.base}"]
         for check in self.checks:
-            lines.append(f"  {icons.get(check.status, '•')} {check.name}: {check.detail}")
+            marker = icons.get(check.status, "[-]" if ascii_only else "•")
+            lines.append(f"  {marker} {check.name}: {check.detail}")
             if check.hint:
                 lines.append(f"      → {check.hint}")
         first_fail = next((c for c in self.checks if c.failed), None)
@@ -328,6 +337,21 @@ def run(
     return report
 
 
+def _make_output_safe() -> None:
+    """Konsol kod sayfası Türkçe/emoji karakterleri basamıyorsa çökmeyi önler.
+
+    Windows PowerShell 5.1 varsayılan olarak cp1254 kullanır; `print` bu durumda
+    ``UnicodeEncodeError`` ile betiği düşürebiliyordu. UTF-8'e geçilemiyorsa
+    basılamayan karakter ``?`` olur ama rapor yine okunur.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:  # pragma: no cover - çok eski Python/boru
+            continue
+        with contextlib.suppress(ValueError, OSError, AttributeError):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Ayaktaki servise duman testi.")
     parser.add_argument("--base", required=True, help="servis adresi (https://... veya http://127.0.0.1:8000)")
@@ -337,7 +361,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--skip-chat", action="store_true", help="sohbet isteği atma")
     parser.add_argument("--stream", action="store_true", help="akış isteğini de dene")
     parser.add_argument("--json", action="store_true", help="makine okunur çıktı")
+    parser.add_argument(
+        "--ascii",
+        action="store_true",
+        help="emoji yerine [OK]/[!]/[X] (Windows PowerShell, CI günlükleri)",
+    )
     args = parser.parse_args(argv)
+    _make_output_safe()
 
     report = run(
         args.base,
@@ -350,7 +380,7 @@ def main(argv: list[str] | None = None) -> int:
     output = (
         json.dumps(report.to_dict(), ensure_ascii=False, indent=2)
         if args.json
-        else report.render()
+        else report.render(ascii_only=args.ascii)
     )
     print(output)
     if args.key or args.admin_key:

@@ -12,6 +12,7 @@ import pytest
 
 from scripts.smoke import (
     STATUS_LAYERS,
+    Check,
     Report,
     check_admin_auth,
     check_chat,
@@ -209,3 +210,15 @@ def test_non_json_admin_body_is_a_warning_not_a_traceback() -> None:
 
     assert check.status == "warn"
     assert "JSON" in check.detail
+
+
+def test_ascii_render_has_no_emoji() -> None:
+    report = Report(base="http://test")
+    report.checks.append(Check("healthz", "ok", "süreç ayakta"))
+    report.checks.append(Check("chat", "fail", "HTTP 403"))
+
+    text = report.render(ascii_only=True)
+
+    assert "[OK]" in text and "[X]" in text
+    assert "✅" not in text and "❌" not in text
+    assert "SONUÇ: chat adımında takıldı." in text
