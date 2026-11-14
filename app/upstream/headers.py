@@ -114,6 +114,42 @@ def sec_ch_ua(user_agent: str) -> str:
     )
 
 
+_KNOWN_PLATFORMS = frozenset({"Windows", "macOS", "Linux", "Android", "iOS", "Chrome OS"})
+
+
+def fingerprint_conflicts(
+    user_agent: str, extra_headers: dict[str, str]
+) -> list[str]:
+    """Yakalanan cihaz izi UA ile çelişiyor mu?
+
+    cURL'ün `sec-ch-ua*` başlıkları `UPSTREAM_EXTRA_HEADERS` içinde aynen
+    saklanır. Bu başlıklar ile `user-agent` farklı cihazlardan geldiyse (iki
+    ayrı yakalamanın karışması, yanlış cURL, elle düzenleme) istek kendi
+    kendisiyle çelişir ve anti-bot katmanı bunu görür. Sessiz kalmak yerine
+    çelişki adıyla söylenir.
+    """
+    lower = {name.lower(): value.strip() for name, value in extra_headers.items()}
+    problems: list[str] = []
+
+    flag = lower.get("sec-ch-ua-mobile", "")
+    if flag in {"?0", "?1"}:
+        ua_is_mobile = is_mobile_ua(user_agent)
+        if (flag == "?1") != ua_is_mobile:
+            problems.append(
+                f"sec-ch-ua-mobile={flag} ama user-agent "
+                f"{'mobil' if ua_is_mobile else 'masaüstü'} diyor"
+            )
+
+    platform = lower.get("sec-ch-ua-platform", "").strip('"')
+    if platform in _KNOWN_PLATFORMS and user_agent.strip():
+        expected = platform_from_ua(user_agent).strip('"')
+        if expected != "Unknown" and platform != expected:
+            problems.append(
+                f"sec-ch-ua-platform=\"{platform}\" ama user-agent \"{expected}\" diyor"
+            )
+    return problems
+
+
 def client_hint_headers(user_agent: str) -> dict[str, str]:
     """UA'nın gerçekten gönderdiği Client Hint başlıkları (yoksa boş sözlük)."""
     if not sends_client_hints(user_agent):

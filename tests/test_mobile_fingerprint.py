@@ -142,3 +142,64 @@ def test_context_profile_is_not_shared_state() -> None:
     first["viewport"]["width"] = 1
 
     assert context_profile(IOS_SAFARI)["viewport"]["width"] == 393
+
+
+def test_fingerprint_conflicts_flags_mixed_captures() -> None:
+    """Masaüstü UA + mobil Client Hint = iki yakalamanın karışması."""
+    from app.upstream.headers import fingerprint_conflicts
+
+    mixed = fingerprint_conflicts(
+        DESKTOP_CHROME, {"sec-ch-ua-mobile": "?1", "sec-ch-ua-platform": '"iOS"'}
+    )
+    assert any("sec-ch-ua-mobile" in item for item in mixed)
+    assert any("sec-ch-ua-platform" in item for item in mixed)
+
+
+def test_fingerprint_conflicts_accepts_consistent_captures() -> None:
+    from app.upstream.headers import fingerprint_conflicts
+
+    assert fingerprint_conflicts(
+        ANDROID_CHROME, {"sec-ch-ua-mobile": "?1", "sec-ch-ua-platform": '"Android"'}
+    ) == []
+    assert fingerprint_conflicts(
+        DESKTOP_CHROME, {"sec-ch-ua-mobile": "?0", "sec-ch-ua-platform": '"Windows"'}
+    ) == []
+    # Safari hiç hint göndermez; boş küme çelişki değildir.
+    assert fingerprint_conflicts(IOS_SAFARI, {}) == []
+
+
+def test_curl_import_warns_on_mixed_fingerprint() -> None:
+    """cURL'den içe aktarırken çelişki sessizce geçmemeli."""
+    from app.upstream.curl_import import build_settings, parse_curl
+
+    raw = (
+        "curl 'https://example.com/nextjs-api/stream/create-evaluation' "
+        f"-H 'user-agent: {DESKTOP_CHROME}' "
+        "-H 'sec-ch-ua-mobile: ?1' "
+        '-H \'sec-ch-ua-platform: "iOS"\' '
+        "-H 'cookie: session=abc' "
+        "-H 'content-type: text/plain' "
+        '--data-raw \'{"mode":"direct-battle"}\''
+    )
+
+    _env, warnings, _model_id = build_settings(parse_curl(raw))
+
+    assert any("Cihaz izi çelişkisi" in item for item in warnings)
+
+
+def test_verdict_reports_device_fingerprint_check() -> None:
+    from app.services.layer_verdict import build_layer_verdict
+
+    bad = make_settings(
+        target_domain="example.com",
+        upstream_user_agent=DESKTOP_CHROME,
+        upstream_extra_headers='{"sec-ch-ua-mobile":"?1"}',
+    )
+    good = make_settings(target_domain="example.com", upstream_user_agent=ANDROID_CHROME)
+
+    bad_check = next(c for c in build_layer_verdict(bad).checks if c.id == "device_fingerprint")
+    good_check = next(c for c in build_layer_verdict(good).checks if c.id == "device_fingerprint")
+
+    assert bad_check.status == "warn"
+    assert bad_check.fix
+    assert good_check.status == "ok"

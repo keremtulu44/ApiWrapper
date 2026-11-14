@@ -18,6 +18,7 @@ from app.upstream.auth import (
     normalize_cookie_header,
 )
 from app.upstream.header_store import format_extra_headers
+from app.upstream.headers import fingerprint_conflicts
 
 
 def normalize_curl(raw: str) -> str:
@@ -347,6 +348,15 @@ def build_settings(
         if value:
             extra_headers[name] = value.replace("\r", " ").replace("\n", " ")
     env["UPSTREAM_EXTRA_HEADERS"] = format_extra_headers(extra_headers)
+
+    # Client Hint başlıkları ile UA aynı cihazdan mı? İki yakalamanın
+    # karışması ya da yanlış cURL kopyalanması burada yakalanır; aksi halde
+    # istek kendi kendisiyle çelişerek gider.
+    conflicts = fingerprint_conflicts(
+        agent or env.get("UPSTREAM_USER_AGENT", ""), extra_headers
+    )
+    for problem in conflicts:
+        warnings.append(f"Cihaz izi çelişkisi: {problem}. Aynı cihazdan tek cURL alın.")
 
     # --- referer yolu (sohbet sayfası şablonu; parmak izi için gönderilir)
     if referer_path := extract_referer_path(headers):

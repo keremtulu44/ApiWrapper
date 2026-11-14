@@ -24,7 +24,11 @@ from app.upstream.auth import (
     extract_refresh_token,
     token_seconds_remaining,
 )
-from app.upstream.headers import DEPLOYMENT_HEADERS, build_authorization
+from app.upstream.headers import (
+    DEPLOYMENT_HEADERS,
+    build_authorization,
+    fingerprint_conflicts,
+)
 
 LayerName = Literal["config", "identity", "deployment", "captcha", "ok"]
 CheckStatus = Literal["ok", "warn", "fail", "unknown"]
@@ -306,6 +310,33 @@ def build_layer_verdict(
                     "istekte değişiyor."
                 ),
                 fix="Gerekmiyorsa UPSTREAM_CX_SEND=false yapın.",
+            )
+        )
+
+    # ------------------------------------------------------------ cihaz izi
+    conflicts = fingerprint_conflicts(
+        settings.upstream_user_agent, settings.parsed_extra_headers()
+    )
+    if conflicts:
+        checks.append(
+            Check(
+                id="device_fingerprint",
+                layer="captcha",
+                status="warn",
+                detail="Cihaz izi kendi kendisiyle çelişiyor: " + "; ".join(conflicts),
+                fix=(
+                    "Aynı cihazdan tek cURL alıp UPSTREAM_USER_AGENT ve "
+                    "UPSTREAM_EXTRA_HEADERS'ı birlikte tazeleyin."
+                ),
+            )
+        )
+    else:
+        checks.append(
+            Check(
+                "device_fingerprint",
+                "captcha",
+                "ok",
+                "Client Hint başlıkları user-agent ile tutarlı.",
             )
         )
 
