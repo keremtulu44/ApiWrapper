@@ -47,22 +47,42 @@ _STREAM_ONLY_EXTRA_HEADERS = frozenset(
 _CHROME_VERSION_RE = re.compile(r"Chrome/(\d+)")
 _EDGE_VERSION_RE = re.compile(r"(?:Edg|Edge|EdgA|EdgiOS)/(\d+)")
 
+#: Client Hint (`sec-ch-ua*`) gönderen motor aileleri. Yalnız Chromium gönderir.
+_HINT_ENGINE_RE = re.compile(r"(?:Chrome|Chromium|SamsungBrowser|HeadlessChrome)/")
+#: iOS'ta Chrome/Edge/Firefox da WebKit'tir ve Client Hint **göndermez**.
+_WEBKIT_IOS_RE = re.compile(r"(?:CriOS|FxiOS|EdgiOS|OPiOS)/")
+
 
 def chrome_major_version(user_agent: str) -> str:
     match = _CHROME_VERSION_RE.search(user_agent)
     return match.group(1) if match else "152"
 
 
+def sends_client_hints(user_agent: str) -> bool:
+    """UA Client Hint gönderen bir tarayıcıya mı ait?
+
+    Safari/Firefox hiç göndermez; iOS'ta Chrome ve Edge de WebKit olduğu için
+    göndermez. Göndermeyen bir UA'ya `sec-ch-ua` uydurmak, yakalanan cihazın
+    parmak izini **bozar**: iPhone Safari'ye `"Google Chrome";v="152"` yazmak
+    gerçek trafikte asla görülmeyecek bir kombinasyondur.
+    """
+    if _WEBKIT_IOS_RE.search(user_agent):
+        return False
+    return bool(_HINT_ENGINE_RE.search(user_agent))
+
+
 def platform_from_ua(user_agent: str) -> str:
     ua = user_agent.lower()
     if "windows" in ua:
         return '"Windows"'
+    # iPhone/iPad UA'sı "like Mac OS X" içerir; macOS kontrolü önce gelirse
+    # mobil cihaz masaüstü sayılır (`sec-ch-ua-platform: "macOS"` + `?1`).
+    if "iphone" in ua or "ipad" in ua or "ipod" in ua:
+        return '"iOS"'
     if "macintosh" in ua or "mac os x" in ua:
         return '"macOS"'
     if "android" in ua:
         return '"Android"'
-    if "iphone" in ua or "ipad" in ua or "ios" in ua:
-        return '"iOS"'
     if "linux" in ua:
         return '"Linux"'
     return '"Unknown"'
@@ -92,6 +112,17 @@ def sec_ch_ua(user_agent: str) -> str:
         f'"Chromium";v="{version}", "Not?A_Brand";v="24", '
         f'"Google Chrome";v="{version}"'
     )
+
+
+def client_hint_headers(user_agent: str) -> dict[str, str]:
+    """UA'nın gerçekten gönderdiği Client Hint başlıkları (yoksa boş sözlük)."""
+    if not sends_client_hints(user_agent):
+        return {}
+    return {
+        "sec-ch-ua": sec_ch_ua(user_agent),
+        "sec-ch-ua-mobile": "?1" if is_mobile_ua(user_agent) else "?0",
+        "sec-ch-ua-platform": platform_from_ua(user_agent),
+    }
 
 
 def build_authorization(settings: Settings) -> str | None:
@@ -170,9 +201,6 @@ def build_stream_headers(
         "origin": settings.origin,
         "referer": settings.referer_url(chat_id),
         "user-agent": ua,
-        "sec-ch-ua": sec_ch_ua(ua),
-        "sec-ch-ua-mobile": "?1" if is_mobile_ua(ua) else "?0",
-        "sec-ch-ua-platform": platform_from_ua(ua),
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
         "sec-fetch-site": "same-origin",
@@ -180,6 +208,9 @@ def build_stream_headers(
         "traceparent": f"00-{trace_id}-{span_id}-01",
         "tracestate": "dd=s:1;o:rum",
     }
+    # Client Hint başlıkları yalnız UA gerçekten gönderiyorsa eklenir;
+    # yakalanan cihaz Safari/Firefox ise bu üç başlık **hiç** gitmemelidir.
+    headers.update(client_hint_headers(ua))
     if include_cookie and settings.upstream_cookie:
         headers["cookie"] = settings.upstream_cookie
     _apply_auth(headers, settings)
@@ -206,14 +237,12 @@ def build_page_headers(settings: Settings, *, include_cookie: bool = True) -> di
         "accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
         "accept-language": settings.upstream_accept_language,
         "user-agent": ua,
-        "sec-ch-ua": sec_ch_ua(ua),
-        "sec-ch-ua-mobile": "?1" if is_mobile_ua(ua) else "?0",
-        "sec-ch-ua-platform": platform_from_ua(ua),
         "sec-fetch-dest": "document",
         "sec-fetch-mode": "navigate",
         "sec-fetch-site": "none",
         "upgrade-insecure-requests": "1",
     }
+    headers.update(client_hint_headers(ua))
     if include_cookie and settings.upstream_cookie:
         headers["cookie"] = settings.upstream_cookie
     headers.update(
