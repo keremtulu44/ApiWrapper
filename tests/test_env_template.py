@@ -7,7 +7,7 @@ from pathlib import Path
 
 from app.core.config import Settings
 from app.telegram.bot import TelegramSettings
-from scripts.env_audit import audit_env
+from scripts.env_audit import audit_env, parse_env_text
 from scripts.env_template import (
     DEFAULT,
     DOC_PATH,
@@ -120,3 +120,56 @@ def test_unknown_defaults_fall_back_to_a_sentence() -> None:
 
     assert marker == DEFAULT
     assert "30" in text
+
+
+MOBILE_ENV_PATH = Path("env.mobile.example")
+
+
+def test_mobile_env_file_is_up_to_date() -> None:
+    """Sıfırdan doldurma dosyası da üreticiyle senkron kalmalı."""
+    assert MOBILE_ENV_PATH.exists(), "env.mobile.example yok: --env --out env.mobile.example"
+    assert MOBILE_ENV_PATH.read_text(encoding="utf-8") == render_env(), (
+        "env.mobile.example bayat: python -m scripts.env_template --env --out env.mobile.example"
+    )
+
+
+def test_mobile_env_lists_the_mandatory_values_empty() -> None:
+    """Doldurulacak satırlar boş bırakılır: uydurma host'a istek atılmasın."""
+    text = MOBILE_ENV_PATH.read_text(encoding="utf-8")
+    values = parse_env_text(text)
+
+    for key in ("TARGET_DOMAIN", "API_KEYS", "ADMIN_API_KEYS", "UPSTREAM_USER_AGENT"):
+        assert values.get(key, "") == "", key
+    assert "UPSTREAM_CURL=" in text
+
+
+def test_mobile_env_is_clean_for_the_auditor(tmp_path: Path) -> None:
+    """Dosya denetimden temiz geçmeli: ölü ad, yer tutucu, ezilen anahtar yok."""
+    path = tmp_path / ".env"
+    path.write_text(render_env(), encoding="utf-8")
+
+    report = audit_env(path)
+
+    assert report.of_kind("dead") == []
+    assert report.of_kind("placeholder") == []
+    assert report.of_kind("shadow") == []
+    assert report.of_kind("never_pin") == []
+
+
+def test_mobile_env_has_no_inline_comments_on_active_lines() -> None:
+    """`#` satır sonunda kalırsa bazı yükleyiciler onu değerin parçası sayar."""
+    for line in render_env().splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        key, _, value = stripped.partition("=")
+        assert "#" not in value, line
+        assert key.isupper(), line
+
+
+def test_mobile_env_marks_never_write_values_as_comments() -> None:
+    text = render_env()
+
+    assert "# ⛔ UPSTREAM_CX=" in text
+    assert "\nUPSTREAM_CX=" not in text
+    assert "\nRECAPTCHA_STATIC_TOKEN=" not in text

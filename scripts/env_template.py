@@ -362,64 +362,137 @@ def render_markdown() -> str:
     return "\n".join(lines)
 
 
+#: Sıfırdan dolduran kişinin **mutlaka** kendi değerini yazması gereken anahtarlar
+#: ve o satırın üstüne düşen açıklama. Değer boş bırakılır: uydurma bir alan adı
+#: sessizce yanlış host'a istek atacağına, açıkça "doldurulmadı" densin.
+MUST_FILL: dict[str, str] = {
+    "TARGET_DOMAIN": (
+        "Hedef host, ŞEMASIZ (ornek-servis.com). Boş kalırsa /readyz 503 "
+        "target_domain_not_configured döner."
+    ),
+    "API_KEYS": (
+        "Yerel istemci anahtarları, virgülle. İstemci `Authorization: Bearer <bu>` yollar."
+    ),
+    "ADMIN_API_KEYS": (
+        "Oturumu değiştiren /v1/admin uçları için anahtar. Boşsa tüm API_KEYS admin sayılır."
+    ),
+    "UPSTREAM_USER_AGENT": (
+        "Yakalanan cihazın UA'sı, birebir. iPhone: 'iPhone; CPU iPhone OS', "
+        "Android: 'Android ... Mobile', masaüstü: 'Windows NT 10.0'."
+    ),
+    "UPSTREAM_CURL": (
+        "Tam create-evaluation cURL'ü, TEK satır. Doldurursan UPSTREAM_COOKIE'yi "
+        "boş bırak (açılışta cURL çerezi ezer)."
+    ),
+}
+
+#: Mobil kurulumda hazır gelen değerler (cihaz izi ve uç nokta).
+_MOBILE_VALUES: dict[str, str] = {
+    "UPSTREAM_ACCEPT_LANGUAGE": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "UPSTREAM_AUTH_FROM_COOKIE": "false",
+    "UPSTREAM_AUTH_SCHEME": "Bearer",
+    "UPSTREAM_CX_SEND": "false",
+    "UPSTREAM_MODE": "direct-battle",
+    "UPSTREAM_RECAPTCHA_FIELD": "recaptchaV3Token",
+    "UPSTREAM_REFERER_PATH": "/text/direct",
+    "UPSTREAM_SNAPSHOT_VERSION": "1",
+    "UPSTREAM_STATE_FILE": ".cache/upstream_state.json",
+    "UPSTREAM_STREAM_PATH": "/nextjs-api/stream/create-evaluation",
+    "RECAPTCHA_ACTION": "chat_submit",
+    "RECAPTCHA_PROVIDER": "browser",
+    "RECAPTCHA_SITE_KEY": "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0",
+    "RECAPTCHA_VERSION": "enterprise",
+}
+
+
 def _short(text: str) -> str:
-    """Yorum satırı için ilk cümleyi alır (numaralı yuva notlarını bölmeden)."""
+    """Yorum satırı için ilk cümle (numaralı yuva notunu bölmeden)."""
     if re.match(r"^\d+\.\s", text):
         return text
     return text.split(". ")[0].rstrip(".")
 
 
-def render_env() -> str:
-    """Kopyalanabilir `.env` iskeleti: yazılacaklar dolu, gerisi yorumlu."""
-    lines = [
-        "# `python -m scripts.env_template --env` ile üretildi.",
-        "# ✅ yazılacak · ⬜ boş bırak · ⛔ yazma · ↺ varsayılan",
-        "",
-    ]
-    for key, marker, text, _group in rows():
-        if marker in (EMPTY, NEVER):
-            lines.append(f"# {marker} {key}=  — {_short(text)}")
-        elif marker == DEFAULT:
-            continue
+def _wrap(text: str, width: int = 92) -> list[str]:
+    """Yorum satırını okunur genişlikte böler."""
+    words, lines, current = text.split(), [], ""
+    for word in words:
+        if len(current) + len(word) + 1 > width:
+            lines.append(current)
+            current = word
         else:
-            lines.append(f"{key}={_placeholder(key)}  # {text}")
+            current = f"{current} {word}".strip()
+    if current:
+        lines.append(current)
+    return lines
+
+
+def _comment(text: str, prefix: str = "#") -> list[str]:
+    return [f"{prefix} {line}" for line in _wrap(text)]
+
+
+def render_env() -> str:
+    """Sıfırdan doldurulacak `.env`: doldurulacaklar açık, kalanı yorumda."""
+    lines = [
+        "# ============================================================================",
+        "# ApiWrapper .env — sıfırdan doldurma dosyası (mobil kurulum)",
+        "# Üretildi: python -m scripts.env_template --env",
+        "#",
+        "# 1. bölümdeki 5 satırı kendi değerinle doldur.",
+        "# 2. bölüm hazır; cihaz/hesap değişmediyse dokunma.",
+        "# 3. bölümdekileri YAZMA; neden yazmayacağın yanlarında yazıyor.",
+        "#",
+        "# Doğrulama:  python -m scripts.env_audit .env",
+        "# Katman teşhisi: /v1/admin/auth  (yanıtta `verdict`)",
+        "# ============================================================================",
+        "",
+        "# ===== 1. DOLDUR " + "=" * 61,
+    ]
+    for key in sorted(MUST_FILL):
+        lines.extend(_comment(MUST_FILL[key]))
+        if key == "UPSTREAM_CURL":
+            lines.append("# Örnek: UPSTREAM_CURL=curl 'https://host/nextjs-api/...' -H 'cookie: ...'")
+        lines.append(f"{key}=")
+
+    lines += ["", "# ===== 2. HAZIR (mobil profil, dokunma) " + "=" * 42]
+    for key in sorted(_MOBILE_VALUES):
+        lines.append(f"{key}={_MOBILE_VALUES[key]}")
+
+    lines += ["", "# ===== 3. BOŞ BIRAK / YAZMA " + "=" * 46]
+    lines.append("# Bilerek kapalı: doldurulması çalışan bir şeyi bozar.")
+    slot_keys: list[str] = []
+    for key, marker, text, _group in rows():
+        if marker not in (EMPTY, NEVER):
+            continue
+        if key in MUST_FILL or key in _MOBILE_VALUES:
+            continue
+        if _slot_note(key) is not None:
+            slot_keys.append(key)
+            continue
+        prefix = "# ⛔" if marker == NEVER else "#  "
+        lines.append(f"{prefix} {key}=   — {_short(text)}")
+    if slot_keys:
+        lines.append("")
+        lines.append("# 2./3./4. hesap yuvaları (kullanmıyorsan hiç yazma):")
+        lines.append("#   " + ", ".join(sorted(slot_keys)))
+    while lines and lines[-1] == "":
+        lines.pop()
     return "\n".join(lines) + "\n"
-
-
-def _placeholder(key: str) -> str:
-    """`.env` iskeletinde yazılacak değer (gizli olmayan)."""
-    return {
-        "API_KEYS": "sk-local-dev-key",
-        "ADMIN_API_KEYS": "sk-local-admin-key",
-        "TARGET_DOMAIN": "ornek-servis.com",
-        "UPSTREAM_STREAM_PATH": "/nextjs-api/stream/create-evaluation",
-        "UPSTREAM_REFERER_PATH": "/text/direct",
-        "UPSTREAM_SNAPSHOT_VERSION": "1",
-        "UPSTREAM_CX_SEND": "false",
-        "UPSTREAM_MODE": "direct-battle",
-        "UPSTREAM_RECAPTCHA_FIELD": "recaptchaV3Token",
-        "UPSTREAM_ACCEPT_LANGUAGE": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
-        "UPSTREAM_USER_AGENT": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/154.0.0.0 Safari/537.36 Edg/154.0.0.0"
-        ),
-        "UPSTREAM_AUTH_FROM_COOKIE": "false",
-        "RECAPTCHA_PROVIDER": "browser",
-        "RECAPTCHA_SITE_KEY": "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0",
-        "RECAPTCHA_VERSION": "enterprise",
-        "RECAPTCHA_ACTION": "chat_submit",
-        "UPSTREAM_CURL": "curl '<tam create-evaluation cURL>'",
-    }.get(key, "")
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Tam ortam değişkeni listesini üretir.")
-    parser.add_argument("--env", action="store_true", help="`.env` iskeleti yazdır")
+    parser.add_argument("--env", action="store_true", help="doldurulacak `.env` iskeletini yazdır")
+    parser.add_argument("--out", help="çıktıyı dosyaya yaz (--env ile)")
     parser.add_argument("--check", action="store_true", help="docs/ENV_FULL.md güncel mi")
     args = parser.parse_args(argv)
 
     if args.env:
-        print(render_env())
+        content = render_env()
+        if args.out:
+            Path(args.out).write_text(content, encoding="utf-8")
+            print(f"{args.out} yazıldı.")
+        else:
+            print(content, end="")
         return 0
 
     content = render_markdown()

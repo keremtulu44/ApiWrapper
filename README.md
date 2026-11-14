@@ -111,6 +111,17 @@ python -m scripts.env_audit .env --strict # ölü/yer tutucu/ezilen varsa çık�
 (`UPSTREAM_CURL` açılışta `UPSTREAM_COOKIE`'yi ezer) ve **katman eksikleri**
 (`/v1/admin/auth` ile aynı karar katmanından gelir).
 
+Sıfırdan dolduruyorsan hazır dosyayı kopyala — beş satır doldurulacak, gerisi hazır:
+
+```bash
+cp env.mobile.example .env
+$EDITOR .env    # TARGET_DOMAIN, API_KEYS, ADMIN_API_KEYS, UPSTREAM_USER_AGENT, UPSTREAM_CURL
+python -m scripts.env_audit .env
+```
+
+`env.mobile.example` üretilir (`python -m scripts.env_template --env --out env.mobile.example`),
+elle düzenlenmez; üç bölümden oluşur: **doldur**, **hazır (mobil profil)**, **boş bırak / yazma**.
+
 Tam liste (150 anahtar, alfabetik, her satırda "ne yazacaksın") için
 [`docs/ENV_FULL.md`](docs/ENV_FULL.md). O dosya üretilir, elle düzenlenmez:
 
