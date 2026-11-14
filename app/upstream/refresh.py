@@ -601,6 +601,7 @@ async def _refresh_upstream_token_locked(
                 endpoint_path=path,
                 slot=slot,
                 reason=failure_code(response.status_code, payload),
+                upstream_message=safe_message(payload),
                 apikey_configured=bool(api_key),
                 apikey_discovered="apikey otomatik keşfedildi" in notes,
             )
@@ -641,6 +642,37 @@ async def _refresh_upstream_token_locked(
             await http.aclose()
 
 
+#: JWT ve uzun base64 blokları loglara sızmasın.
+_JWT_RE = re.compile(r"eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}")
+_BLOB_RE = re.compile(r"[A-Za-z0-9+/=_-]{60,}")
+
+
+def safe_message(payload: dict[str, Any], limit: int = 160) -> str:
+    """Upstream hata cümlesini loglanabilir hâle getirir (token/çerez sızmaz).
+
+    Canlı tail'de yalnız `401` görmek teşhisi imkânsız kılıyordu: GoTrue
+    "No API key found in request" ile "Invalid API key" arasındaki fark bütün
+    düzeltmeyi değiştiriyor. Metin kısaltılır; JWT ve uzun base64 blokları
+    `<deger>` ile değiştirilir.
+    """
+    raw = str(
+        payload.get("error_description")
+        or payload.get("msg")
+        or payload.get("message")
+        or payload.get("error")
+        or ""
+    )
+    text = " ".join(raw.split())
+    text = _JWT_RE.sub("<jwt>", text)
+    text = _BLOB_RE.sub("<deger>", text)
+    return text[:limit]
+
+
+def failure_host(endpoint: str) -> str:
+    """Yenileme ucunun host'u (log/tanılama için; gizli değer değildir)."""
+    return urlsplit(endpoint).netloc if endpoint else ""
+
+
 def failure_code(status: int, payload: dict[str, Any]) -> str:
     """Yenileme reddinin **makine okunur** nedenini döndürür (gizli değer yok).
 
@@ -654,6 +686,10 @@ def failure_code(status: int, payload: dict[str, Any]) -> str:
         or payload.get("error")
         or ""
     ).lower()
+    if "invalid api key" in message or "invalid apikey" in message or "invalid jwt" in message:
+        # Anahtar **gönderildi** ama bu projeye ait değil. "missing_apikey" ile
+        # aynı cümleye düşünce operatör anahtarı boş sanıp tekrar tekrar yazıyordu.
+        return "invalid_apikey"
     if "api key" in message or "apikey" in message:
         return "missing_apikey"
     if "already used" in message:
@@ -679,6 +715,13 @@ def _describe_failure(status: int, payload: dict[str, Any], endpoint: str) -> st
         or ""
     )
     lowered = message.lower()
+    if "invalid api key" in lowered or "invalid apikey" in lowered or "invalid jwt" in lowered:
+        host = urlsplit(endpoint).netloc or "(bilinmiyor)"
+        return (
+            f"Anahtar gönderildi ama upstream reddetti (Invalid API key). "
+            f"Bu anahtar {host} projesine ait değil: o hostun kendi anon "
+            "(publishable) anahtarını UPSTREAM_REFRESH_API_KEY olarak yazın."
+        )
     if status in (400, 401) and ("api key" in lowered or "apikey" in lowered):
         return (
             "Upstream `apikey` istiyor: önce /apikey komutunu parametresiz "

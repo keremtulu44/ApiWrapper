@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
@@ -516,6 +517,28 @@ async def capture_upstream_session(
     }
 
 
+def _refresh_diagnostics(settings: Settings) -> dict[str, Any]:
+    """Yenileme uç noktası + apikey durumu (gizli değer yok, yalnız ölçü)."""
+    from app.services.token_refresh import refresh_state
+    from app.upstream.refresh import derive_refresh_url, failure_host
+
+    endpoint = derive_refresh_url(settings)
+    api_key = (settings.upstream_refresh_api_key or "").strip()
+    return {
+        "url_host": failure_host(endpoint),
+        "url_path": urlsplit(endpoint).path if endpoint else "",
+        "derived_from": (
+            "configured" if (settings.upstream_refresh_url or "").strip() else "cookie_iss"
+        ),
+        "api_key_configured": bool(api_key),
+        "api_key_length": len(api_key),
+        "api_key_prefix": api_key[:6] + "…" if api_key else "",
+        "enabled": settings.upstream_refresh_enabled,
+        "leeway_seconds": settings.upstream_refresh_leeway_seconds,
+        "last": refresh_state(),
+    }
+
+
 @router.get("/config", summary="Effective non-sensitive configuration")
 async def effective_config(request: Request) -> dict[str, Any]:
     settings = request.app.state.settings
@@ -567,6 +590,9 @@ async def effective_config(request: Request) -> dict[str, Any]:
             "max_prompt_chars": settings.max_prompt_chars,
             "max_concurrent_upstream": settings.max_concurrent_upstream,
         },
+        # Token yenileme teşhisi: "anahtar yazdım ama yine apikey istiyor"
+        # durumunda ilk bakılacak yer. Değer yok, yalnız host/uzunluk/durum.
+        "upstream_refresh": _refresh_diagnostics(settings),
     }
 
 

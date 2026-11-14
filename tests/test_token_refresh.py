@@ -1040,3 +1040,89 @@ def test_failure_counter_resets_on_success_and_manual_reset() -> None:
     reset_failure_backoff()
     assert failure_backoff_state()["consecutive_failures"] == 0
     reset_refresh_state()
+
+
+@pytest.mark.parametrize(
+    ("payload", "code"),
+    [
+        ({"message": "Invalid API key"}, "invalid_apikey"),
+        ({"message": "No API key found in request"}, "missing_apikey"),
+        ({"error_description": "Invalid JWT"}, "invalid_apikey"),
+    ],
+)
+def test_invalid_and_missing_apikey_are_distinguished(
+    payload: dict[str, Any], code: str
+) -> None:
+    """İkisi de "api key" içeriyor; aynı cümleye düşünce anahtar boş sanılıyordu."""
+    from app.upstream.refresh import failure_code
+
+    assert failure_code(401, payload) == code
+
+
+def test_invalid_apikey_message_names_the_host() -> None:
+    from app.upstream.refresh import _describe_failure
+
+    detail = _describe_failure(
+        401,
+        {"message": "Invalid API key"},
+        "https://proj.supabase.co/auth/v1/token?grant_type=refresh_token",
+    )
+
+    assert "proj.supabase.co" in detail
+    assert "ait değil" in detail
+
+
+def test_safe_message_strips_tokens_from_logged_text() -> None:
+    from app.upstream.refresh import safe_message
+
+    jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.c2lnbmF0dXJlc2ln"
+    text = safe_message({"message": f"Invalid API key {jwt} " + "A" * 70})
+
+    assert jwt not in text
+    assert "<jwt>" in text
+    assert "<deger>" in text
+    assert len(text) <= 160
+
+
+@pytest.mark.asyncio
+async def test_invalid_apikey_log_carries_upstream_message(monkeypatch) -> None:
+    import app.upstream.refresh as refresh_module
+
+    events: list[tuple[str, dict[str, Any]]] = []
+
+    class _Logger:
+        def warning(self, event: str, **kwargs: Any) -> None:
+            events.append((event, kwargs))
+
+        def __getattr__(self, name: str):
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(refresh_module, "logger", _Logger())
+    settings = _settings(upstream_refresh_api_key="anon-key-wrong-project")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "Invalid API key"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        outcome = await refresh_upstream_token(settings, client)
+
+    assert outcome.ok is False
+    assert "ait değil" in outcome.detail
+    rejected = [kwargs for event, kwargs in events if event == "upstream_token_refresh_rejected"]
+    assert rejected[-1]["reason"] == "invalid_apikey"
+    assert rejected[-1]["upstream_message"] == "Invalid API key"
+    assert rejected[-1]["apikey_configured"] is True
+
+
+def test_config_reports_refresh_host_without_the_key() -> None:
+    from app.api.v1.admin import _refresh_diagnostics
+
+    settings = _settings(upstream_refresh_api_key="super-secret-anon-key-value")
+
+    diagnostics = _refresh_diagnostics(settings)
+
+    assert diagnostics["url_host"] == "auth.test"
+    assert diagnostics["api_key_configured"] is True
+    assert diagnostics["api_key_length"] == len("super-secret-anon-key-value")
+    assert diagnostics["api_key_prefix"] == "super-…"
+    assert "super-secret-anon-key-value" not in json.dumps(diagnostics)

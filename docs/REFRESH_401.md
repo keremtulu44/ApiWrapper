@@ -89,7 +89,8 @@ Anon anahtarı nereden: Supabase Dashboard → Project Settings → API →
 
 | Log'da görünen | Anlamı | Yapılacak |
 |---|---|---|
-| `reason: missing_apikey` | anahtar hâlâ yok/yanlış | `/v1/admin/upstream/apikey` |
+| `reason: missing_apikey` | anahtar hiç gönderilmedi | `/v1/admin/upstream/apikey` |
+| `reason: invalid_apikey` | anahtar gönderildi, **bu projeye ait değil** | o hostun kendi anon anahtarı (`upstream_message` + `url_host`) |
 | `reason: invalid_refresh_token` | çerezdeki refresh token geçersiz | taze çerez (`/v1/admin/upstream/cookie`) |
 | `reason: refresh_token_already_used` | rotation: eski token ikinci kez kullanıldı | taze çerez; `UPSTREAM_STATE_FILE` kalıcı olsun |
 | `reason: rate_limited` | çok deneme | geri çekilme aralığı büyür, 5 dk'yı bekle |
@@ -100,6 +101,10 @@ Anon anahtarı nereden: Supabase Dashboard → Project Settings → API →
 - Red logu artık nedeni de yazıyor: `reason`, `apikey_configured`,
   `apikey_discovered` — tek bakışta hangi düzeltme gerektiği belli.
 - `token_refresher_cycle` satırına `consecutive_failures` eklendi.
+- Red loguna `upstream_message` eklendi (JWT/base64 blokları `<deger>` ile maskelenir):
+  GoTrue'nun "No API key found" ile "Invalid API key" cümlesi artık ayrı kodlara düşüyor.
+- `/v1/admin/config` → `upstream_refresh`: host, yol, apikey uzunluğu/öneki, son durum
+  ("anahtar yazdım ama yine apikey istiyor" için ilk bakılacak yer).
 - Kalıcı hatada döngü geri çekiliyor: 60 → 120 → 240 → 300 sn (tavan). Böylece
   aynı 401 dakikada bir tekrarlanıp logu ve upstream'in
   `rate_limit_token_refresh` kotasını doldurmuyor.
