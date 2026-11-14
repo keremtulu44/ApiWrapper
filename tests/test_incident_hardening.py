@@ -479,3 +479,71 @@ def test_admin_keys_inside_api_keys_do_not_warn(monkeypatch) -> None:
     main_module._warn_admin_keys_outside_api_keys(settings)
 
     assert seen == []
+
+
+def test_quoted_api_keys_env_are_cleaned_per_item() -> None:
+    """Render panosuna `API_KEYS="anahtar"` yazılınca liste elemanı tırnaklı kalıyordu."""
+    from app.core.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        api_keys='"KeremTulu44",  ikinci-anahtar ',
+        admin_api_keys='  "KeremTulu44"  ',
+        target_domain="upstream.test",
+    )
+
+    assert settings.api_keys == ["KeremTulu44", "ikinci-anahtar"]
+    assert settings.admin_api_keys == ["KeremTulu44"]
+
+
+def test_json_array_api_keys_are_cleaned_too() -> None:
+    from app.core.config import Settings
+
+    settings = Settings(
+        _env_file=None,
+        api_keys='[" a-key ", "\\"b-key\\""]',
+        target_domain="upstream.test",
+    )
+
+    assert settings.api_keys == ["a-key", "b-key"]
+
+
+def test_render_without_api_keys_generates_and_logs_the_key(monkeypatch) -> None:
+    """Anahtar sessizce üretilince operatör geçerli anahtarı hiç göremiyordu."""
+    import app.main as main_module
+    from tests.conftest import make_settings
+
+    seen: list[tuple[str, dict]] = []
+
+    class _Logger:
+        def warning(self, event: str, **kwargs):
+            seen.append((event, kwargs))
+
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(main_module, "logger", _Logger())
+    settings = make_settings()
+    settings.api_keys = ["sk-local-dev-key"]
+
+    assert main_module._ensure_render_api_key(settings) is True
+    key = settings.api_keys[0]
+    assert key.startswith("sk-render-")
+    assert seen and seen[0][0] == "render_api_key_generated"
+    assert seen[0][1]["api_key"] == key
+    assert "API_KEYS" in seen[0][1]["hint"]
+
+    # İkinci çağrı yeni anahtar üretmez (idempotent).
+    assert main_module._ensure_render_api_key(settings) is False
+    assert settings.api_keys == [key]
+
+
+def test_render_with_configured_api_keys_keeps_them(monkeypatch) -> None:
+    import app.main as main_module
+    from tests.conftest import make_settings
+
+    monkeypatch.setattr(main_module, "logger", type("L", (), {"warning": lambda *a, **k: None})())
+    settings = make_settings(api_keys="KeremTulu44")
+
+    assert main_module._ensure_render_api_key(settings) is False
+    assert settings.api_keys == ["KeremTulu44"]

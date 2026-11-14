@@ -56,6 +56,14 @@ PLACEHOLDER_SECRET_FIELDS: tuple[str, ...] = (
 MAX_ACCOUNT_SLOTS = 4
 
 
+def _clean_list_item(item: str) -> str:
+    """Liste elemanındaki boşluk ve tırnakları atar (`" anahtar "` → `anahtar`)."""
+    text = item.strip()
+    while len(text) >= 2 and text[0] == text[-1] and text[0] in "\"'":
+        text = text[1:-1].strip()
+    return text
+
+
 class Settings(BaseSettings):
     """Ortam değişkeni tabanlı ayarlar."""
 
@@ -401,7 +409,14 @@ class Settings(BaseSettings):
     )
     @classmethod
     def _split_csv(cls, v: object) -> object:
-        """Virgülle ayrılmış listeyi (veya JSON dizisini) listeye çevirir."""
+        """Virgülle ayrılmış listeyi (veya JSON dizisini) listeye çevirir.
+
+        Parçalar tek tek temizlenir: Render panosuna `API_KEYS="anahtar"`
+        yazan (ya da araya boşluk koyan) kurulumda liste elemanı tırnaklarıyla
+        kalıyor ve `hmac.compare_digest` hiçbir zaman eşleşmiyordu — servis
+        doğru anahtarla bile 401 dönüyordu. `_strip_wrapping_quotes` yalnız
+        `str` değerlerde çalıştığı için liste alanlarına hiç uğramıyordu.
+        """
         if isinstance(v, str):
             text = v.strip()
             if text.startswith("[") and text.endswith("]"):
@@ -412,8 +427,16 @@ class Settings(BaseSettings):
                 except json.JSONDecodeError:
                     parsed = None
                 if isinstance(parsed, list):
-                    return [str(item).strip() for item in parsed if str(item).strip()]
-            return [item.strip() for item in text.split(",") if item.strip()]
+                    return [
+                        cleaned
+                        for cleaned in (_clean_list_item(str(item)) for item in parsed)
+                        if cleaned
+                    ]
+            return [
+                cleaned
+                for cleaned in (_clean_list_item(item) for item in text.split(","))
+                if cleaned
+            ]
         return v
 
     @field_validator(

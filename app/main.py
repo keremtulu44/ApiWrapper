@@ -242,6 +242,31 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("application_stopped")
 
 
+def _ensure_render_api_key(settings: Settings) -> bool:
+    """Render'da `API_KEYS` yoksa üretilen anahtarı **loglar** ve döner.
+
+    Önceki davranış anahtarı sessizce üretiyordu: operatör `.env`'de gördüğü
+    `KeremTulu44` ile istek atıyor, her seferinde 401 alıyor ve hiçbir yerde
+    geçerli anahtarı göremiyordu. Üretilen değer tek sefer loglanır (Render
+    logları hizmet sahibine kapalıdır) ve kalıcı çözüm hatırlatılır.
+    """
+    keys = [k.strip() for k in settings.api_keys if k.strip()]
+    if keys and keys != ["sk-local-dev-key"]:
+        return False
+    generated = f"sk-render-{secrets.token_urlsafe(24)}"
+    settings.api_keys = [generated]
+    logger.warning(
+        "render_api_key_generated",
+        api_key=generated,
+        hint=(
+            "Render'da API_KEYS ayarlı değil; geçici anahtar üretildi. İstemcilerin "
+            "401 almaması için Render > Environment'a API_KEYS=<kalıcı anahtar> "
+            "ekleyip yeniden deploy edin."
+        ),
+    )
+    return True
+
+
 def _warn_admin_keys_outside_api_keys(settings: Settings) -> None:
     """`API_KEYS` içinde olmayan admin anahtarlarını uyarır (yoksa 401 alırlar)."""
     admin = [key.strip() for key in settings.admin_api_keys if key.strip()]
@@ -321,9 +346,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                     "ayarlanmalı. Bu hâlde upstream istekleri atılmaz."
                 ),
             )
-        keys = [k.strip() for k in settings.api_keys if k.strip()]
-        if not keys or keys == ["sk-local-dev-key"]:
-            settings.api_keys = [f"sk-render-{secrets.token_urlsafe(24)}"]
+        _ensure_render_api_key(settings)
 
     # Kalıcı durum geri yüklemesi alan adı eşleşmesine bakar; bu yüzden
     # TARGET_DOMAIN (veya UPSTREAM_CURL) geri yüklemeden ÖNCE belirlenmiş olmalı.

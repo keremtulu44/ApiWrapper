@@ -129,6 +129,7 @@ usage/finish chunk'larını ve temel hata yollarını kontrol eder.
 | `authentication_disabled` | Public serviste API doğrulama kapalı |
 | `api_keys_missing` | Kullanılabilir API anahtarı yok |
 | `default_development_api_key` | `sk-local-dev-key` hâlâ kabul ediliyor |
+| `render_api_key_generated` | `API_KEYS` hiç ayarlı değil; geçici anahtar üretildi (logda değeri yazıyor). Kalıcı çözüm: Environment'a `API_KEYS` ekleyin |
 | `default_model_missing` | Varsayılan model çözülemiyor |
 | `default_upstream_model_placeholder` | Gerçek upstream model ID girilmemiş |
 | `recaptcha_site_key_missing` | `browser` için site key eksik |
