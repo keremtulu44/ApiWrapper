@@ -220,6 +220,9 @@ class ApiKeyDiscovery:
     scripts_seen: int = 0
     scripts_fetched: int = 0
     found_in: str = ""
+    #: `True` ise keşif **hiç denenmedi** (anahtar zaten ayarlıydı). Bu ayrım
+    #: olmadan uç "discovered" diyor, operatör de keşfin çalıştığını sanıyordu.
+    skipped: bool = False
 
     @property
     def ok(self) -> bool:
@@ -234,12 +237,25 @@ _MAX_DISCOVERY_SCRIPTS = 12
 async def discover_refresh_api_key_report(
     settings: Settings,
     client: httpx.AsyncClient | None = None,
+    *,
+    force: bool = False,
 ) -> ApiKeyDiscovery:
-    """`apikey`'i keşfeder ve başarısızlığın **nedenini** de raporlar."""
+    """`apikey`'i keşfeder ve başarısızlığın **nedenini** de raporlar.
+
+    ``force=True`` mevcut anahtarı yok sayar: "anahtar yazdım ama yine
+    apikey istiyor" durumunda doğru projenin anahtarını sayfadan yeniden
+    aramak için gerekli.
+    """
     existing = (settings.upstream_refresh_api_key or "").strip()
-    if existing:
+    if existing and not force:
         return ApiKeyDiscovery(
-            key=existing, detail="Anahtar zaten yapılandırılmış.", found_in="settings"
+            key=existing,
+            detail=(
+                "Anahtar zaten yapılandırılmış; keşif denenmedi. Yeniden aramak "
+                'için {"apikey":"","force":true} gönderin.'
+            ),
+            found_in="settings",
+            skipped=True,
         )
 
     domain = (settings.target_domain or "").strip().lower()

@@ -45,6 +45,14 @@ curl -s -X POST $BASE/v1/admin/upstream/apikey \
   -d '{"apikey":"<SUPABASE_ANON_KEY>"}' | jq
 ```
 
+Mevcut anahtar varken keşfi **zorlamak** için (``discovered`` cevabı, keşif
+denenmeden de dönebiliyordu; artık ``already_configured`` der):
+
+```bash
+curl -s -X POST $BASE/v1/admin/upstream/apikey -H "Authorization: Bearer $KEY" \
+  -H 'content-type: application/json' -d '{"apikey":"","force":true}' | jq
+```
+
 Cevap yalan söylemez, aynı istekte yenilemeyi de dener:
 
 ```json

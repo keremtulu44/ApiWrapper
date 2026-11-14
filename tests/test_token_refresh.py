@@ -1126,3 +1126,41 @@ def test_config_reports_refresh_host_without_the_key() -> None:
     assert diagnostics["api_key_length"] == len("super-secret-anon-key-value")
     assert diagnostics["api_key_prefix"] == "super-…"
     assert "super-secret-anon-key-value" not in json.dumps(diagnostics)
+
+
+@pytest.mark.asyncio
+async def test_discovery_skips_when_key_exists_and_force_overrides() -> None:
+    """"discovered" cevabı, keşif hiç denenmeden de dönüyordu."""
+    from app.upstream.refresh import discover_refresh_api_key_report
+
+    html = (
+        '<html><script src="/_next/static/chunks/main.js"></script>'
+        'key: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9'
+        '.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im5ld3Byb2oiLCJyb2xlIjoiYW5vbiJ9'
+        '.c2lnbmF0dXJlc2lnbmF0dXJl"'
+        "</html>"
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html)
+
+    settings = _settings(upstream_refresh_api_key="eski-yanlis-anahtar")
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        skipped = await discover_refresh_api_key_report(settings, client)
+        forced = await discover_refresh_api_key_report(settings, client, force=True)
+
+    assert skipped.skipped is True
+    assert skipped.key == "eski-yanlis-anahtar"
+    assert "force" in skipped.detail
+
+    assert forced.skipped is False
+    assert forced.key.startswith("eyJhbGciOiJIUzI1NiIs")
+    assert forced.found_in == "home_page"
+    assert settings.upstream_refresh_api_key == forced.key
+
+
+def test_apikey_payload_accepts_force() -> None:
+    from app.api.v1.admin import UpstreamApiKeyPayload
+
+    assert UpstreamApiKeyPayload().force is False
+    assert UpstreamApiKeyPayload(force=True).force is True

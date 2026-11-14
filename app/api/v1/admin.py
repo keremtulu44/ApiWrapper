@@ -250,9 +250,16 @@ async def refresh_upstream_credentials(
 
 
 class UpstreamApiKeyPayload(BaseModel):
-    """Supabase/GoTrue yenileme `apikey` (anon anahtar) gövdesi. Boşsa otomatik keşfedilir."""
+    """Supabase/GoTrue yenileme `apikey` (anon anahtar) gövdesi.
+
+    * `apikey` dolu → elle yazılır.
+    * `apikey` boş → sitenin HTML/JS'inden keşfedilir; **mevcut anahtar
+      varsa keşif atlanır** (dürüst cevap: `already_configured`).
+    * `force=true` → mevcut anahtar yok sayılır, keşif yeniden denenir.
+    """
 
     apikey: str = Field(default="", max_length=4096)
+    force: bool = False
 
 
 @router.post(
@@ -294,8 +301,13 @@ async def update_upstream_apikey(
         status = "applied"
         save_runtime_state(settings, source="apikey_manual")
     else:
-        report = await discover_refresh_api_key_report(settings)
-        if not report.ok:
+        report = await discover_refresh_api_key_report(settings, force=payload.force)
+        if report.skipped:
+            # Keşif denenmedi: mevcut anahtar korunur, cevap bunu saklamaz.
+            source = "settings"
+            status = "already_configured"
+            discovery_detail = report.detail
+        elif not report.ok:
             return {
                 "status": "not_found",
                 "source": None,
@@ -307,10 +319,11 @@ async def update_upstream_apikey(
                 "scripts_fetched": report.scripts_fetched,
                 "detail": report.detail,
             }
-        source = "auto"
-        status = "discovered"
-        discovery_detail = report.detail
-        save_runtime_state(settings, source="apikey_discovered")
+        else:
+            source = "auto"
+            status = "discovered"
+            discovery_detail = report.detail
+            save_runtime_state(settings, source="apikey_discovered")
 
     await sync_render_env(settings)
 
