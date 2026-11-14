@@ -314,7 +314,7 @@ def test_alert_policy_reports_code_change_and_recovery():
     )
     assert changed is not None and "kota" in changed.lower()
     recovered = policy.evaluate(ProbeResult(ok=True, status_code=200), now=120.0)
-    assert recovered is not None and "yeniden çalışıyor" in recovered
+    assert recovered is not None and "son kontrol başarılı" in recovered
     # Toparlanma sonrası sessizlik.
     assert policy.evaluate(ProbeResult(ok=True, status_code=200), now=180.0) is None
 

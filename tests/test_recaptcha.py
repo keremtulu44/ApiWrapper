@@ -241,3 +241,71 @@ async def test_produce_token_restarts_when_chromium_disconnects(monkeypatch):
     token = await provider._produce_token()
     assert token == "recovered-token"
     assert restarted is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status", [200, 500])
+async def test_external_failure_does_not_expose_response_secrets(status):
+    import httpx
+
+    from app.core.errors import RecaptchaError
+    from app.services.recaptcha.external import ExternalRecaptchaProvider
+
+    secret = "sensitive-opaque-secret"
+    provider = ExternalRecaptchaProvider(
+        make_settings(recaptcha_external_url="https://solver.test/token")
+    )
+
+    async def handler(_request):
+        return httpx.Response(status, json={"error": secret})
+
+    provider._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(RecaptchaError) as exc:
+            await provider.get_token()
+        assert secret not in str(exc.value)
+        assert secret not in str(provider.stats)
+    finally:
+        await provider.shutdown()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("mode", "captured", "clicked", "expected"),
+    [
+        ("live", "cached-secret", None, "live_click"),
+        ("live", None, "clicked-secret", "live_click"),
+        ("live", None, None, "live_execute"),
+        ("bootstrap", None, None, "bootstrap_execute"),
+    ],
+)
+async def test_browser_reports_token_source_without_token(
+    monkeypatch, mode, captured, clicked, expected
+):
+    provider = browser_provider()
+    provider._context = object()
+    provider._captured_live_token = captured
+
+    class Page:
+        async def close(self):
+            pass
+
+        async def evaluate(self, script, *_args):
+            return "execute-secret" if "new Promise" in script else None
+
+    async def warm():
+        return Page(), mode
+
+    async def click(_page):
+        return clicked
+
+    async def no_sleep(_duration):
+        pass
+
+    monkeypatch.setattr(provider, "_ensure_warm_page", warm)
+    monkeypatch.setattr(provider, "_extract_token_from_click", click)
+    monkeypatch.setattr("app.services.recaptcha.browser.asyncio.sleep", no_sleep)
+    token = await provider.get_token()
+    assert token in {captured, clicked, "execute-secret"}
+    assert provider.stats["last_token_source"] == expected
+    assert token not in str(provider.stats)

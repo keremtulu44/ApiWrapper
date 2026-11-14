@@ -224,7 +224,7 @@ Olay adları: `upstream_request`, `upstream_http_error`, `upstream_refresh_requi
 | # | Konu | Konum | Durum |
 |---|---|---|---|
 | 1 | ~~`recaptcha_provider` kalıcı alanlar listesinde değil~~ cURL yüklemesi `static`'e döndürüyordu | `app/upstream/state_store.py:67` | **düzeltildi** (PERSISTED_FIELDS + snapshot_fields içine eklendi; restart'ta seçilen sağlayıcı korunuyor) |
-| 2 | CAPTCHA token cache TTL 100 sn — **ölçüm: token istek başına tek ve farklı** (`docs/CAPTURE_TIMELINE.md` §5) | `app/core/config.py:324`, `app/services/recaptcha/base.py:51` | bilerek korunuyor; düzeltme kapsam dışı (§5) |
+| 2 | ~~CAPTCHA token cache TTL 100 sn~~ | `app/services/recaptcha/base.py` | **düzeltildi**: dinamik tokenlar tek kullanımlık; her POST için yenisi üretilir. Ölçüm: `docs/CAPTURE_TIMELINE.md` §5 |
 | 3 | ~~`cx` varsayılan gönderilmiyor~~ | `app/core/config.py:89` | **düzeltildi** (cURL gövdesinde `cx` varsa `UPSTREAM_CX_SEND` otomatik `true`; açıkça ayarlanmadıysa eski varsayılan korunur) |
 | 4 | `render.yaml` site key blueprint değeri (canlı değer Render panosunda farklı olabilir) | `render.yaml:37` | bilerek korunuyor (render.yaml sadece blueprint) |
 | 5 | ~~URL-encoded JSON çerez biçimi (`unquote` yok)~~ | `app/upstream/auth.py:122` | **düzeltildi** (`parse_cookie_header` percent-encoded değerleri tek seviye çözüyor) |

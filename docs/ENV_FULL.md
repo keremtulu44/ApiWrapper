@@ -118,6 +118,7 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `UPSTREAM_AUTH_FROM_COOKIE_2` | ↺ 2. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. Varsayılan `False`. | kimlik |
 | `UPSTREAM_AUTH_FROM_COOKIE_3` | ↺ 3. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. Varsayılan `False`. | kimlik |
 | `UPSTREAM_AUTH_FROM_COOKIE_4` | ↺ 4. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. Varsayılan `False`. | kimlik |
+| `UPSTREAM_AUTH_HEADER_MODE` | ↺ `configured` — dokunma. | kimlik |
 | `UPSTREAM_AUTH_SCHEME` | ✅ `Bearer` — tarayıcı başlığında şema yoksa boş bırak. | kimlik |
 | `UPSTREAM_AUTH_SCHEME_2` | ↺ 2. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. Varsayılan `Bearer`. | kimlik |
 | `UPSTREAM_AUTH_SCHEME_3` | ↺ 3. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. Varsayılan `Bearer`. | kimlik |
@@ -169,5 +170,5 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `WRAPPER_BASE_URL` | ⬜ Aynı serviste çalışıyorsa **yazma**; varsayılan yerel adres kullanılır. | telegram |
 | `WRITE_TIMEOUT` | ↺ `30` sn. | dayanıklılık |
 
-Toplam **150** anahtar: 19 yazılacak, 43 boş, 88 varsayılan/yazma.
+Toplam **151** anahtar: 19 yazılacak, 43 boş, 89 varsayılan/yazma.
 Denetim için: `python -m scripts.env_audit .env`.

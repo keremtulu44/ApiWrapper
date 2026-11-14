@@ -340,3 +340,95 @@ def test_render_env_boot_survives_empty_or_cookie_only_upstream_curl(monkeypatch
     finally:
         get_settings.cache_clear()
 
+
+
+@pytest.mark.asyncio
+async def test_render_sync_recovers_if_api_rejects_empty_values(monkeypatch):
+    """Mock API boş değerleri reddederse Settings onları restartta boş okumalı."""
+    from app.core.config import RENDER_EMPTY_VALUE
+    from app.upstream.state_store import sync_render_env
+
+    settings = make_settings(
+        render_api_key="render-secret",
+        render_service_id="srv-fake",
+        upstream_cookie="session=opaque",
+        upstream_access_token="",
+        upstream_refresh_token="",
+        recaptcha_static_token="",
+    )
+    stored: dict[str, str] = {}
+    attempts: dict[str, list[str]] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.url.path.rsplit("/", 1)[-1]
+        value = json.loads(request.content)["value"]
+        attempts.setdefault(key, []).append(value)
+        if value == "":
+            return httpx.Response(400, json={"message": "empty value rejected"})
+        stored[key] = value
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await sync_render_env(settings, client)
+
+    assert attempts["UPSTREAM_ACCESS_TOKEN"] == ["", RENDER_EMPTY_VALUE]
+    assert attempts["RECAPTCHA_STATIC_TOKEN"] == ["", RENDER_EMPTY_VALUE]
+    assert stored["UPSTREAM_REFRESH_TOKEN"] == RENDER_EMPTY_VALUE
+    for key, value in stored.items():
+        monkeypatch.setenv(key, value)
+    restarted = Settings(_env_file=None)
+    assert restarted.upstream_cookie == "session=opaque"
+    assert restarted.upstream_access_token == ""
+    assert restarted.upstream_refresh_token == ""
+    assert restarted.recaptcha_static_token == ""
+    assert restarted.upstream_extra_headers == ""
+
+
+@pytest.mark.asyncio
+async def test_render_sync_does_not_mask_errors_for_nonempty_values():
+    from app.upstream.state_store import sync_render_env
+
+    settings = make_settings(
+        render_api_key="render-secret", render_service_id="srv-fake",
+        upstream_cookie="session=valid",
+    )
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.url.path.rsplit("/", 1)[-1]
+        calls.append(key)
+        return httpx.Response(400 if key == "UPSTREAM_COOKIE" else 200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert not await sync_render_env(settings, client)
+    assert calls.count("UPSTREAM_COOKIE") == 1
+
+
+@pytest.mark.asyncio
+async def test_render_empty_fallback_failure_is_reported_without_response_body(capsys):
+    from app.core.config import RENDER_EMPTY_VALUE
+    from app.upstream.state_store import sync_render_env
+
+    settings = make_settings(
+        render_api_key="secret-api-key", render_service_id="srv-test",
+        upstream_cookie="session=private", upstream_access_token="",
+    )
+    attempts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        key = request.url.path.rsplit("/", 1)[-1]
+        value = json.loads(request.content)["value"]
+        if key == "UPSTREAM_ACCESS_TOKEN":
+            attempts.append(value)
+            return httpx.Response(400, text="sensitive-response-body")
+        return httpx.Response(200)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert not await sync_render_env(settings, client)
+    log = capsys.readouterr().out
+    assert attempts == ["", RENDER_EMPTY_VALUE]
+    assert '"empty_value": true' in log
+    assert '"empty_fallback_attempted": true' in log
+    assert "sensitive-response-body" not in log
+    assert "secret-api-key" not in log
+    assert "session=private" not in log

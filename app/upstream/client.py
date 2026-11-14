@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager, suppress
 
 import httpx
@@ -14,13 +14,14 @@ from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.metrics import metrics
 from app.services.account import Account
-from app.upstream.auth import parse_cookie_header
+from app.upstream.auth import parse_cookie_header, replace_cookie_values
 from app.upstream.breaker import CircuitBreaker
 from app.upstream.deployment import DeploymentIdResolver
 from app.upstream.exceptions import (
     CircuitOpen,
     RecaptchaRejected,
     UpstreamAuthRejected,
+    UpstreamChallenge,
     UpstreamHTTPError,
     UpstreamNetworkError,
     UpstreamQuotaExceeded,
@@ -199,7 +200,8 @@ class UpstreamClient:
         # edilmiş hâliyle eşleştirmez, bu yüzden `TARGET_DOMAIN=host:8080` gibi bir
         # değerde çerez sessizce hiç gönderilmezdi.
         cookie_host = settings.target_domain.split(":", 1)[0]
-        for name, value in parse_cookie_header(settings.upstream_cookie).items():
+        initial_cookies = parse_cookie_header(settings.upstream_cookie, decode_values=False)
+        for name, value in initial_cookies.items():
             client.cookies.set(name, value, domain=cookie_host, path="/")
         return client
 
@@ -290,7 +292,10 @@ class UpstreamClient:
         if self._client is not None:
             self._client.cookies.clear()
             cookie_host = self.settings.target_domain.split(":", 1)[0]
-            for name, value in parse_cookie_header(self.settings.upstream_cookie).items():
+            initial_cookies = parse_cookie_header(
+                self.settings.upstream_cookie, decode_values=False
+            )
+            for name, value in initial_cookies.items():
                 self._client.cookies.set(name, value, domain=cookie_host, path="/")
         self.deployment.reset()
         return len(clients)
@@ -425,9 +430,7 @@ class UpstreamClient:
         jar_cookies = {c.name: c.value for c in client.cookies.jar if c.value}
         if not jar_cookies:
             return
-        merged = parse_cookie_header(old_cookie)
-        merged.update(jar_cookies)
-        new_cookie = "; ".join(f"{k}={v}" for k, v in merged.items())
+        new_cookie = replace_cookie_values(old_cookie, jar_cookies)
         if new_cookie == old_cookie:
             return
 
@@ -579,14 +582,17 @@ class UpstreamClient:
         "just a moment",
         "cf-browser-verification",
         "cf_chl_",
-        "cloudflare",
         "attention required",
         "enable javascript and cookies to continue",
     )
 
     @classmethod
-    def _is_cloudflare_challenge(cls, status: int, body: str) -> bool:
-        """403/503 gövdesi Cloudflare bot/oturum duvarı mı?"""
+    def _is_cloudflare_challenge(
+        cls, status: int, body: str, cf_mitigated: str = ""
+    ) -> bool:
+        """Resmî başlık veya 403/503 gövdesindeki challenge işaretleri."""
+        if cf_mitigated.strip().lower() == "challenge":
+            return True
         if status not in {403, 503} or not body:
             return False
         lowered = body.lower()
@@ -712,14 +718,15 @@ class UpstreamClient:
 
     @asynccontextmanager
     async def stream_completion(
-        self, chat_id: str, payload: dict[str, object], account: Account | None = None
+        self, chat_id: str, payload: dict[str, object], account: Account | None = None,
+        token_factory: Callable[[], Awaitable[str]] | None = None,
     ) -> AsyncIterator[AsyncIterator[bytes]]:
         """İsteği client yaşam süresi boyunca koru; reset akışı kesmesin."""
         client = self._client_for(account)
         self._retain_client(client)
         try:
             async with self._stream_completion_with_client(
-                chat_id, payload, account=account, client=client
+                chat_id, payload, account=account, client=client, token_factory=token_factory
             ) as chunks:
                 yield chunks
         finally:
@@ -733,6 +740,7 @@ class UpstreamClient:
         *,
         account: Account | None,
         client: httpx.AsyncClient,
+        token_factory: Callable[[], Awaitable[str]] | None = None,
     ) -> AsyncIterator[AsyncIterator[bytes]]:
         """Upstream'e istek atıp bayt akışı döndürür (retry + breaker dahil).
 
@@ -750,7 +758,6 @@ class UpstreamClient:
             account.effective_settings(self.settings) if account else self.settings
         )
         url = request_settings.stream_url(chat_id)
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
         # Sürüm damgasını tazele (önbellek sıcaksa ağa çıkmaz). Okunamazsa
         # `UPSTREAM_CURL`'deki donmuş değer kullanılır: kanarya isteği bozmaz.
@@ -774,24 +781,61 @@ class UpstreamClient:
 
         async with self._total_deadline(request_settings, url), self._semaphore:
             while attempt < attempts:
+                # Token tek kullanımlıktır: 409, 5xx ve ağ retry'ları da yeni
+                # token almalı. Kuyrukta bekletmemek için semaphore'dan sonra üret.
+                wire_payload = payload.copy()
+                if token_factory is not None:
+                    token = await token_factory()
+                    field = (
+                        request_settings.upstream_recaptcha_field or "recaptchaV3Token"
+                    ).strip()
+                    if token:
+                        wire_payload[field] = token
+                    else:
+                        wire_payload.pop(field, None)
+                captcha_field = (
+                    request_settings.upstream_recaptcha_field or "recaptchaV3Token"
+                ).strip()
+                has_static_token = token_factory is None and bool(wire_payload.get(captcha_field))
+                body = json.dumps(
+                    wire_payload, ensure_ascii=False, separators=(",", ":")
+                ).encode("utf-8")
                 metrics.inc("apiwrapper_upstream_requests_total")
                 request = client.build_request(
                     "POST", url, headers=headers, content=body
                 )
                 response: httpx.Response | None = None
+                safe_to_retry = False
                 try:
                     # POST gövdesini 301/302 ile GET'e çevirmemek için yönlendirme kapalı.
                     response = await client.send(
                         request, stream=True, follow_redirects=False
                     )
                 except httpx.TimeoutException as exc:
-                    last_error = UpstreamTimeout(f"Upstream timed out: {exc}", url=url)
+                    safe_to_retry = isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout))
+                    detail = "before sending" if safe_to_retry else "with an unknown POST outcome"
+                    last_error = UpstreamTimeout(f"Upstream timed out {detail}.", url=url)
                 except httpx.HTTPError as exc:
-                    last_error = UpstreamNetworkError(
-                        f"Upstream network error: {exc}", url=url
-                    )
+                    safe_to_retry = isinstance(exc, httpx.ConnectError)
+                    detail = "before sending" if safe_to_retry else "with an unknown POST outcome"
+                    last_error = UpstreamNetworkError(f"Upstream network error {detail}.", url=url)
                 else:
                     status = response.status_code
+                    if self._is_cloudflare_challenge(
+                        status, "", response.headers.get("cf-mitigated", "")
+                    ):
+                        error_body = await self._read_error_body(response)
+                        await response.aclose()
+                        metrics.inc(
+                            "apiwrapper_upstream_errors_total",
+                            labels={"status": str(status), "reason": "challenge"},
+                        )
+                        logger.warning("upstream_security_challenge", status=status)
+                        raise UpstreamChallenge(
+                            "Upstream returned a Cloudflare challenge. Check the access "
+                            "policy and browser context; the cause is not established.",
+                            status_code=status, body=error_body, url=url,
+                        )
                     if 300 <= status < 400:
                         location = response.headers.get("location", "")
                         error_body = await self._read_error_body(response)
@@ -846,8 +890,14 @@ class UpstreamClient:
                         "upstream_http_error",
                         status=status,
                         url=url,
-                        body=error_body[:300],
+                        body_length=len(error_body),
                     )
+                    if self._is_cloudflare_challenge(status, error_body):
+                        raise UpstreamChallenge(
+                            "Upstream returned a possible Cloudflare challenge. Check "
+                            "the access policy and browser context; the cause is not established.",
+                            status_code=status, body=error_body, url=url,
+                        )
                     if stamp_strip_used and self._is_user_missing(status, error_body):
                         # Kritik ayrım: 409 "refresh_required" damga sorunu gibi
                         # görünür ama damga çıkarılınca oturum da reddediliyorsa
@@ -858,7 +908,7 @@ class UpstreamClient:
                             "upstream_session_dead",
                             status=status,
                             account=account.label if account else None,
-                            body=error_body[:200],
+                            body_length=len(error_body),
                             hint=(
                                 "Damga tazelenemedi ve damga çıkarılınca upstream "
                                 "oturumu da reddetti (401/403 'user not found'). "
@@ -917,7 +967,7 @@ class UpstreamClient:
                         )
 
                     refresh_marker = self._refresh_marker(status, error_body)
-                    if refresh_marker is not None and not stamp_retry_used:
+                    if refresh_marker is not None and not stamp_retry_used and not has_static_token:
                         stamp_retry_used = True
                         if await self._retry_with_fresh_stamp(
                             client=client,
@@ -942,6 +992,7 @@ class UpstreamClient:
                     if (
                         refresh_marker is not None
                         and not stamp_strip_used
+                        and not has_static_token
                         and request_settings.deployment_stamp_strip_on_conflict
                     ):
                         # İkinci kademe: yeni damga bulunamadıysa eskisini hiç
@@ -976,7 +1027,7 @@ class UpstreamClient:
                             status=status,
                             url=url,
                             marker=refresh_marker,
-                            body=error_body[:200],
+                            body_length=len(error_body),
                             hint=(
                                 (
                                     "Sürüm damgası otomatik tazelendi ama upstream yine 409 "
@@ -1024,34 +1075,12 @@ class UpstreamClient:
                             url=url,
                         )
 
-                    if self._is_cloudflare_challenge(status, error_body):
-                        # `cf_clearance`/`__cf_bm` eskimiş demektir; CAPTCHA
-                        # token'ı suçlu değil.
-                        raise UpstreamAuthRejected(
-                            "Upstream returned a Cloudflare bot/clearance challenge; "
-                            "the captured Cloudflare cookies (cf_clearance, __cf_bm) "
-                            "have expired. Capture a fresh browser cURL.",
-                            status_code=status,
-                            body=error_body,
-                            url=url,
-                        )
-
                     if self._is_captcha_body(status, error_body):
-                        # Operatör tam olarak hangi gövdenin geldiğini
-                        # görsün: "captcha_rejected" diye bildiğimiz şey
-                        # bazen cx alanı, deployment skew veya path
-                        # kaynaklı olabiliyor; gövdenin ilk 400 karakteri
-                        # bunu ayırt etmeye yeter.
+                        # Ham gövde token/kimlik içerebilir; yalnız boyutu kaydet.
                         logger.warning(
-                            "upstream_recaptcha_rejected_body",
+                            "upstream_recaptcha_rejected",
                             status=status,
-                            # URL'yi operatöre gösterirken host'u maskeleme
-                            # zaten log sistemi yapıyor; burada yol kısmı
-                            # yeterli (full path gizli bilgi taşımaz).
-                            path=str(url).split("://", 1)[-1].split("/", 1)[-1][:200]
-                            if "://" in str(url)
-                            else str(url)[:200],
-                            body_preview=(error_body or "")[:400],
+                            body_length=len(error_body),
                         )
                         raise RecaptchaRejected(
                             "Upstream rejected the reCAPTCHA token.",
@@ -1068,6 +1097,10 @@ class UpstreamClient:
                     )
                     if status not in RETRYABLE_STATUS:
                         raise last_error
+                    if has_static_token:
+                        if _is_availability_failure(last_error):
+                            await self.breaker.record_failure()
+                        raise last_error
 
                     retry_after = parse_retry_after(response.headers.get("retry-after"))
                     attempt += 1
@@ -1083,7 +1116,13 @@ class UpstreamClient:
                         )
                         continue
 
-                # Ağ/timeout hatası yolu
+                # Yalnız POST gönderilmeden önceki bağlantı/havuz hataları
+                # tekrar denenir. Read/write/protocol hatasında işlem durumu
+                # belirsizdir; ikinci POST çift işleme yol açabilir.
+                if not safe_to_retry:
+                    if _is_availability_failure(last_error):
+                        await self.breaker.record_failure()
+                    raise last_error or UpstreamNetworkError("Upstream request failed.")
                 attempt += 1
                 if attempt < attempts:
                     logger.warning(

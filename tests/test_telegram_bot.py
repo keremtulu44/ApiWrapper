@@ -993,3 +993,15 @@ async def test_diagnose_puts_layer_verdict_first_with_its_fix():
     assert "✎ UPSTREAM_REFRESH_API_KEY yazın." in text
     # Katman satırı çerez ayrıntısından önce gelir.
     assert text.index("🎯 identity") < text.index("Çerez:")
+
+
+async def test_diagnose_shows_browser_token_source_without_token():
+    payload = _auth_payload()
+    payload["recaptcha"] = {
+        "provider": "browser", "site_key": "fake-site-key", "version": "enterprise",
+        "action": "chat_submit", "production": {
+            "generated": 4, "rejected": 4, "last_token_source": "live_execute",
+        },
+    }
+    text = await _run_diagnose(payload)
+    assert "4 token · 4 red · son yol: live_execute" in text

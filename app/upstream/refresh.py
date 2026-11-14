@@ -46,6 +46,7 @@ from app.upstream.auth import (
     extract_refresh_token,
     looks_like_jwt,
     parse_cookie_header,
+    replace_cookie_values,
     token_seconds_remaining,
 )
 from app.upstream.headers import build_page_headers
@@ -143,7 +144,7 @@ def _decode_session_json(value: str) -> dict[str, Any] | None:
 
 def _encode_session_json(payload: dict[str, Any]) -> str:
     raw = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
-    return "base64-" + base64.b64encode(raw).decode()
+    return "base64-" + base64.urlsafe_b64encode(raw).decode().rstrip("=")
 
 
 def chunk_families(cookies: dict[str, str]) -> dict[str, list[int]]:
@@ -743,9 +744,7 @@ def rewrite_session_cookie(
             ):
                 if cookies[name] == access_token:
                     return cookie_header, False
-                cookies[name] = access_token
-                rebuilt = "; ".join(f"{k}={v}" for k, v in cookies.items())
-                return rebuilt, True
+                return replace_cookie_values(cookie_header, {name: access_token}), True
         return cookie_header, False
 
     base, payload = entries[0]
@@ -762,8 +761,9 @@ def rewrite_session_cookie(
     encoded = _encode_session_json(updated)
 
     indices = chunk_families(cookies).get(base)
+    replacements: dict[str, str] = {}
     if not indices:
-        cookies[base] = encoded
+        replacements[base] = encoded
     else:
         lengths = [len(cookies.get(f"{base}.{index}", "")) for index in indices]
         # Orijinal parça boyları yeni gövdeye uyuyorsa birebir koru; aksi halde
@@ -778,10 +778,9 @@ def rewrite_session_cookie(
         for position, index in enumerate(indices):
             is_last = position == len(indices) - 1
             size = len(encoded) - cursor if is_last else lengths[position]
-            cookies[f"{base}.{index}"] = encoded[cursor : cursor + size]
+            replacements[f"{base}.{index}"] = encoded[cursor : cursor + size]
             cursor += size
-    rebuilt = "; ".join(f"{name}={value}" for name, value in cookies.items())
-    return rebuilt, True
+    return replace_cookie_values(cookie_header, replacements), True
 
 
 def _now() -> float:

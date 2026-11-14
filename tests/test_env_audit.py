@@ -58,11 +58,11 @@ def test_prefixed_deployment_key_is_dead_and_suggested(tmp_path: Path) -> None:
 
 
 def test_unknown_key_without_near_name_still_reported(tmp_path: Path) -> None:
-    path = _write(tmp_path, "UPSTREAM_AUTH_HEADER_MODE=bearer\nTARGET_DOMAIN=example.com\n")
+    path = _write(tmp_path, "UPSTREAM_HEADER_STYLE=bearer\nTARGET_DOMAIN=example.com\n")
 
     report = audit_env(path)
 
-    assert _kinds(report, "dead") == ["UPSTREAM_AUTH_HEADER_MODE"]
+    assert _kinds(report, "dead") == ["UPSTREAM_HEADER_STYLE"]
     assert "sessizce yok sayılıyor" in report.of_kind("dead")[0].detail
 
 
@@ -151,7 +151,7 @@ def test_clean_env_only_reports_device_gaps(tmp_path: Path) -> None:
 
 
 def test_render_and_json_are_consistent(tmp_path: Path) -> None:
-    path = _write(tmp_path, "TARGET_DOMAIN=example.com\nUPSTREAM_AUTH_HEADER_MODE=bearer\n")
+    path = _write(tmp_path, "TARGET_DOMAIN=example.com\nUPSTREAM_HEADER_STYLE=bearer\n")
 
     report = audit_env(path)
     payload = json.loads(json.dumps(report.to_dict(), ensure_ascii=False))

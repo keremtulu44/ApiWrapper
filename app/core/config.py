@@ -55,6 +55,10 @@ PLACEHOLDER_SECRET_FIELDS: tuple[str, ...] = (
 #: "kaydedildi" deyip uygulamanın onları yok saymasını önlemek için tek kaynak.
 MAX_ACCOUNT_SLOTS = 4
 
+# Render boş env değeri için 400 döndürürse bu ayrılmış değer,
+# doğrudan servis env katmanında eski/group değerlerini gölgeleyerek boşu korur.
+RENDER_EMPTY_VALUE = "__APIWRAPPER_EMPTY_VALUE_V1__"
+
 
 class Settings(BaseSettings):
     """Ortam değişkeni tabanlı ayarlar."""
@@ -135,9 +139,12 @@ class Settings(BaseSettings):
     #: Doğrudan bearer token. Verilirse çerezden ayıklamaya gerek kalmaz (en yüksek öncelik).
     upstream_access_token: str = ""
     #: Cookie içinden `access_token` ayıklanıp `Authorization: Bearer` olarak eklensin mi?
-    #: Varsayılan False: tarayıcı cURL'inde bu başlık yoksa eklemek parmak izini bozar.
-    #: Hedef 401 döndürüyorsa true yapın.
+    #: Varsayılan False; UPSTREAM_CURL importer JWT varsa bunu açabilir.
+    #: Açık cookie_only modu Authorization başlığını yine de engeller.
     upstream_auth_from_cookie: bool = False
+    #: configured: mevcut davranış; cookie_only: upstream isteklerinde
+    #: Authorization başlığını gönderme (tokenları silmez, refresh'i etkilemez).
+    upstream_auth_header_mode: Literal["configured", "cookie_only"] = "configured"
     #: Token'ın aranacağı çerez adları (virgülle ayrılmış). Boşsa sezgisel arama yapılır.
     upstream_token_cookie_names: Annotated[list[str], NoDecode] = Field(default_factory=list)
     #: Authorization başlığının şeması. Boş bırakılırsa token ham olarak gönderilir.
@@ -353,6 +360,7 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------- recaptcha
     recaptcha_provider: RecaptchaProviderName = "static"
     recaptcha_static_token: str = ""
+    # Geriye uyumluluk: tek kullanımlık dinamik tokenlar cache edilmez.
     recaptcha_token_ttl: float = 100.0
     #: external sağlayıcı için: token döndüren HTTP uç noktası.
     recaptcha_external_url: str = ""
@@ -388,6 +396,18 @@ class Settings(BaseSettings):
     metrics_enabled: bool = True
 
     # ----------------------------------------------------------- validators
+    @field_validator(
+        "upstream_cookie", "upstream_access_token", "upstream_refresh_token",
+        "upstream_user_agent", "upstream_accept_language", "upstream_extra_headers",
+        "upstream_auth_scheme", "upstream_referer_path", "upstream_recaptcha_field",
+        "upstream_captured_model_id", "upstream_cx", "upstream_mode", "upstream_stream_path",
+        "recaptcha_site_key", "recaptcha_static_token", mode="before",
+    )
+    @classmethod
+    def _decode_render_empty_value(cls, v: object) -> object:
+        """Render'ın boş değer yerine sakladığı ayrılmış işareti geri aç."""
+        return "" if v == RENDER_EMPTY_VALUE else v
+
     @field_validator(
         "api_keys",
         "admin_api_keys",

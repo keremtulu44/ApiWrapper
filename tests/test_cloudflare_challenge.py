@@ -103,3 +103,85 @@ def test_noop_provider_does_not_count_rejections(settings) -> None:
     provider = NoopRecaptchaProvider(settings)
     provider.invalidate()
     assert provider.stats["rejected"] == 0
+
+
+def test_cloudflare_header_identifies_challenge_without_body() -> None:
+    assert UpstreamClient._is_cloudflare_challenge(403, "", "challenge")
+    assert UpstreamClient._is_cloudflare_challenge(200, "", "Challenge")
+    assert not UpstreamClient._is_cloudflare_challenge(403, "", "other")
+
+
+@pytest.mark.asyncio
+async def test_cloudflare_header_precedes_auth_and_captcha_classification():
+    import httpx
+
+    from app.upstream.exceptions import UpstreamChallenge
+    from tests.conftest import make_settings
+
+    requests = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal requests
+        requests += 1
+        return httpx.Response(
+            403, headers={"cf-mitigated": "challenge"},
+            text='{"error":"session expired and recaptcha invalid"}',
+        )
+
+    settings = make_settings(deployment_id_refresh_enabled=False, retry_max_attempts=3)
+    upstream = UpstreamClient(settings)
+    upstream._client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    try:
+        with pytest.raises(UpstreamChallenge, match="Cloudflare") as exc:
+            async with upstream.stream_completion("chat", {"id": "chat"}):
+                pass
+        assert "expired" not in str(exc.value).lower()
+        assert requests == 1
+    finally:
+        await upstream.shutdown()
+
+
+def test_api_reports_challenge_without_refresh_or_retry(monkeypatch):
+    import httpx
+    import respx
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.conftest import TEST_API_KEY, make_settings
+    from tests.test_token_refresh import session_cookie
+
+    settings = make_settings(
+        upstream_cookie=session_cookie(expires_in=3600),
+        upstream_refresh_enabled=True,
+        deployment_id_refresh_enabled=False,
+        retry_max_attempts=3,
+    )
+    called = []
+
+    async def no_refresh(*_args, **_kwargs):
+        called.append(True)
+        raise AssertionError("challenge must not rotate credentials")
+
+    monkeypatch.setattr("app.services.completion_service.refresh_upstream_token", no_refresh)
+    with respx.mock(assert_all_called=False) as mock:
+        route = mock.post(url__startswith="https://upstream.test/").mock(
+            return_value=httpx.Response(403, headers={"cf-mitigated": "challenge"})
+        )
+        with TestClient(create_app(settings)) as client:
+            response = client.post(
+                "/v1/chat/completions",
+                headers={"Authorization": f"Bearer {TEST_API_KEY}"},
+                json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]},
+            )
+        assert response.status_code == 502
+        assert response.json()["error"]["code"] == "upstream_challenge"
+        assert route.call_count == 1
+        assert not called
+
+
+def test_challenge_has_specific_diagnostics() -> None:
+    from app.core.diagnostics import explain_failure
+
+    hint = explain_failure(502, "upstream_challenge")
+    assert "challenge" in hint.title.lower()
+    assert "süresinin dolduğunu göstermez" in hint.action

@@ -623,3 +623,17 @@ def test_escaped_ampersand_in_cookie_is_normalized(sample):
 
     assert "&amp;" not in env["UPSTREAM_COOKIE"]
     assert "_dd_s=aid=abc&rum=2&id=sess-1" in env["UPSTREAM_COOKIE"]
+
+
+def test_site_key_not_inferred_from_cookie_or_captcha_response(sample):
+    false_key = "6L" + "x" * 38
+    body = {**sample["body"], "recaptchaV2Token": false_key}
+    env, _, _ = build_settings(parse_curl(_curl(f"analytics={false_key}", body)))
+    assert "RECAPTCHA_SITE_KEY" not in env
+
+
+def test_site_key_imported_only_from_explicit_body_field(sample):
+    key = "6L" + "x" * 38
+    body = {**sample["body"], "recaptchaSiteKey": key}
+    env, _, _ = build_settings(parse_curl(_curl(sample["cookie"], body)))
+    assert env["RECAPTCHA_SITE_KEY"] == key

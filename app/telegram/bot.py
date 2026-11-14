@@ -517,6 +517,11 @@ class TelegramBot:
                 generated = int(production.get("generated") or 0)
                 rejected = int(production.get("rejected") or 0)
                 line = f"CAPTCHA üretimi: {generated} token · {rejected} red"
+                source = production.get("last_token_source")
+                if isinstance(source, str) and source in {
+                    "live_click", "live_execute", "bootstrap_execute"
+                }:
+                    line += f" · son yol: {source}"
                 last_error = production.get("last_error")
                 if last_error:
                     line += f" · son hata: {str(last_error)[:60]}"

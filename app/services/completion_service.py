@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import time
 from collections.abc import AsyncIterator
 
@@ -40,6 +41,7 @@ from app.upstream.exceptions import (
     CircuitOpen,
     RecaptchaRejected,
     UpstreamAuthRejected,
+    UpstreamChallenge,
     UpstreamHTTPError,
     UpstreamNetworkError,
     UpstreamProtocolError,
@@ -146,6 +148,8 @@ class CompletionService:
         self.sessions = sessions
         self.recaptcha = recaptcha
         self.accounts = accounts if accounts is not None else AccountPool(settings)
+        # Yalnız reddedilen değerin özeti tutulur; yeni cURL gelince otomatik değişir.
+        self._rejected_static_tokens: dict[int, bytes] = {}
 
     # ------------------------------------------------------------ helpers
     @property
@@ -180,11 +184,19 @@ class CompletionService:
                 code="upstream_refresh_required",
                 headers={"retry-after": "300"},
             )
+        if isinstance(exc, UpstreamChallenge):
+            return APIWrapperError(
+                "The upstream service returned a security challenge. Check the "
+                "access policy and browser context; the cause is not established.",
+                status_code=502,
+                err_type="upstream_error",
+                code="upstream_challenge",
+            )
         if isinstance(exc, UpstreamAuthRejected):
             return APIWrapperError(
-                "The upstream service rejected the session credentials (401). "
-                "Refresh UPSTREAM_COOKIE (and/or UPSTREAM_ACCESS_TOKEN) in the "
-                "environment; the extracted access_token is missing or expired.",
+                "The upstream service rejected the session credentials. "
+                "Check refresh status and the active account; UPSTREAM_COOKIE or "
+                "UPSTREAM_ACCESS_TOKEN may be expired or otherwise invalid.",
                 status_code=502,
                 err_type="upstream_error",
                 code="upstream_unauthorized",
@@ -328,8 +340,16 @@ class CompletionService:
             and account.has_own_captcha_token
         ):
             token = account.recaptcha_token
+        elif self.settings.recaptcha_provider in {"browser", "external"}:
+            # Dinamik token her POST'tan hemen önce upstream istemcisinde üretilir.
+            token = ""
         else:
             token = await self.recaptcha.get_token()
+        if self.settings.recaptcha_provider == "static" and token:
+            slot = account.slot if account is not None else 0
+            digest = hashlib.sha256(token.encode()).digest()
+            if self._rejected_static_tokens.get(slot) == digest:
+                raise RecaptchaRejected("The static reCAPTCHA token was already rejected.")
         built = build_upstream_request(
             request,
             settings=self.settings,
@@ -439,6 +459,11 @@ class CompletionService:
                     built.chat_id,
                     built.payload.to_wire(self.settings.upstream_recaptcha_field),
                     account=account,
+                    token_factory=(
+                        self.recaptcha.get_token
+                        if self.settings.recaptcha_provider in {"browser", "external"}
+                        else None
+                    ),
                 ) as chunks:
                     idle = self.settings.stream_idle_timeout
                     iterator = parse_stream(chunks).__aiter__()
@@ -477,6 +502,20 @@ class CompletionService:
                     self.accounts.report_quota(account.slot)
                 retryable = emitted == 0 and switches < max_switches
                 replacement = self._pick_account() if retryable else None
+                # Hesap değişiminde yalnız farklı bir statik token güvenle
+                # gönderilebilir. Global fallback aynı token ise tekrar deneme.
+                if (
+                    replacement is not None
+                    and self.settings.recaptcha_provider == "static"
+                    and built.payload.recaptcha_v3_token
+                ):
+                    replacement_token = (
+                        replacement.recaptcha_token
+                        if replacement.has_own_captcha_token
+                        else self.settings.recaptcha_static_token
+                    ).strip()
+                    if replacement_token == built.payload.recaptcha_v3_token:
+                        raise
                 if replacement is None or (
                     account is not None and replacement.slot == account.slot
                 ):
@@ -494,6 +533,13 @@ class CompletionService:
                 account = replacement
                 continue
             except UpstreamAuthRejected:
+                # Statik token bu POST'ta doğrulanmış olabilir; refresh/hesap
+                # değişimi aynı tek kullanımlık değeri tekrar göndermemeli.
+                if (
+                    self.settings.recaptcha_provider == "static"
+                    and built.payload.recaptcha_v3_token
+                ):
+                    raise
                 # 1. Kademe: Henüz istemciye tek parça gönderilmediyse ve
                 # hesabın refresh token'ı varsa, erişim token'ını anında yenileyip
                 # aynı hesapla bir kez tekrar dene (kullanıcı 401 görmez).
@@ -548,18 +594,16 @@ class CompletionService:
                 continue
             except RecaptchaRejected:
                 self.recaptcha.invalidate()
-                # Statik kipte account'ların kendi captcha_token önbelleği vardır
-                # (`_prepare` içindeki `has_own_captcha_token` dalı). Bu token
-                # reddedildiyse bir sonraki istekte de aynı (süresi dolmuş/yanlış)
-                # token kullanılıp tekrar 503 alınıyordu. Account seviyesindeki eski
-                # token'ı temizle: bir sonraki istek `recaptcha.get_token()` üzerinden
-                # global/ayardaki değeri kullanır (yeni cURL veya yenilenmiş sağlayıcı
-                # oradaysa gelsin). Burada `reload_credentials` ÇAĞRILMAZ: o metot
-                # account.recaptcha_token'ı settings'deki (hâlâ eski/ölü) değerden
-                # tekrar doldurur ve temizlemeyi geri alır.
-                if self.settings.recaptcha_provider == "static" and self.accounts.size:
-                    for acc in self.accounts.accounts:
-                        acc.recaptcha_token = ""
+                # Yalnız reddedilen hesabın gönderdiği tokenı işaretle. Diğer
+                # hesapların geçerli tokenlarını silme ve ayarlardaki aynı eski
+                # tokenın sonraki istekte yeniden kullanılmasına izin verme.
+                if self.settings.recaptcha_provider == "static":
+                    token = built.payload.recaptcha_v3_token
+                    if token:
+                        slot = account.slot if account is not None else 0
+                        self._rejected_static_tokens[slot] = hashlib.sha256(
+                            token.encode()
+                        ).digest()
                 # Yalnız gerçekten yeni token üretebilen sağlayıcılar (browser/external)
                 # tekrar denesin. Static/noop'ta retry anlamsızdır: sabit token/boş
                 # değer ile yine aynı sonuç alınır (bkz. test_no_retry_with_same_token).

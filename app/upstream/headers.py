@@ -164,10 +164,11 @@ def client_hint_headers(user_agent: str) -> dict[str, str]:
 def build_authorization(settings: Settings) -> str | None:
     """`Authorization` başlık değerini üretir.
 
-    Hedef servis yalnızca Cookie'yi yeterli bulmadığı için token, `UPSTREAM_ACCESS_TOKEN`
-    veya oturum çerezinin içinden ayıklanır. Token bulunamazsa `None` döner ve istek
-    yalnızca Cookie ile gönderilir.
+    Configured modunda açık token veya etkinse çerez tokenı kullanılır.
+    Cookie-only modunda ve token yoksa `None` döner; destek upstream'e bağlıdır.
     """
+    if settings.upstream_auth_header_mode == "cookie_only":
+        return None
     if not settings.upstream_auth_from_cookie and not settings.upstream_access_token:
         return None
 
@@ -252,6 +253,9 @@ def build_stream_headers(
     _apply_auth(headers, settings)
     # Kullanıcı tanımlı başlıklar en son uygulanır; bilinçli override'a izin verilir.
     headers.update(settings.parsed_extra_headers())
+    if settings.upstream_auth_header_mode == "cookie_only":
+        # Ek başlıklardaki farklı harfli Authorization da bu açık modda gitmez.
+        headers = {key: value for key, value in headers.items() if key.lower() != "authorization"}
     if deployment_id:
         # Değiştirme **ada duyarsız** olmalı: başlık adları cURL'den küçük harfle
         # geliyor (`curl_import` satır 93) ama `UPSTREAM_EXTRA_HEADERS` elle
@@ -286,6 +290,8 @@ def build_page_headers(settings: Settings, *, include_cookie: bool = True) -> di
             name: value
             for name, value in settings.parsed_extra_headers().items()
             if name.lower() not in _STREAM_ONLY_EXTRA_HEADERS
+            and not (settings.upstream_auth_header_mode == "cookie_only"
+                     and name.lower() == "authorization")
         }
     )
     return headers

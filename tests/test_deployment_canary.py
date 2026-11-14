@@ -514,7 +514,7 @@ def test_keepalive_records_last_probe_for_ping(monkeypatch):
 
     class FakeResponse:
         status_code = 200
-        text = ""
+        text = '{"choices":[{"message":{"content":"ok"}}]}'
 
     class FakeClient:
         def __init__(self, **_kwargs: Any) -> None:

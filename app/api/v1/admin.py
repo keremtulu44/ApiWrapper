@@ -357,6 +357,25 @@ async def update_upstream_curl(
     except ValueError as exc:
         raise InvalidRequestError(str(exc), param="curl") from exc
 
+    # cURL noop -> static geçişi yapabilir; Settings ile yaşayan sağlayıcı
+    # farklı kalırsa CAPTCHA alanı sessizce boş gönderilir.
+    current_provider = request.app.state.recaptcha
+    if current_provider.name != settings.recaptcha_provider:
+        from app.services.recaptcha import create_recaptcha_provider
+
+        new_provider = create_recaptcha_provider(settings)
+        await new_provider.startup()
+        request.app.state.recaptcha = new_provider
+        request.app.state.completion_service.recaptcha = new_provider
+        await current_provider.shutdown()
+
+    # Model kimliği de cURL snapshot'ının parçasıdır; canlı registry güncel
+    # değilse endpoint doğru modeli raporlarken POST eski modele gider.
+    request.app.state.registry.resolve(None).upstream_id = (
+        settings.upstream_captured_model_id
+        or request.app.state.configured_default_upstream_model_id
+    )
+
     account_changes = accounts.reload_credentials(settings)
     dropped_clients = await upstream.reset_account_clients()
     upstream.breaker.reset()
@@ -584,6 +603,10 @@ async def auth_diagnostics(
     # tahmin etmek yerine gösterebilir.
     cookie_inspection = inspect_cookie(settings.upstream_cookie)
     header_value = build_authorization(settings)
+    # Ek başlıklar stream isteğinde en son uygulanır; teşhis onu da hesaba katar.
+    extra_auth_present = settings.upstream_auth_header_mode != "cookie_only" and any(
+        key.lower() == "authorization" for key in settings.parsed_extra_headers()
+    )
     from app.services.token_refresh import refresh_state
 
     # Kullanılan token `UPSTREAM_AUTH_FROM_COOKIE` kapalıyken boş görünebilir;
@@ -618,7 +641,7 @@ async def auth_diagnostics(
     return {
         "slot": slot,
         "account": account.label if account is not None else None,
-        "authorization_header_will_be_sent": bool(header_value),
+        "authorization_header_will_be_sent": bool(header_value) or extra_auth_present,
         "auth_scheme": settings.upstream_auth_scheme,
         "source": (
             f"UPSTREAM_ACCESS_TOKEN{suffix}"
@@ -669,21 +692,15 @@ async def auth_diagnostics(
             # (sır) hiçbir zaman dönmez.
             "production": {
                 **(getattr(getattr(request.app.state, "recaptcha", None), "stats", {}) or {}),
-                "cached": bool(
-                    getattr(
-                        getattr(request.app.state, "recaptcha", None), "_cache", None
-                    )
-                    and getattr(
-                        request.app.state.recaptcha._cache, "_value", None
-                    )
-                ),
-                "token_ttl_seconds": settings.recaptcha_token_ttl,
+                "cached": False,
+                # Eski alan korunur; dinamik token'lar artık önbelleğe alınmaz.
+                "token_ttl_seconds": None,
             },
             "origin": settings.base_url,
             "hint": (
-                "Tarayıcı sağlayıcısı site key ile token üretir; anahtar hedefin "
-                "sitesine ait değilse hedef token'ı reddeder (recaptcha_rejected). "
-                "Doğru anahtar cURL'de görünüyorsa /curl ile yeniden yükleyin."
+                "Token üretilmesi kabul edildiğini göstermez. Site key, action, "
+                "sürüm ve istek alanını; ayrıca ağ/tarayıcı bağlamı ve hedef "
+                "erişim politikasını kontrol edin."
                 if settings.recaptcha_provider in {"browser", "external"}
                 else None
             ),

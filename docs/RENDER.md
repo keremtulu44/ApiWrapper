@@ -345,3 +345,46 @@ aynı istekte dener:
 Uyarı mesajındaki `≈N dk` değeri her kontrolde yeniden hesaplanır; iki bildirim
 arasında farklı görünmesi normaldir. Kesin zaman için mesajdaki
 `bitiş ≈ YYYY-MM-DD HH:MM UTC` alanına bakın.
+
+### Render 400 ve CAPTCHA teşhisi
+
+`render_env_sync_failed` olayındaki `empty_value` ve
+`empty_fallback_attempted` alanları yalnız değerin boş olup olmadığını ve alternatif
+kaydetmenin denenip denenmediğini belirtir; Render yanıt gövdesi, anahtarlar ve
+oturum bilgileri loglanmaz. Bir env alanına boş değer yazılması 400 döndürürse,
+servis o alana ayrılmış `__APIWRAPPER_EMPTY_VALUE_V1__` işaretini yazmayı dener;
+bu sürüm işareti yeniden açılışta boş değer olarak okur. Böylece eski bir değeri
+canlandırabilecek kör `DELETE` işlemi yapılmaz. `render_env_sync_empty_fallback`
+yalnız bu alternatif yazmanın kabul edildiğini; `render_env_synced` tüm alanların
+yazıldığını gösterir. Alternatif de başarısızsa işçi yeniden dener ve sorun çözülmüş
+sayılmaz. HTTP 400'ün nedeni yalnızca bu loglardan kesinleştirilemez.
+
+**Geri alma:** Bu işaret bu sürüme ayrılmıştır; işareti tanımayan eski sürüme
+dönmeden önce etkilenen servis env değerlerini güvenli biçimde gözden geçirin.
+İşareti gerçek cookie, token veya diğer elle girilen değer olarak kullanmayın.
+Startup'ta eski cURL ile env snapshot arasındaki seçim JWT expiry karşılaştırmasına
+bağlıdır; işaret bu seçimi veya bir upstream isteğinin kabulünü garanti etmez.
+
+Browser sağlayıcısında `/tani` ve `recaptcha_browser_token_source`, son tokenın
+`live_click`, `live_execute` veya `bootstrap_execute` yolunu gösterir; tokenın
+kendisi gösterilmez. Bu, üretim yolunun teşhisidir, doğrulama sonucu değildir.
+Upstream 403 döndürürse site key/action/version/alan eşleşmesini ve hedefin
+kendi yetkilendirme ve erişim politikasını kontrol edin; tek başına JWT expiry
+veya token üretilmesi kabul kanıtı değildir.
+
+### Authorization başlığı ve cookie-only modu
+
+JWT içeren bir cURL'de `Authorization` yoksa mevcut importer çerezden başlık
+üretimini otomatik açabilir; bu, kopyalanan isteğe ek bir başlıktır. Bu farkın
+401 veya CAPTCHA reddine neden olduğu **kanıtlanmış değildir**. Hedefin açıkça
+cookie-only istekleri desteklediği bir kurulumda `UPSTREAM_AUTH_HEADER_MODE`
+değeri `cookie_only` yapılarak bu başlık upstream sayfa ve stream isteklerinden
+kaldırılabilir. Bu mod tüm hesaplara uygulanır; açıkça ayarlanmış veya ek
+başlıklardaki Authorization'ı da göndermez. Tokenlar silinmez, refresh API'sinin
+kendi kimlik doğrulama başlıkları etkilenmez. `/tani` ilgili başlığın gidip
+gitmeyeceğini gösterir.
+
+Varsayılan `configured`, önceki davranışı korur. `cookie_only` bir CAPTCHA veya
+401 çözümü garantisi değildir; hedef Authorization gerektiriyorsa başarısız olur.
+Önceki davranışa dönmek için değer `configured` yapılır. Render ortam değişkeni
+seçiminin uygulanması servis yeniden başlatmasını/deploy'unu gerektirebilir.

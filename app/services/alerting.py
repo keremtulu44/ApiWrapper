@@ -104,10 +104,10 @@ class AlertPolicy:
             state.active_since = 0.0
             hint = explain_failure(result.status_code, previous)
             return (
-                "✅ ApiWrapper — upstream yeniden çalışıyor.\n"
+                "✅ ApiWrapper — son kontrol başarılı. Gelecekteki istekleri garanti etmez.\n"
                 f"Önceki arıza: {previous} ({hint.title})\n"
                 f"Süre: {_human_duration(elapsed)} · {result.checked_at} · "
-                f"HTTP {result.status_code if result.status_code is not None else '-'}"
+                f"Wrapper HTTP {result.status_code if result.status_code is not None else '-'}"
             )
 
         key = result.key
@@ -127,7 +127,7 @@ class AlertPolicy:
                 f"{severity} ApiWrapper — upstream isteği başarısız.\n"
                 f"Ne oldu: {hint.title} [{key}]\n"
                 f"Yapılacak: {hint.action}\n"
-                f"HTTP {result.status_code if result.status_code is not None else '-'} · "
+                f"Wrapper HTTP {result.status_code if result.status_code is not None else '-'} · "
                 f"{result.checked_at} · {_human_duration(result.duration_ms / 1000)}"
             )
 
@@ -141,8 +141,7 @@ class AlertPolicy:
                 f"Ne oldu: {hint.title} [{key}]\n"
                 f"Yapılacak: {hint.action}\n"
                 f"Üst üste {state.failures}. başarısız deneme · {result.checked_at} · "
-                f"başlangıçtan {_human_duration(current - state.active_since)} "
-                "önce başladı"
+                f"{_human_duration(current - state.active_since)} önce başladı"
             )
         return None
 

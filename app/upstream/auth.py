@@ -157,7 +157,7 @@ def normalize_cookie_header(raw: str) -> str:
     return _unescape_cookie_entities(raw or "")
 
 
-def parse_cookie_header(raw: str) -> dict[str, str]:
+def parse_cookie_header(raw: str, *, decode_values: bool = True) -> dict[str, str]:
     """Ham `Cookie` başlığını ad→değer sözlüğüne çevirir.
 
     Ayrıştırma bağışlayıcıdır: değer içinde ``=`` bulunabilir, boşluklar kırpılır,
@@ -181,7 +181,7 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
         name, _, value = part.partition("=")
         name = name.strip()
         value = value.strip().strip('"')
-        if "%" in value:
+        if decode_values and "%" in value:
             try:
                 decoded = unquote(value)
                 # Çift kodlanmış / JSON kaçışlı değerleri korumak için sadece
@@ -193,6 +193,27 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
         if name and name not in cookies:
             cookies[name] = value
     return cookies
+
+
+def replace_cookie_values(raw: str, replacements: dict[str, str]) -> str:
+    """Yalnız ilk eşleşen cookie değerlerini değiştir, diğer parçaları koru.
+
+    Cookie başlığında Domain/Path yoktur; tekrar eden adların hangisinin
+    değiştirileceği bilinemez. Ayrıştırıcının ilk değer kuralı korunur.
+    """
+    pending = dict(replacements)
+    parts: list[str] = []
+    for part in raw.split(";"):
+        name, sep, _value = part.partition("=")
+        key = name.strip()
+        if sep and key in pending:
+            part = f"{name}={pending.pop(key)}"
+        parts.append(part)
+    result = ";".join(parts)
+    if pending:
+        additions = "; ".join(f"{name}={value}" for name, value in pending.items())
+        result = f"{result}; {additions}" if result else additions
+    return result
 
 
 def merge_chunked_cookies(cookies: dict[str, str]) -> dict[str, str]:

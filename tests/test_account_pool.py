@@ -624,9 +624,8 @@ def test_static_captcha_rejection_is_not_retried_with_the_same_token(pool_client
 
 
 @respx.mock
-def test_static_captcha_rejection_clears_account_level_cached_tokens():
-    """Red sonrası account'ların eski captcha_token'ı temizlenmeli ki sonraki
-    istek / yeni cURL aynı ölü token'ı tekrar kullanmasın."""
+def test_static_captcha_rejection_is_isolated_to_account():
+    """Bir hesabın reddi diğer hesabın tokenını bozmamalı veya tekrar gönderilmemeli."""
     app = create_app(two_account_settings())
     with TestClient(app) as client:
         client.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
@@ -634,13 +633,26 @@ def test_static_captcha_rejection_clears_account_level_cached_tokens():
         assert [a.recaptcha_token for a in app.state.accounts.accounts] == ["RT-1", "RT-2"]
         route = route_by_cookie(
             respx,
-            {"COOKIE-1": httpx.Response(403, content=b'{"error":"invalid recaptcha"}')},
+            {
+                "COOKIE-1": httpx.Response(403, content=b'{"error":"invalid recaptcha"}'),
+                "COOKIE-2": httpx.Response(200, content=ai_stream("ok")),
+            },
         )
         resp = client.post("/v1/chat/completions", json=chat_body())
         assert resp.status_code == 503
         assert route.call_count == 1
-        # Red sonrası account-level token'lar temizlenmiş olmalı.
-        assert [a.recaptcha_token for a in app.state.accounts.accounts] == ["", ""]
+        assert [a.recaptcha_token for a in app.state.accounts.accounts] == ["RT-1", "RT-2"]
+        # İkinci hesap etkilenmemeli; ilk hesabın reddedilen tokenı ise
+        # havuz yeniden ona döndüğünde bir daha upstream'e gönderilmemeli.
+        app.state.accounts.pick = lambda exclude_slot=None: app.state.accounts.accounts[1]
+        assert client.post("/v1/chat/completions", json=chat_body()).status_code == 200
+        app.state.accounts.pick = lambda exclude_slot=None: app.state.accounts.accounts[0]
+        assert client.post("/v1/chat/completions", json=chat_body()).status_code == 503
+        assert route.call_count == 2
+        # Yeni bir token aynı hesapta tekrar kullanılabilir.
+        app.state.accounts.accounts[0].recaptcha_token = "RT-NEW"
+        assert client.post("/v1/chat/completions", json=chat_body()).status_code == 503
+        assert route.call_count == 3
 
 
 class SequenceRecaptchaProvider:

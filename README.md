@@ -54,7 +54,7 @@ Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damg
 | Kota tespiti | Hedefin "limit reached" tarzı mesajı işaret tabanlı yakalanır (HTTP gövdesi · akış hata olayı · opsiyonel düz metin taraması) → `429 upstream_quota_reached` + `Retry-After`, **retry edilmez** |
 | Hesap havuzu | Çoklu çerez/token; kayan pencere sayacı, kilitte otomatik hesap geçişi, AIMD ile öğrenilen bütçe, hesap başına captcha token'ı |
 | Sohbet yönetimi | `SESSION_REUSE=true` ile istemci başına tek upstream sohbeti; `SESSION_ROTATE_AFTER_MESSAGES`/`_SECONDS` eşiğinde yeni sohbete geçilir (Continue gibi `conversation_id` gönderemeyen istemciler için) |
-| reCAPTCHA v3 | `static` (varsayılan) · `noop` · `browser` (Playwright) · `external` — TTL cache + tek-uçuş kilidi |
+| reCAPTCHA v3 | `static` (varsayılan) · `noop` · `browser` (Playwright) · `external` — her dinamik istek için tek kullanımlık token |
 | Gözlemlenebilirlik | structlog JSON, `X-Request-ID`, `completion_completed`/`stream_completed`/`stream_failed` olayları, Prometheus metrikleri (TTFT dahil) |
 | Arıza bildirimi | Saatlik probe → Telegram: **ne oldu + hangi kod + ne yapmalı**; yeni arıza/düzelme her zaman, aynı arıza `TELEGRAM_ALERT_REPEAT_SECONDS` aralıkla (vars. 6 saat) — spam yok |
 | Sürüm eskimesi | Upstream `409 refresh_required`/`forced_update` → `upstream_refresh_required` (retry yok, devre kesiciye sayılmaz, net eylem metni) |
@@ -136,9 +136,10 @@ python -m scripts.env_template --env    # kopyalanabilir .env iskeleti
 
 Kimlik doğrulama hedefe göre yalnızca `Cookie` ile veya ayrıca
 `Authorization: Bearer <access_token>` başlığıyla yapılabilir. Son alınan normal sohbet
-cURL'ünde Authorization başlığı **yoktu**; bu kurulumda `UPSTREAM_AUTH_FROM_COOKIE=false`
-kalır. Hedef gerçekten Bearer başlığı isterse ApiWrapper token'ı cookie'den otomatik
-ayıklayıp ekleyebilir.
+cURL'ünde Authorization başlığı **yoktu**; `UPSTREAM_CURL` importer JWT varsa
+`UPSTREAM_AUTH_FROM_COOKIE` ayarını otomatik açabilir. Authorization göndermemek için
+`UPSTREAM_AUTH_HEADER_MODE=cookie_only` seçilebilir. Hedef gerçekten Bearer
+başlığı isterse ApiWrapper token'ı cookie'den otomatik ayıklayıp ekleyebilir.
 
 ```bash
 # Tarayıcıdan kopyalanan ham Cookie başlığı yeterlidir:
@@ -160,14 +161,16 @@ Desteklenen çerez biçimleri (`app/upstream/auth.py`):
 
 | Değişken | Varsayılan | Açıklama |
 |---|---|---|
-| `UPSTREAM_AUTH_FROM_COOKIE` | `false` | Cookie'den ayıklanan tokenla ayrıca Authorization üret; yalnız hedef bunu istiyorsa aç |
+| `UPSTREAM_AUTH_FROM_COOKIE` | `false` | Cookie'den Authorization üret; JWT içeren cURL importu bunu otomatik açabilir |
+| `UPSTREAM_AUTH_HEADER_MODE` | `configured` | `cookie_only` upstream Authorization başlığını kapatır; tokenları silmez |
 | `UPSTREAM_ACCESS_TOKEN` | — | Token'ı doğrudan ver (en yüksek öncelik) |
 | `UPSTREAM_TOKEN_COOKIE_NAMES` | — | Token'ı taşıyan çerez adları (virgülle); boşsa sezgisel arama |
 | `UPSTREAM_AUTH_SCHEME` | `Bearer` | Boş bırakılırsa token ham gönderilir |
 | `UPSTREAM_WARN_ON_EXPIRED_TOKEN` | `true` | JWT `exp` dolmuşsa logda uyar |
 
 > `UPSTREAM_EXTRA_HEADERS` en son uygulanır; `authorization=...` yazarak
-> otomatik üretilen başlığı bilinçli olarak ezebilirsiniz.
+> otomatik üretilen başlığı bilinçli olarak ezebilirsiniz. `cookie_only` modu
+> Authorization başlığını bu ek alanlardan da kaldırır.
 >
 > **Otomatik Token Yenileme & Kalıcılık (`app/upstream/refresh.py`, `app/upstream/state_store.py`):**
 > Oturum çerezindeki `refresh_token` ayrıştırılır; `access_token` bitmesine 10 dk
@@ -230,7 +233,7 @@ python scripts/compare_curl.py request.txt
 |---|---|
 | Gövdede `recaptchaV2Token` var, biz `recaptchaV3Token` yolluyoruz | `UPSTREAM_RECAPTCHA_FIELD=recaptchaV2Token` |
 | `accept-language` farklı (örn. `tr-TR,...`) | `UPSTREAM_ACCEPT_LANGUAGE=tr-TR,tr;q=0.9,en-US;q=0.8,en;q=0.7` |
-| cURL'de `authorization` başlığı **yok** | `UPSTREAM_AUTH_FROM_COOKIE=false` (varsayılan) |
+| cURL'de `authorization` başlığı **yok** | İçe aktarıcı JWT varsa Authorization üretebilir; cookie-only denemesi için `UPSTREAM_AUTH_HEADER_MODE=cookie_only` |
 | `cx` her istekte değişiyor | Sabit değer yazılmaz. İlk canlı test alan olmadan yapılır; zorunluysa istemci JS'sindeki üretim yöntemi gerekir |
 
 > **Cloudflare:** İsteğinizde `cf_clearance` çerezi varsa onu da `UPSTREAM_COOKIE`
@@ -370,8 +373,9 @@ Ayar dosyası çalışma sırasında yeniden okunmadığından, değişiklikten 
 yeniden başlatın.
 
 Araç artık cURL'deki `authorization` başlığını da yazıyor (`UPSTREAM_ACCESS_TOKEN` +
-`UPSTREAM_AUTH_SCHEME`, `UPSTREAM_AUTH_FROM_COOKIE=false`). Başlık yoksa istek yalnızca
-Cookie ile gider ve bunu belirten bir uyarı üretilir; ne başlık ne oturum çerezi varsa
+`UPSTREAM_AUTH_SCHEME`, `UPSTREAM_AUTH_FROM_COOKIE=false`). Başlık yok ve çerezde JWT
+varsa çerezden Authorization üretimi açılır; `UPSTREAM_AUTH_HEADER_MODE=cookie_only`
+seçimi bu başlığı upstream'e göndermez. Ne başlık ne oturum çerezi varsa
 "istek anonim gider" uyarısı çıkar. `referer`'dan da `UPSTREAM_REFERER_PATH` şablonu üretilir.
 
 Kaydedilen hesaplar hesap havuzu tarafından okunur ve istekler aralarında dağıtılır
@@ -428,18 +432,23 @@ RECAPTCHA_PROVIDER=external   # Tek istekte doğrudan token döndüren özel HTT
 ```
 
 Yerel Python kurulumunda `browser` için: `pip install ".[browser]" && playwright install chromium`.
-Gözlenen hedef **reCAPTCHA Enterprise** kullandığından örnek yapılandırmada
-`RECAPTCHA_VERSION=enterprise` ve `RECAPTCHA_ACTION=chat_submit` bulunur. Browser
-sağlayıcı hedef origin'de izole bir bootstrap belgesine `enterprise.js` yükleyip
-`grecaptcha.enterprise.execute()` çağırır. Belge Playwright route ile aynı origin'de
-üretilir; canlı hedef sayfasının Cloudflare/CSP veya diğer script'leri bootstrap'a
-karışmaz. `/recaptcha/enterprise/reload` protobuf isteğini veya Google cookie'lerini
+Örnek yapılandırmada `RECAPTCHA_VERSION=enterprise` ve
+`RECAPTCHA_ACTION=chat_submit` bulunur; bunların hedef entegrasyon için doğru
+olduğu cURL gövdesinden tek başına anlaşılamaz. Browser
+sağlayıcı önce canlı hedef sayfasında token üretmeyi dener; bu başarısızsa hedef
+origin'de Playwright route ile sunulan bir bootstrap belgesine `enterprise.js`
+yükleyip `grecaptcha.enterprise.execute()` çağırır. Canlı sayfa veya bootstrap
+ile token üretilmesi, upstream tarafından kabul edileceğini garanti etmez. `/recaptcha/enterprise/reload` protobuf isteğini veya Google cookie'lerini
 yeniden oynatmaz. Site key public'tir, üretilen CAPTCHA token'ı ise gizli ve kısa ömürlüdür.
 Docker imajı Playwright ve Chromium'u önceden içerir. `external` sağlayıcı tek HTTP
 cevabında doğrudan token döndüren bir uç bekler; standart `createTask`/`getTaskResult`
 akışları ayrıca adaptör gerektirir.
-Upstream token'ı reddederse (403) dinamik sağlayıcıda cache otomatik geçersizleşir ve istek
-**bir kez** yeniden denenir.
+Dinamik sağlayıcı her upstream POST denemesi için ayrı token üretir; token paylaşılmaz.
+Upstream token'ı reddederse dinamik sağlayıcıyla istek **bir kez** yeniden denenir.
+`RECAPTCHA_TOKEN_TTL` geriye dönük uyumluluk için kabul edilir, ancak artık kullanılmaz.
+Statik cURL tokenları kısa ömürlü ve tek kullanımlık olabileceğinden sürekli kullanım için uygun değildir. Aynı POST HTTP hatası aldıktan sonra statik token ile otomatik tekrarlanmaz; hesap devrinde farklı bir statik token varsa devir mümkündür. Ayrı API isteklerinde veya restart sonrasında statik tokenın daha önce kullanıldığı tüm durumlar izlenmez.
+
+Read/write timeout ve bağlantı koptuğunda POST sonucu belirsiz olabileceği için wrapper otomatik olarak yeniden göndermez. Connect/pool hataları ve dinamik/noop sağlayıcılarla bazı HTTP hata yanıtları hâlâ retry edilebilir; HTTP 5xx yanıtı bile işlemin yapılmadığını garanti etmez. Bunu sınırlamak için `RETRY_MAX_ATTEMPTS=1` ayarlayın ve gerekirse özel 409 deployment retry ayarlarını da kapatın. İstemci tarafındaki manuel tekrarlar da çift işleme yol açabilir.
 
 ### Render / Docker
 
