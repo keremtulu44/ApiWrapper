@@ -12,8 +12,13 @@ import re
 from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
-from app.upstream.auth import extract_access_token, looks_like_jwt
+from app.upstream.auth import (
+    extract_access_token,
+    looks_like_jwt,
+    normalize_cookie_header,
+)
 from app.upstream.header_store import format_extra_headers
+from app.upstream.headers import fingerprint_conflicts
 
 
 def normalize_curl(raw: str) -> str:
@@ -307,7 +312,10 @@ def build_settings(
             )
 
     # --- başlıklar
-    cookie = headers.get("cookie", "").strip()
+    # HTML kaçışlı (`&amp;`) çerez metni olduğu gibi saklanırsa hem ayrıştırma
+    # hem upstream'e gönderilen başlık bozulur (kaçışın kendi `;` karakteri
+    # paketi böler). Temizlik burada, tek noktada yapılır.
+    cookie = normalize_cookie_header(headers.get("cookie", "").strip())
     # Yuva tazeleme tam bir kimlik anlık görüntüsüdür: authorization-only yeni
     # cURL'de eski cookie'nin hayatta kalıp başka oturumla karışmasını önle.
     env["UPSTREAM_COOKIE"] = cookie
@@ -340,6 +348,15 @@ def build_settings(
         if value:
             extra_headers[name] = value.replace("\r", " ").replace("\n", " ")
     env["UPSTREAM_EXTRA_HEADERS"] = format_extra_headers(extra_headers)
+
+    # Client Hint başlıkları ile UA aynı cihazdan mı? İki yakalamanın
+    # karışması ya da yanlış cURL kopyalanması burada yakalanır; aksi halde
+    # istek kendi kendisiyle çelişerek gider.
+    conflicts = fingerprint_conflicts(
+        agent or env.get("UPSTREAM_USER_AGENT", ""), extra_headers
+    )
+    for problem in conflicts:
+        warnings.append(f"Cihaz izi çelişkisi: {problem}. Aynı cihazdan tek cURL alın.")
 
     # --- referer yolu (sohbet sayfası şablonu; parmak izi için gönderilir)
     if referer_path := extract_referer_path(headers):

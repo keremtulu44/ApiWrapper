@@ -243,14 +243,20 @@ async def test_slow_older_render_sync_cannot_overwrite_newer_credentials():
     assert stored["UPSTREAM_REFRESH_TOKEN"] == "new-refresh"
 
 
-def test_render_state_restores_after_target_domain_fallback(monkeypatch, tmp_path):
+def test_render_state_restores_when_target_domain_configured(monkeypatch, tmp_path):
+    """Kalıcı durum geri yüklemesi alan adı eşleşmesine bağlıdır.
+
+    Eski test burada `TARGET_DOMAIN` boşken kodun `arena.ai` yazdığını doğruluyordu;
+    o davranış kaldırıldı (hedef alan adı koda gömülmez), bu yüzden test alan adı
+    **ayarlanmış** durumu doğruluyor.
+    """
     from app.core.config import get_settings
     from app.upstream.state_store import remember_seed, save_runtime_state
 
     state_file = tmp_path / "upstream_state.json"
     source = Settings(
         _env_file=None,
-        target_domain="arena.ai",
+        target_domain="upstream.example",
         upstream_cookie="session=persisted",
         upstream_access_token="persistent-access-token",
         upstream_state_file=str(state_file),
@@ -261,15 +267,38 @@ def test_render_state_restores_after_target_domain_fallback(monkeypatch, tmp_pat
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setenv("UPSTREAM_STATE_FILE", str(state_file))
     monkeypatch.setenv("UPSTREAM_CURL", "")
+    monkeypatch.setenv("TARGET_DOMAIN", "upstream.example")
+    monkeypatch.setenv("API_KEYS", "sk-render-test")
+    monkeypatch.setenv("RECAPTCHA_PROVIDER", "noop")
+    get_settings.cache_clear()
+    try:
+        app = create_app()
+        assert app.state.settings.target_domain == "upstream.example"
+        assert app.state.settings.upstream_access_token == "persistent-access-token"
+        assert app.state.settings.upstream_cookie == "session=persisted"
+    finally:
+        get_settings.cache_clear()
+
+
+def test_render_does_not_inject_hardcoded_target_domain(monkeypatch, tmp_path):
+    """`TARGET_DOMAIN` boşken koda gömülü bir alan adı seçilmemeli.
+
+    Sabit bir alan adı, oturum çerezlerinin istenmeyen bir host'a gönderilmesi
+    demektir; ayrıca maskeli alan adı kullanan kurulumu sessizce bozar.
+    """
+    from app.core.config import get_settings
+
+    monkeypatch.setenv("RENDER", "true")
+    monkeypatch.setenv("UPSTREAM_STATE_FILE", str(tmp_path / "state.json"))
+    monkeypatch.setenv("UPSTREAM_CURL", "")
     monkeypatch.setenv("TARGET_DOMAIN", "")
     monkeypatch.setenv("API_KEYS", "sk-render-test")
     monkeypatch.setenv("RECAPTCHA_PROVIDER", "noop")
     get_settings.cache_clear()
     try:
         app = create_app()
-        assert app.state.settings.target_domain == "arena.ai"
-        assert app.state.settings.upstream_access_token == "persistent-access-token"
-        assert app.state.settings.upstream_cookie == "session=persisted"
+        assert app.state.settings.target_domain in {"", "localhost", "127.0.0.1"}
+        assert app.state.settings.upstream_referer_path == "/c/{chat_id}"
     finally:
         get_settings.cache_clear()
 
@@ -282,6 +311,13 @@ def test_telegram_worker_dockerfile_starts_bot_without_a_start_command():
 
 
 def test_render_env_boot_survives_empty_or_cookie_only_upstream_curl(monkeypatch):
+    """Yarım cURL açılışı çökertmez; hedef alan adı yoksa `/readyz` dürüstçe reddeder.
+
+    Eski davranış, hedef alan adı boşken koda gömülü bir alan adı (`arena.ai`)
+    seçiyordu ve bu yüzden `/readyz` 200 dönüyordu. Sabit alan adı kaldırıldı:
+    istekler yanlış host'a (ve oturum çerezleriyle birlikte) gitmesin diye
+    `not_ready` doğru cevaptır (`docs/AUDIT_2026_11.md` §3 ile aynı kural).
+    """
     monkeypatch.setenv("RENDER", "true")
     monkeypatch.setenv("RECAPTCHA_PROVIDER", "browser")
     monkeypatch.setenv(
@@ -294,8 +330,12 @@ def test_render_env_boot_survives_empty_or_cookie_only_upstream_curl(monkeypatch
     try:
         app = create_app()
         with TestClient(app) as client:
+            health = client.get("/healthz")
             ready = client.get("/readyz")
-        assert ready.status_code == 200, ready.text
+        assert health.status_code == 200
+        assert ready.status_code == 503, ready.text
+        assert "target_domain_not_configured" in ready.text
+        # Çerez yine de yüklendi: kullanıcı cURL'ü tamamlayınca hemen çalışır.
         assert "arena-auth-prod-v1.0" in app.state.settings.upstream_cookie
     finally:
         get_settings.cache_clear()

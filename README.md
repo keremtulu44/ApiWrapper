@@ -33,6 +33,7 @@ Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damg
 |---|---|---|
 | **Büyük Resim & 3 Katman** | **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)** | Neden saat başı cURL gerekmez? Hangi değer sabit, hangisi döner, sistem nasıl kendi kendine yeniler? |
 | **Çerez Ömrü & Otomatik Refresh** | **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)** | `refresh_token` rotasyonu, `apikey` otomatik keşfi, parçalı çerez (`.0`/`.1`) yeniden yazımı ve 401 kurtarma |
+| **Yakalama Zaman Çizelgesi (ölçüm)** | **[`docs/CAPTURE_TIMELINE.md`](docs/CAPTURE_TIMELINE.md)** | Üç cURL'ün zaman sırasına göre farkı: hangi değer istek / sayfa / giriş / deploy başına döner; ölçülen `expires_in` (3600 → 1200 s) |
 | **Free Render Kurulumu** | **[`docs/RENDER.md`](docs/RENDER.md)** | `UPSTREAM_CURL`, `RENDER_API_KEY` ile restart sonrası kalıcılık, uyku davranışı ve gömülü Telegram botu |
 | **Telefondan Yönetim** | **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** | Bilgisayar yokken `/tani`, `/token`, `/apikey`, `/yenile`, `/cookie` ve `/curl` komutları |
 | **Arıza & Teşhis Sözlüğü** | **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** | 401 / 403 / 409 / 429 hata kodlarının anlamı ve otomatik kurtarma kademeleri |
@@ -90,6 +91,44 @@ make run                  # http://localhost:8000/docs
 > `config/models.yaml` üzerinden okunur. Örnek ayar son cURL'deki
 > `/nextjs-api/stream/create-evaluation` yolunu kullanır. Hedef değişirse yolu yeni
 > cURL'den içe aktarın; yanlış yol upstream **HTTP 404** üretir.
+
+### `.env` denetimi
+
+Değer değiştirip hiçbir şeyin değişmediği durum neredeyse her zaman **okunmayan
+bir addan** kaynaklanır: `Settings` bilinmeyen adı sessizce yok sayar. Denetim
+betiği dosyayı uygulamanın gerçek alanlarıyla karşılaştırır ve yalnız durum
+bildirir (gizli değer yazdırmaz):
+
+```bash
+python -m scripts.env_audit .env          # metin
+python -m scripts.env_audit .env --json   # makine okunur
+python -m scripts.env_audit .env --strict # ölü/yer tutucu/ezilen varsa çıkış 1
+```
+
+Çıktı beş bölümdür: **ölü anahtarlar** (yakın doğru ad varsa önerilir),
+**yer tutucu gizliler**, **sabitlenmemesi gerekenler** (istek/oturum başına
+üretilen `cx` ve statik captcha token'ı gibi), **birbirini ezen anahtarlar**
+(`UPSTREAM_CURL` açılışta `UPSTREAM_COOKIE`'yi ezer) ve **katman eksikleri**
+(`/v1/admin/auth` ile aynı karar katmanından gelir).
+
+Sıfırdan dolduruyorsan hazır dosyayı kopyala — beş satır doldurulacak, gerisi hazır:
+
+```bash
+cp env.mobile.example .env
+$EDITOR .env    # TARGET_DOMAIN, API_KEYS, ADMIN_API_KEYS, UPSTREAM_USER_AGENT, UPSTREAM_CURL
+python -m scripts.env_audit .env
+```
+
+`env.mobile.example` üretilir (`python -m scripts.env_template --env --out env.mobile.example`),
+elle düzenlenmez; üç bölümden oluşur: **doldur**, **hazır (mobil profil)**, **boş bırak / yazma**.
+
+Tam liste (150 anahtar, alfabetik, her satırda "ne yazacaksın") için
+[`docs/ENV_FULL.md`](docs/ENV_FULL.md). O dosya üretilir, elle düzenlenmez:
+
+```bash
+python -m scripts.env_template          # docs/ENV_FULL.md'yi yeniler
+python -m scripts.env_template --env    # kopyalanabilir .env iskeleti
+```
 
 ---
 

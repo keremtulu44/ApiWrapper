@@ -248,6 +248,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     from_env = settings is None
     settings = settings or get_settings()
     upstream_curl_model_id: str | None = None
+    #: `UPSTREAM_CURL` doluysa başlangıçta çerez/alan adı **ondan** okunur ve
+    #: ayrı verilen `UPSTREAM_COOKIE` / `TARGET_DOMAIN` değerlerinin üzerine
+    #: yazar. Bu sessiz üstünlük, "yeni çerez verdim ama hiçbir şey değişmedi"
+    #: şikâyetinin kaynağıydı; artık uyarı loglanır.
+    declared_cookie = (settings.upstream_cookie or "").strip()
     if from_env:
         try:
             settings, upstream_curl_model_id = apply_upstream_curl(settings)
@@ -265,20 +270,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     else:
         settings, upstream_curl_model_id = apply_upstream_curl(settings)
 
+    if from_env and declared_cookie and (settings.upstream_cookie or "").strip() != declared_cookie:
+        logger.warning(
+            "upstream_cookie_shadowed_by_curl",
+            hint=(
+                "UPSTREAM_CURL dolu olduğu için UPSTREAM_COOKIE yok sayıldı; "
+                "çerezi tek yerden yönetin (ya cURL'ü ya bu alanı güncelleyin)."
+            ),
+        )
+
     if from_env and (
         os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID")
     ):
         target = (settings.target_domain or "").strip().lower()
         if target in {"", "localhost", "127.0.0.1"}:
-            settings.target_domain = "arena.ai"
-            if settings.upstream_referer_path == "/c/{chat_id}":
-                settings.upstream_referer_path = "/text/direct"
+            # Hedef alan adı KODA GÖMÜLMEZ (config.py modül kuralı). Burada bir
+            # ara `arena.ai` yazılıydı: TARGET_DOMAIN ve UPSTREAM_CURL boşken
+            # istekler (ve oturum çerezleri) sessizce o alan adına gidiyordu.
+            # Aynı hata, maskeli alan adı kullanan kurulumda kimlik bilgisini
+            # yanlış host'a göndermek demek. Artık uyarı verilir ve `/readyz`
+            # not_ready döner; sessiz yönlendirme yok.
+            logger.warning(
+                "target_domain_missing_on_render",
+                target_domain=settings.target_domain or "(empty)",
+                hint=(
+                    "TARGET_DOMAIN (şemasız, ör. example.com) veya UPSTREAM_CURL "
+                    "ayarlanmalı. Bu hâlde upstream istekleri atılmaz."
+                ),
+            )
         keys = [k.strip() for k in settings.api_keys if k.strip()]
         if not keys or keys == ["sk-local-dev-key"]:
             settings.api_keys = [f"sk-render-{secrets.token_urlsafe(24)}"]
 
-    # Render'ın domain fallback'i önce uygulanmalı: aksi hâlde TARGET_DOMAIN
-    # boşken kalıcı durum "localhost != arena.ai" nedeniyle geri yüklenemez.
+    # Kalıcı durum geri yüklemesi alan adı eşleşmesine bakar; bu yüzden
+    # TARGET_DOMAIN (veya UPSTREAM_CURL) geri yüklemeden ÖNCE belirlenmiş olmalı.
     restore_runtime_state(settings)
     # Kalıcı snapshot, başlangıç cURL'ünden daha yeni olabilir. Registry de
     # restore sonrası kazanan snapshot'ın modelini kullanmalıdır.

@@ -119,6 +119,44 @@ NEVER_TOKEN_COOKIES = frozenset(
 )
 
 
+#: Tarayıcı arayüzünden (DevTools → HTML görünümü, panoya kopyalayan eklentiler)
+#: alınan çerez metinlerinde ``&`` karakteri ``&amp;`` olarak kaçışlanmış olabilir.
+#: Bu kaçış **kendi içinde noktalı virgül taşıdığı** için temizlenmezse çerez
+#: ayrıştırıcı ortadan böler: ``_dd_s=aid=...&amp;rum=2&amp;id=...`` tek çerez
+#: olmaktan çıkıp ``_dd_s``/``rum``/``id``/``created``/``expire``/``logs`` adlı
+#: altı sahte çerez üretir. Gerçek bir Cookie başlığında ``&`` düz karakterdir;
+#: bu yüzden kaçış, bölme işleminden **önce** çözülür.
+_HTML_ENTITIES: tuple[tuple[str, str], ...] = (
+    ("&amp;", "&"),
+    ("&#38;", "&"),
+    ("&#x26;", "&"),
+    ("&quot;", '"'),
+    ("&#39;", "'"),
+    ("&#x27;", "'"),
+    ("&apos;", "'"),
+)
+
+
+def _unescape_cookie_entities(raw: str) -> str:
+    """Çerez metnindeki HTML kaçışlarını çözer (``&amp;`` → ``&``)."""
+    if "&" not in raw:
+        return raw
+    for entity, plain in _HTML_ENTITIES:
+        if entity in raw:
+            raw = raw.replace(entity, plain)
+    return raw
+
+
+def normalize_cookie_header(raw: str) -> str:
+    """HTML kaçışlı çerez metnini düz `Cookie` başlığına çevirir.
+
+    Upstream'e giden başlık için de gerekir: kaçışın kendi noktalı virgülü,
+    sunucu tarafındaki çerez ayrıştırmasını da bozar ve tek çerez yerine birkaç
+    sahte çerez okunur.
+    """
+    return _unescape_cookie_entities(raw or "")
+
+
 def parse_cookie_header(raw: str, *, decode_values: bool = True) -> dict[str, str]:
     """Ham `Cookie` başlığını ad→değer sözlüğüne çevirir.
 
@@ -126,12 +164,16 @@ def parse_cookie_header(raw: str, *, decode_values: bool = True) -> dict[str, st
     adsız parçalar yok sayılır. Aynı ad birden çok kez geçerse ilki korunur
     (tarayıcı davranışıyla uyumlu olarak en özgül çerez genelde başta gelir).
 
+    HTML kaçışlı girdi (``&amp;``) bölmeden önce düzeltilir; aksi halde kaçışın
+    kendi noktalı virgülü çerez paketini parçalar.
+
     URL-encoded (``%XX``) değerler tek seviye çözülür; JWT/base64 değerleri bu
     dönüşümden etkilenmez (alfabeleri güvenli aralıktadır).
     """
     cookies: dict[str, str] = {}
     if not raw:
         return cookies
+    raw = _unescape_cookie_entities(raw)
     for part in raw.split(";"):
         part = part.strip()
         if not part or "=" not in part:

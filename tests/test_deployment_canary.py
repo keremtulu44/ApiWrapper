@@ -788,3 +788,22 @@ def test_409_then_user_not_found_is_reported_as_session_dead():
     # ekstra ısıtma yok: oturum ölüyse bu istek boşa gider.
     assert page_gets == ["/", "/"]
     assert "/c/chat-1" not in page_gets
+
+
+def test_canary_replaces_stamp_configured_with_mixed_case_header_name():
+    """`UPSTREAM_EXTRA_HEADERS` elle yazıldığında başlık adı karışık olabilir.
+
+    Canarya taze değeri okuyup yazamadığında istek donmuş damgayla gidiyor ve
+    upstream 409 `refresh_required` döndürüyordu; teşhis ise yanlış katmana
+    (CAPTCHA token'ı) kayıyordu.
+    """
+    settings = make_settings(
+        upstream_extra_headers="X-Arena-Web-Deployment=dpl_old0000000000;X-Deployment-Id=dpl_old0000000000"
+    )
+    headers = build_stream_headers(settings, "chat-1", deployment_id=NEW_STAMP)
+
+    assert headers["X-Arena-Web-Deployment"] == NEW_STAMP
+    assert headers["X-Deployment-Id"] == NEW_STAMP
+    # Anahtarın yazımı korunur; yeni bir kopya eklenmez.
+    lowered = [name.lower() for name in headers if "deployment" in name.lower()]
+    assert sorted(lowered) == ["x-arena-web-deployment", "x-deployment-id"]
