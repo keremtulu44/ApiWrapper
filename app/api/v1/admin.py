@@ -70,6 +70,52 @@ async def reset_account_cooldown(
     return {"slot": slot, "name": account.label, "cooldown_remaining_seconds": 0.0}
 
 
+@router.post(
+    "/upstream/login",
+    summary="Kalıcı tarayıcı oturumunu tazele",
+)
+async def refresh_upstream_login(request: Request) -> dict[str, Any]:
+    """Sunucudaki kalıcı tarayıcı oturumunu yeniler ve çerezi ayarlara yazar.
+
+    CAPTCHA'ya **dokunmaz**: `recaptcha_provider` ve `recaptcha_static_token`
+    olduğu gibi kalır. Yalnızca `upstream_cookie` / `upstream_access_token` /
+    `upstream_refresh_token` alanları güncellenir.
+
+    `UPSTREAM_LOGIN_ENABLED=false` ise ya da e-posta/şifre eksikse 400 döner.
+    """
+    from app.upstream.browser_login import login_configured, missing_login_config
+
+    settings = request.app.state.settings
+    keeper = getattr(request.app.state, "session_keeper", None)
+
+    if not settings.upstream_login_enabled:
+        raise InvalidRequestError(
+            "Kalıcı tarayıcı girişi kapalı. UPSTREAM_LOGIN_ENABLED=true yapın.",
+            param="UPSTREAM_LOGIN_ENABLED",
+        )
+    missing = missing_login_config(settings)
+    if missing:
+        raise InvalidRequestError(
+            "Giriş yapılandırması eksik: " + ", ".join(missing),
+            param=missing[0],
+        )
+    if keeper is None or not login_configured(settings):
+        raise InvalidRequestError(
+            "Tarayıcı giriş görevi bu süreçte başlatılmadı; servisi yeniden başlatın.",
+            param="UPSTREAM_LOGIN_ENABLED",
+        )
+
+    status = await keeper.refresh(reason="manual")
+    return {
+        "status": status.as_dict() if hasattr(status, "as_dict") else status.__dict__,
+        "stats": keeper.stats,
+        "note": (
+            "Çerez güncellendi; CAPTCHA ayarları değişmedi. Yeni çerez yalnızca "
+            "bellekte ve yerel durum dosyasında tutulur."
+        ),
+    }
+
+
 @router.post("/sessions/clear", summary="Clear cached upstream sessions")
 async def clear_sessions(sessions: SessionManager = Depends(get_sessions)) -> dict[str, Any]:
     before = await sessions.size()

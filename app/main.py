@@ -29,6 +29,7 @@ from app.services.model_registry import ModelEntry, ModelRegistry
 from app.services.recaptcha import create_recaptcha_provider
 from app.services.session_manager import SessionManager
 from app.telegram.bot import TelegramSettings, run_from_settings
+from app.upstream.browser_login import SessionKeeper, login_configured, run_session_keeper
 from app.upstream.client import UpstreamClient
 from app.upstream.curl_runtime import apply_upstream_curl
 
@@ -158,6 +159,26 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             _run_embedded_telegram(telegram_settings), name="telegram-bot"
         )
 
+    # Kalıcı tarayıcı girişi: platform oturumu ~3 saatte düştüğü için
+    # çerezi bu görev tazeler. CAPTCHA'ya dokunmaz (static kalır).
+    keeper_task: asyncio.Task[None] | None = None
+    app.state.session_keeper = SessionKeeper(settings) if login_configured(settings) else None
+    if app.state.session_keeper is not None:
+        keeper_task = asyncio.create_task(
+            run_session_keeper(
+                settings,
+                keeper=app.state.session_keeper,
+                interval_seconds=settings.upstream_login_interval_seconds,
+            ),
+            name="browser-login",
+        )
+        logger.info("upstream_login_keeper_started")
+    elif settings.upstream_login_enabled:
+        logger.warning(
+            "upstream_login_not_configured",
+            hint="UPSTREAM_LOGIN_EMAIL / UPSTREAM_LOGIN_PASSWORD eksik.",
+        )
+
     keepalive_task: asyncio.Task[None] | None = None
     if settings.upstream_keepalive_interval_seconds > 0:
         # Aynı görev hem canlılık denemesi hem teşhis/bildirim kaynağıdır.
@@ -177,6 +198,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if keeper_task is not None:
+            keeper_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await keeper_task
+            with contextlib.suppress(Exception):
+                await app.state.session_keeper.shutdown()
         if keepalive_task is not None:
             keepalive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

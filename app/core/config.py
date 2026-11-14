@@ -84,6 +84,8 @@ class Settings(BaseSettings):
     upstream_cookie: str = ""
     #: Doğrudan bearer token. Verilirse çerezden ayıklamaya gerek kalmaz (en yüksek öncelik).
     upstream_access_token: str = ""
+    #: Çerezden okunan yenileme anahtarı (kalıcı tarayıcı girişi yazar).
+    upstream_refresh_token: str = ""
     #: Cookie içinden `access_token` ayıklanıp `Authorization: Bearer` olarak eklensin mi?
     #: Varsayılan False: tarayıcı cURL'inde bu başlık yoksa eklemek parmak izini bozar.
     #: Hedef 401 döndürüyorsa true yapın.
@@ -390,6 +392,30 @@ class Settings(BaseSettings):
 
     def referer_url(self, chat_id: str) -> str:
         return self._join_url(self.base_url, self.upstream_referer_path, chat_id)
+
+    # ------------------------------------------- kalıcı tarayıcı girişi
+    #: Sunucudaki Chromium siteye mail+şifre ile girip çerezi tazelesin mi?
+    #: Platform oturumu ~3 saatte düşürdüğü için bunu açmak elle cURL
+    #: kopyalama ihtiyacını kaldırır. Varsayılan kapalı: RAM ve giriş
+    #: bilgisi gerektirir.
+    upstream_login_enabled: bool = False
+    #: Siteye giriş e-postası (secret değil).
+    upstream_login_email: str = ""
+    #: Site giriş şifresi. Yalnız env'den okunur, loglanmaz.
+    upstream_login_password: str = ""
+    #: Giriş ekranının yolu (ör. `/login`). Boşsa hedef kökü kullanılır.
+    upstream_login_path: str = ""
+    #: Çerez kontrol/tazeleme aralığı (saniye).
+    upstream_login_interval_seconds: float = 600.0
+    #: Kalıcı Chromium profil dizini (Render'da disk kalıcı değil, boş bırakın).
+    upstream_browser_profile_dir: str = ""
+
+    def login_url(self) -> str:
+        """Giriş ekranının tam adresi (``UPSTREAM_LOGIN_PATH`` boşsa kök)."""
+        path = (self.upstream_login_path or "").strip()
+        if not path:
+            return self.base_url
+        return self._join_url(self.base_url, path, "")
 
     def parsed_extra_headers(self) -> dict[str, str]:
         out: dict[str, str] = {}
