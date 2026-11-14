@@ -217,3 +217,29 @@ def test_unparseable_value_is_reported_instead_of_crashing(tmp_path: Path) -> No
     assert _kinds(report, "broken") == ["UPSTREAM_CX_SEND"]
     assert report.layer == "config"
     assert "açılmıyor" in report.summary
+
+
+def test_wrapping_quotes_are_stripped_for_every_entry_point() -> None:
+    """Render panosu ve compose tırnakları silmez; başlığa tırnak gitmemeli."""
+    from app.core.config import Settings
+    from app.upstream.headers import build_stream_headers
+
+    settings = Settings(
+        _env_file=None,
+        target_domain='"example.com"',
+        upstream_accept_language='"tr,en;q=0.9,en-GB;q=0.8"',
+        api_keys='"k1,k2"',
+        upstream_user_agent="Mozilla/5.0 (Windows NT 10.0) Chrome/154",
+    )
+
+    assert build_stream_headers(settings, "c1")["accept-language"] == "tr,en;q=0.9,en-GB;q=0.8"
+    assert settings.target_domain == "example.com"
+    assert settings.api_keys == ["k1", "k2"]
+
+
+def test_quotes_inside_a_value_are_left_alone() -> None:
+    from app.core.config import Settings
+
+    settings = Settings(_env_file=None, target_domain='exa"mple.com')
+
+    assert settings.target_domain == 'exa"mple.com'

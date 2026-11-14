@@ -437,6 +437,21 @@ class Settings(BaseSettings):
                 v = v.split("/", 1)[0]
         return v
 
+    @field_validator("*", mode="before")
+    @classmethod
+    def _strip_wrapping_quotes(cls, v: object) -> object:
+        """Değerin etrafındaki tırnakları atar.
+
+        `.env` dosyasında tırnakları `python-dotenv` zaten siler, ama Render
+        panosu ve `docker-compose env_file` silmez: `"tr,en;q=0.9"` yazan
+        kullanıcının isteği upstream'e **tırnaklı** `accept-language` başlığıyla
+        gider ve parmak izi bozulur. Giriş noktası ne olursa olsun aynı sonucu
+        vermek için tırnak soyma tek yerde yapılır.
+        """
+        if isinstance(v, str) and len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            return v[1:-1]
+        return v
+
     @field_validator(*PLACEHOLDER_SECRET_FIELDS, mode="before")
     @classmethod
     def _blank_placeholder_secrets(cls, v: object, info: ValidationInfo) -> object:
