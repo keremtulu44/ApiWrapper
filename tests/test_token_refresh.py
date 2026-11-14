@@ -1164,3 +1164,52 @@ def test_apikey_payload_accepts_force() -> None:
 
     assert UpstreamApiKeyPayload().force is False
     assert UpstreamApiKeyPayload(force=True).force is True
+
+
+def test_refresh_url_source_distinguishes_guess_from_issuer() -> None:
+    from app.upstream.refresh import refresh_url_source
+
+    assert (
+        refresh_url_source(_settings(upstream_refresh_url="https://x.test/token"))
+        == "configured"
+    )
+    assert (
+        refresh_url_source(
+            _settings(
+                upstream_cookie=session_cookie(iss="https://proj.supabase.co/auth/v1"),
+                upstream_refresh_url="",
+            )
+        )
+        == "cookie_iss"
+    )
+    # `iss` yok: adres `{hedef}/auth/v1/token` diye **uyduruluyor**.
+    assert (
+        refresh_url_source(_settings(upstream_cookie=session_cookie(), upstream_refresh_url=""))
+        == "base_url_guess"
+    )
+
+
+@pytest.mark.asyncio
+async def test_guessed_refresh_url_is_flagged_in_the_failure_text() -> None:
+    """`iss` yokken gelen 401'i "kimlik sorunu" diye sunmak yanıltıcıydı."""
+    settings = _settings(upstream_cookie=session_cookie(), upstream_refresh_url="")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(401, json={"message": "Unauthorized"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        outcome = await refresh_upstream_token(settings, client)
+
+    assert outcome.ok is False
+    assert "tahmin edildi" in outcome.detail
+    assert "UPSTREAM_REFRESH_URL" in outcome.detail
+
+    # Adres `iss`'ten geliyorsa bu uyarı olmamalı.
+    issued = _settings(
+        upstream_cookie=session_cookie(iss="https://proj.supabase.co/auth/v1"),
+        upstream_refresh_url="",
+    )
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        outcome = await refresh_upstream_token(issued, client)
+
+    assert "tahmin edildi" not in outcome.detail

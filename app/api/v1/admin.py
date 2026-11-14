@@ -533,16 +533,15 @@ async def capture_upstream_session(
 def _refresh_diagnostics(settings: Settings) -> dict[str, Any]:
     """Yenileme uç noktası + apikey durumu (gizli değer yok, yalnız ölçü)."""
     from app.services.token_refresh import refresh_state
-    from app.upstream.refresh import derive_refresh_url, failure_host
+    from app.upstream.refresh import derive_refresh_url, failure_host, refresh_url_source
 
     endpoint = derive_refresh_url(settings)
     api_key = (settings.upstream_refresh_api_key or "").strip()
     return {
         "url_host": failure_host(endpoint),
         "url_path": urlsplit(endpoint).path if endpoint else "",
-        "derived_from": (
-            "configured" if (settings.upstream_refresh_url or "").strip() else "cookie_iss"
-        ),
+        "derived_from": refresh_url_source(settings),
+        "derived_from_is_guess": refresh_url_source(settings) in {"base_url_guess", "unknown"},
         "api_key_configured": bool(api_key),
         "api_key_length": len(api_key),
         "api_key_prefix": api_key[:6] + "…" if api_key else "",

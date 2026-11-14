@@ -21,6 +21,38 @@ kontrolü, onlar da senin trafiğin değil.
 Yani "istek atmadım ama log akıyor" normal. Akışın sebebi: yenileme başarısız
 olduğu için eşik altında kalıyor ve döngü her dakika tekrar deniyor.
 
+## "Supabase" adı nereden geliyor?
+
+Hiçbir yerde Supabase'e bağlanılmıyor. Kod, yenileme için şu adresi kullanıyor:
+
+```
+POST {base}/auth/v1/token?grant_type=refresh_token
+{"refresh_token": "..."}
+```
+
+Bu, Supabase'e ait GoTrue kimlik sunucusunun sözleşmesi. Adres üç kaynaktan biriyle
+belirlenir (`/v1/admin/config` → `upstream_refresh`):
+
+| `derived_from` | Anlamı | Güvenilirlik |
+|---|---|---|
+| `configured` | `UPSTREAM_REFRESH_URL` açıkça yazılmış | kesin |
+| `cookie_iss` | access token'ın `iss` alanı: token'ı veren sunucu | kesin |
+| `base_url_guess` | ikisi de yok; `{hedef}/auth/v1/token` **tahmin edildi** | tahmin |
+
+`base_url_guess` durumunda gelen 401, kimlikle değil "böyle bir uç yok" ile
+ilgili olabilir. Bu yüzden hata cümlesi artık bunu açıkça söylüyor ve
+`/v1/admin/config` `derived_from_is_guess: true` döndürüyor.
+
+Tahminse iki seçenek:
+
+```bash
+# 1) gerçek yenileme ucunu yaz
+UPSTREAM_REFRESH_URL=https://<gerçek-host>/auth/v1/token?grant_type=refresh_token
+
+# 2) otomatik yenilemeyi kapat, taze çerezle çalış
+UPSTREAM_REFRESH_ENABLED=false
+```
+
 ## 401'in sebebi: eksik `apikey` başlığı
 
 Upstream bir **Supabase/GoTrue** kimlik sunucusu. GoTrue, `/auth/v1/token`

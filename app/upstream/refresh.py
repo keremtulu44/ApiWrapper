@@ -394,6 +394,33 @@ def derive_refresh_url(settings: Settings, *, slot: int = 1) -> str:
     return ""
 
 
+def refresh_url_source(settings: Settings, *, slot: int = 1) -> str:
+    """Yenileme adresinin **nereden** geldiğini söyler.
+
+    * ``configured`` — `UPSTREAM_REFRESH_URL` açıkça yazılmış (güvenilir).
+    * ``cookie_iss`` — çerezdeki JWT'nin `iss` alanı (token'ı veren sunucu).
+    * ``base_url_guess`` — ikisi de yok; hedefin kendi host'unda `/auth/v1`
+      **tahmin edildi**. Bu durumda 401, "apikey" ya da "kimlik" değil,
+      "böyle bir uç yok" anlamına gelebilir. Tanılamada bu ayrım şart.
+    """
+    if (settings.upstream_refresh_url or "").strip():
+        return "configured"
+    cookie = _slot_cookie(settings, slot)
+    cookie_names = _slot_cookie_names(settings, slot)
+    token = extract_access_token(cookie, cookie_names=cookie_names)
+    if token and str(decode_jwt_claims(token).get("iss") or ""):
+        return "cookie_iss"
+    for _, payload in _session_entries(parse_cookie_header(cookie)):
+        candidate = extract_access_token(
+            json.dumps({k: v for k, v in payload.items() if isinstance(v, str)})
+        )
+        if candidate and str(decode_jwt_claims(candidate).get("iss") or ""):
+            return "cookie_iss"
+    if urlsplit(settings.base_url).netloc:
+        return "base_url_guess"
+    return "unknown"
+
+
 def cookie_refresh_token(settings: Settings, *, slot: int = 1) -> str:
     """Çerezden (yoksa ayarlardan) refresh token'ı döndürür."""
     from_cookie = extract_refresh_token(
@@ -611,6 +638,14 @@ async def _refresh_upstream_token_locked(
 
         if response.status_code != 200 or not payload.get("access_token"):
             detail = _describe_failure(response.status_code, payload, endpoint)
+            url_source = refresh_url_source(settings, slot=slot)
+            if url_source in {"base_url_guess", "unknown"}:
+                detail += (
+                    " Dikkat: yenileme adresi **tahmin edildi** (çerezde `iss` yok);"
+                    " hedefin `/auth/v1/token` ucu yoksa bu 401 kimlikle ilgili"
+                    " değildir. UPSTREAM_REFRESH_URL ayarlayın ya da"
+                    " UPSTREAM_REFRESH_ENABLED=false yapıp taze çerez kullanın."
+                )
             logger.warning(
                 "upstream_token_refresh_rejected",
                 status_code=response.status_code,
@@ -618,6 +653,7 @@ async def _refresh_upstream_token_locked(
                 slot=slot,
                 reason=failure_code(response.status_code, payload),
                 upstream_message=safe_message(payload),
+                url_source=url_source,
                 apikey_configured=bool(api_key),
                 apikey_discovered="apikey otomatik keşfedildi" in notes,
             )
