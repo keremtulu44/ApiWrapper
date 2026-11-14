@@ -187,3 +187,25 @@ def test_report_json_is_serialisable_and_carries_no_secrets() -> None:
 
     assert payload["base"] == "http://test"
     assert payload["ok"] is True
+
+
+def test_unreachable_host_does_not_crash_the_report() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("[Errno 111] Connection refused", request=request)
+
+    report = run("http://dead", api_key="k", client=_client(handler))
+
+    assert report.exit_code == 1
+    assert [check.name for check in report.checks] == ["healthz"]
+    assert "bağlantı kurulamadı" in report.checks[0].detail
+    assert "Render" in report.checks[0].hint
+
+
+def test_non_json_admin_body_is_a_warning_not_a_traceback() -> None:
+    client = _client(lambda request: httpx.Response(200, text="<html>proxy</html>"))
+
+    with client:
+        check = check_admin_auth(client, "http://test", "k")
+
+    assert check.status == "warn"
+    assert "JSON" in check.detail

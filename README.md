@@ -149,6 +149,8 @@ takılınan adımda çıkış kodu 1.
 > **Not:** `/v1/admin/*` önce `API_KEYS` doğrulamasından geçer. `ADMIN_API_KEYS`
 > içine yazdığın anahtar `API_KEYS` listesinde de olmalı; yoksa 401 alırsın
 > (açılışta `admin_keys_not_in_api_keys` uyarısı loglanır).
+>
+> Klonlamadan, tek dosyayla çalıştırma ve `curl` karşılıkları: [docs/LOCAL_TESTING.md](docs/LOCAL_TESTING.md).
 
 ---
 

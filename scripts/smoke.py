@@ -114,6 +114,29 @@ def _layer_for(status: int) -> tuple[str, str]:
     return STATUS_LAYERS.get(status, ("unknown", f"Beklenmeyen HTTP {status}."))
 
 
+def _connect_error(name: str, exc: httpx.HTTPError) -> Check:
+    """Ağ hatasını (yanlış adres, uyuyan servis, DNS) anlaşılır Check'e çevirir."""
+    return Check(
+        name,
+        "fail",
+        f"bağlantı kurulamadı ({type(exc).__name__})",
+        hint=(
+            f"{str(exc)[:160]} — adres doğru mu, servis uyanık mı (Render ücretsiz "
+            "plan uyuyabilir), ağ/VPN engelliyor mu? Tarayıcıda /healthz açılıyor mu?"
+        ),
+    )
+
+
+def _run_step(report: Report, name: str, step: Any) -> Check:
+    """Bir adımı çalıştırır; ağ/DNS hatasında raporu çökertmeden Check döner."""
+    try:
+        result: Check = step()
+    except httpx.HTTPError as exc:
+        result = _connect_error(name, exc)
+    report.checks.append(result)
+    return result
+
+
 def _body_text(response: httpx.Response, limit: int = 300) -> str:
     text = response.text or ""
     text = " ".join(text.split())
@@ -164,7 +187,15 @@ def check_admin_auth(client: httpx.Client, base: str, admin_key: str) -> Check:
         _layer, why = _layer_for(response.status_code)
         return Check("admin_auth", "fail", f"HTTP {response.status_code}", hint=why)
 
-    payload = response.json()
+    try:
+        payload = response.json()
+    except ValueError:
+        return Check(
+            "admin_auth",
+            "warn",
+            "200 ama gövde JSON değil",
+            hint=_body_text(response, 160),
+        )
     verdict = payload.get("verdict") or {}
     layer = str(verdict.get("layer") or "unknown")
     summary = str(verdict.get("summary") or "(özet yok)")
@@ -277,16 +308,20 @@ def run(
     owns_client = client is None
     client = client or httpx.Client(timeout=60.0, follow_redirects=True)
     try:
-        report.checks.append(check_healthz(client, base))
-        if report.checks[-1].failed:
+        health = _run_step(report, "healthz", lambda: check_healthz(client, base))
+        if health.failed:
             return report
-        report.checks.append(check_readyz(client, base))
-        report.checks.append(check_admin_auth(client, base, admin_key or api_key))
+        _run_step(report, "readyz", lambda: check_readyz(client, base))
+        _run_step(
+            report,
+            "admin_auth",
+            lambda: check_admin_auth(client, base, admin_key or api_key),
+        )
         if not chat:
             return report
-        report.checks.append(check_chat(client, base, api_key, model))
+        _run_step(report, "chat", lambda: check_chat(client, base, api_key, model))
         if stream:
-            report.checks.append(check_stream(client, base, api_key, model))
+            _run_step(report, "stream", lambda: check_stream(client, base, api_key, model))
     finally:
         if owns_client:
             client.close()
