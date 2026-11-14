@@ -242,6 +242,25 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("application_stopped")
 
 
+def _warn_admin_keys_outside_api_keys(settings: Settings) -> None:
+    """`API_KEYS` içinde olmayan admin anahtarlarını uyarır (yoksa 401 alırlar)."""
+    admin = [key.strip() for key in settings.admin_api_keys if key.strip()]
+    if not admin:
+        return
+    api = {key.strip() for key in settings.api_keys if key.strip()}
+    missing = [key for key in admin if key not in api]
+    if not missing:
+        return
+    logger.warning(
+        "admin_keys_not_in_api_keys",
+        count=len(missing),
+        hint=(
+            "ADMIN_API_KEYS içindeki her anahtar API_KEYS listesinde de olmalı; "
+            "aksi halde /v1/admin/* uçları 401 döner (önce API anahtarı doğrulanır)."
+        ),
+    )
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Uygulamayı oluşturur (testler kendi Settings'ini geçebilir)."""
     from_env = settings is None
@@ -268,6 +287,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             logger.warning("upstream_curl_startup_fallback", detail=str(exc))
     else:
         settings, upstream_curl_model_id = apply_upstream_curl(settings)
+
+    #: `ADMIN_API_KEYS` yalnız ek yetki kapısıdır: `/v1/admin/*` önce normal
+    #: `API_KEYS` doğrulamasından geçer. Buraya yazılıp `API_KEYS`'te olmayan
+    #: bir anahtar her istekte 401 alır ve operatör anahtarı yanlış yerde arar.
+    _warn_admin_keys_outside_api_keys(settings)
 
     if from_env and declared_cookie and (settings.upstream_cookie or "").strip() != declared_cookie:
         logger.warning(

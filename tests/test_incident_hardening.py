@@ -436,3 +436,46 @@ def test_metrics_can_require_an_api_key():
         ok = client.get("/metrics", headers={"Authorization": f"Bearer {TEST_API_KEY}"})
         assert ok.status_code == 200
         assert "apiwrapper_requests_total" in ok.text
+
+
+def test_admin_keys_outside_api_keys_warn_at_startup(monkeypatch) -> None:
+    """`ADMIN_API_KEYS`'te olup `API_KEYS`'te olmayan anahtar 401 alır; uyarılmalı."""
+    import app.main as main_module
+    from tests.conftest import make_settings
+
+    seen: list[str] = []
+
+    class _Logger:
+        def warning(self, event: str, **kwargs):
+            seen.append(event)
+
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(main_module, "logger", _Logger())
+    settings = make_settings(api_keys="client-key", admin_api_keys="client-key,admin-only")
+
+    main_module._warn_admin_keys_outside_api_keys(settings)
+
+    assert seen == ["admin_keys_not_in_api_keys"]
+
+
+def test_admin_keys_inside_api_keys_do_not_warn(monkeypatch) -> None:
+    import app.main as main_module
+    from tests.conftest import make_settings
+
+    seen: list[str] = []
+
+    class _Logger:
+        def warning(self, event: str, **kwargs):
+            seen.append(event)
+
+        def __getattr__(self, name):
+            return lambda *a, **k: None
+
+    monkeypatch.setattr(main_module, "logger", _Logger())
+    settings = make_settings(api_keys="a-key,b-key", admin_api_keys="a-key")
+
+    main_module._warn_admin_keys_outside_api_keys(settings)
+
+    assert seen == []

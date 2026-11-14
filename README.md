@@ -130,6 +130,26 @@ python -m scripts.env_template          # docs/ENV_FULL.md'yi yeniler
 python -m scripts.env_template --env    # kopyalanabilir .env iskeleti
 ```
 
+### Canlı servisi test etme
+
+Telefon/DevTools gerekmez; `scripts/smoke.py` sunucuya karşı çalışır:
+
+```bash
+python -m scripts.smoke --base https://<servis> --key $API_KEY --admin-key $ADMIN_KEY
+python -m scripts.smoke --base https://<servis> --key $API_KEY --stream
+python -m scripts.smoke --base https://<servis> --key $API_KEY --skip-chat   # sadece sağlık
+```
+
+Sırayla `/healthz`, `/readyz`, `/v1/admin/auth` (katman yargısı) ve gerçek bir
+`/v1/chat/completions` isteği atar; yanıt kodlarını katmana çevirir:
+**401** kimlik, **403** anti-bot/CAPTCHA, **404** akış yolu, **409** sürüm
+damgası, **429** kota, **502** hedef alan adı. `--json` ile makine okunur çıktı,
+takılınan adımda çıkış kodu 1.
+
+> **Not:** `/v1/admin/*` önce `API_KEYS` doğrulamasından geçer. `ADMIN_API_KEYS`
+> içine yazdığın anahtar `API_KEYS` listesinde de olmalı; yoksa 401 alırsın
+> (açılışta `admin_keys_not_in_api_keys` uyarısı loglanır).
+
 ---
 
 ## Upstream Kimlik Doğrulama (`Authorization: Bearer`)
