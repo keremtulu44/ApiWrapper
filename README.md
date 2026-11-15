@@ -9,6 +9,26 @@ OpenAI-compatible istemcilerle çalışır.
         ◀──(SSE chat.completion.chunk)──          ◀──(AI SDK data-stream)──
 ```
 
+> ## ⚠️ Önce oku (en sık yapılan 3 hata)
+>
+> **1. Çerezi öldüren şey zaman değil, çakışma.** Çerez **15+ saat** yaşar
+> (ölçüldü). Onu öldüren şey **aynı hesapla tarayıcıda oturum açmaktır** —
+> platform yeni oturumu tek geçerli sayar, sunucudaki çerez iptal olur.
+> `401 User not found` görürsen **hemen cURL arama**, tarayıcıya girmeden bekle;
+> kod 401'de çerezi silmez, genelde kendi kendine döner.
+>
+> **2. `RECAPTCHA_PROVIDER=static` kalıcı.** Sunucudaki Chromium'un ürettiği
+> token reddediliyor (`403 recaptcha validation failed`). Aynı çerez/gövde ile
+> gerçek tarayıcıdan alınan statik token çalışıyor. Ölçüldü, tartışmaya kapalı.
+>
+> **3. "Bildirim aldım" ≠ "oturum öldü".** Bildirim tek başına çerezi bozmaz.
+> Bozan şey **giriş yapmaktır**.
+>
+> Tam liste: **[`docs/INDEX.md`](docs/INDEX.md)** · ölçümler:
+> **[`docs/LESSONS_2026_11_14.md`](docs/LESSONS_2026_11_14.md)**
+
+**Doküman rehberi (buradan başla): [`docs/INDEX.md`](docs/INDEX.md)**
+
 Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** ·
 büyük resim ve 3 çerez katmanı: **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)** ·
 çerez ömrü ve otomatik yenileme: **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)** ·
