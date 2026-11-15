@@ -123,6 +123,7 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `UPSTREAM_AUTH_SCHEME_2` | ↺ 2. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. Varsayılan `Bearer`. | kimlik |
 | `UPSTREAM_AUTH_SCHEME_3` | ↺ 3. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. Varsayılan `Bearer`. | kimlik |
 | `UPSTREAM_AUTH_SCHEME_4` | ↺ 4. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. Varsayılan `Bearer`. | kimlik |
+| `UPSTREAM_BROWSER_PROFILE_DIR` | ⬜ Boş bırak. | upstream |
 | `UPSTREAM_CAPTURED_MODEL_ID` | ⬜ cURL içe aktarılınca kendisi dolar (`modelAId` UUID). Elle yazma. | upstream |
 | `UPSTREAM_COOKIE` | ⬜ `UPSTREAM_CURL` kullanıyorsan boş. Yalnız çerezle gideceksen **tam** `Cookie` başlığı, parçalı `.0/.1` dahil. | kimlik |
 | `UPSTREAM_COOKIE_2` | ⬜ 2. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. | kimlik |
@@ -139,6 +140,11 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `UPSTREAM_KEEPALIVE_MODEL` | ↺ `max` — probe'un kullanacağı model. | keepalive |
 | `UPSTREAM_KEEPALIVE_STREAM_SMOKE_INTERVAL_SECONDS` | ↺ `86400` — günde bir gerçek akış yolu denemesi; `0` = kapalı. | keepalive |
 | `UPSTREAM_LIMIT_MARKERS` | ↺ Örnekteki virgüllü liste. Ayırt edici ibare seç; `rate limit` gibi genel söz yanlış alarm üretir. | upstream |
+| `UPSTREAM_LOGIN_EMAIL` | ⬜ Boş bırak. | upstream |
+| `UPSTREAM_LOGIN_ENABLED` | ↺ `false` — dokunma. | upstream |
+| `UPSTREAM_LOGIN_INTERVAL_SECONDS` | ↺ `600.0` — dokunma. | upstream |
+| `UPSTREAM_LOGIN_PASSWORD` | ⬜ Boş bırak. | upstream |
+| `UPSTREAM_LOGIN_PATH` | ⬜ Boş bırak. | upstream |
 | `UPSTREAM_MODE` | ✅ `direct-battle` — gövdedeki `mode` alanı; cURL'den birebir. | upstream |
 | `UPSTREAM_PROXY` | ⬜ Proxy yoksa boş; varsa `http://kullanici:sifre@host:port`. | upstream |
 | `UPSTREAM_RECAPTCHA_FIELD` | ✅ `recaptchaV3Token` (v2 görürsen `recaptchaV2Token`) — gövdedeki captcha alan adı. | upstream |
@@ -170,5 +176,5 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `WRAPPER_BASE_URL` | ⬜ Aynı serviste çalışıyorsa **yazma**; varsayılan yerel adres kullanılır. | telegram |
 | `WRITE_TIMEOUT` | ↺ `30` sn. | dayanıklılık |
 
-Toplam **151** anahtar: 19 yazılacak, 43 boş, 89 varsayılan/yazma.
+Toplam **157** anahtar: 19 yazılacak, 47 boş, 91 varsayılan/yazma.
 Denetim için: `python -m scripts.env_audit .env`.
