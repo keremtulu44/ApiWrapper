@@ -267,7 +267,16 @@ def merge_env(path: Path, updates: dict[str, str]) -> str:
 
 
 def update_models_yaml(path: Path, upstream_id: str) -> bool:
-    """`models.yaml` içindeki ilk `upstream_id` değerini günceller."""
+    """`models.yaml` içindeki ilk `upstream_id` değerini günceller.
+
+    İlk eşleşme **belge düzeyindeki** ortak satırdır (`config/models.yaml`
+    düzeni): chat/search/image modları aynı modelAId'i miras aldığı için tek
+    satırın güncellenmesi üç modu birden tazeler.
+
+    Değer zaten aynıysa dosyaya yazılmaz ama işlem **başarılı** sayılır. Eski
+    davranış `False` döndürüp "güncellenemedi, elle yazın" uyarısı üretiyordu;
+    operatör doğru durumdaki bir dosyayı elle bozmaya yönlendiriliyordu.
+    """
     if not path.exists():
         return False
     text = path.read_text(encoding="utf-8")
@@ -278,10 +287,11 @@ def update_models_yaml(path: Path, upstream_id: str) -> bool:
         count=1,
         flags=re.MULTILINE,
     )
-    if count and new_text != text:
+    if not count:
+        return False
+    if new_text != text:
         path.write_text(new_text, encoding="utf-8")
-        return True
-    return False
+    return True
 
 
 def main() -> int:
@@ -532,7 +542,8 @@ def main() -> int:
     if model_id and slot == 1:
         models_path = Path(args.models_file)
         if update_models_yaml(models_path, model_id):
-            print(f"{models_path} güncellendi (upstream_id={model_id}).")
+            # Değer zaten aynıysa dosyaya yazılmaz; "güncel" ikisini de karşılar.
+            print(f"{models_path} güncel (upstream_id={model_id}).")
         else:
             print(
                 f"UYARI: {models_path} güncellenemedi; upstream_id={model_id} "

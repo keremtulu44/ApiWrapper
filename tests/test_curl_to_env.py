@@ -230,6 +230,44 @@ def test_update_models_yaml_missing_file_is_reported(tmp_path):
     assert update_models_yaml(tmp_path / "yok.yaml", "x") is False
 
 
+def test_update_models_yaml_already_current_is_not_a_failure(tmp_path):
+    """Değer zaten aynıysa işlem başarılıdır; "elle yazın" uyarısı çıkmaz.
+
+    Eski davranış `False` döndürüyordu ve operatör doğru durumdaki dosyayı
+    elle bozmaya yönlendiriliyordu.
+    """
+    path = tmp_path / "models.yaml"
+    original = "upstream_id: ayni-deger\nmodels:\n  - id: a\n"
+    path.write_text(original, encoding="utf-8")
+    assert update_models_yaml(path, "ayni-deger") is True
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_update_models_yaml_prefers_document_level_shared_id(tmp_path):
+    """İlk eşleşme belge düzeyindeki ortak satırdır; üç mod onu miras alır.
+
+    `config/models.yaml` düzeni bu: modelAId bir kez yazılır, chat/search/image
+    kayıtları miras alır. Böylece tek satırın güncellenmesi üç modu tazeler.
+    """
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "default: max\n"
+        "upstream_id: ESKI\n"
+        "models:\n"
+        "  - id: max\n    modality: chat\n"
+        "  - id: web\n    modality: search\n",
+        encoding="utf-8",
+    )
+    assert update_models_yaml(path, "YENI") is True
+
+    from app.services.model_registry import ModelRegistry
+
+    registry = ModelRegistry.from_file(path)
+    assert registry.resolve("max").upstream_id == "YENI"
+    assert registry.resolve("web").upstream_id == "YENI"
+    assert registry.resolve("web").modality == "search"
+
+
 def test_windows_cmd_curl_format_is_parsed():
     """Windows 'Copy as cURL (cmd)' çıktısı ^ ile kaçış kullanır."""
     curl = 'curl ^"https://x.ai/api^" ^\n  -H ^"cookie: a-auth-token=xyz123456789^"'

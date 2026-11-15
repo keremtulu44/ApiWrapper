@@ -253,6 +253,10 @@ ENTRIES: dict[str, tuple[str, str]] = {
     "TELEGRAM_ALLOWED_CHAT_IDS": (EMPTY, "İlk `/start` chat ID'yi gösterir; sonra buraya yaz."),
     "TELEGRAM_ALERT_CHAT_ID": (EMPTY, "Boşsa allowlist'in ilk kaydı arıza bildirimi hedefi olur."),
     "TELEGRAM_MODEL": (DEFAULT, "`max` — wrapper üzerinden çağrılacak model adı."),
+    "TELEGRAM_WEB_MODEL": (
+        DEFAULT,
+        "`web` — `/web <soru>` komutunun kullanacağı model (models.yaml'da `modality: search`).",
+    ),
     "TELEGRAM_POLL_TIMEOUT": (DEFAULT, "`30` sn."),
     "TELEGRAM_REQUEST_TIMEOUT": (DEFAULT, "`180` sn."),
     "TELEGRAM_MAX_REPLY_CHARS": (DEFAULT, "`12000` — Telegram mesaj bölme sınırı."),
