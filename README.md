@@ -359,6 +359,12 @@ değildir:
 
 `upstream_id` yazılmazsa belge düzeyindeki ortak `modelAId` miras alınır; böylece
 `scripts/curl_to_env.py` tek satırı güncellediğinde **üç mod birden** tazelenir.
+Aynı kural çalışma zamanında da geçerlidir: `UPSTREAM_CURL` ile açılış ve
+`POST /v1/admin/upstream/curl` (Telegram `/curl`) gövdeden çıkan `modelAId`'i
+miras alan kayıtların hepsine yazar — yanıt `models_bound` alanında hangi
+modların bağlandığını listeler. İstek gövdesindeki kimlik kayıt defterinden
+geldiği için bu adım atlanırsa sohbet tazelenirken `web`/`image` dosyadaki bayat
+id'yi gönderir; istemci 200 görür, cevaplayan model yanlış olur.
 Bir mod farklı bir `modelAId` isterse o kayda kendi satırını yaz (kayıt düzeyi
 önceliklidir). Bilinmeyen bir `modality` değeri reddedilmez, yalnızca uyarı
 loglanır: hedef yeni bir mod eklerse kayıt defteri onu olduğu gibi geçirir.

@@ -162,9 +162,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     sessions = SessionManager(settings, warmup=upstream.warmup)
     registry = _load_registry(settings)
     if model_id := app.state.upstream_curl_model_id:
-        entry = registry.resolve(None)
-        entry.upstream_id = model_id
-        logger.info("upstream_curl_model_loaded", model=entry.id)
+        # Aynı modelAId üç modu da taşır: kimlik miras alan kayıtların hepsine
+        # yazılır, yoksa varsayılan model tazelenirken web/image bayat id gönderir.
+        bound = registry.apply_shared_upstream_id(model_id)
+        logger.info("upstream_curl_model_loaded", models=bound)
     accounts = build_account_pool(settings)
 
     app.state.upstream = upstream

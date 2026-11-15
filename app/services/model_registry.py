@@ -50,6 +50,10 @@ class ModelRegistry:
         self._entries: dict[str, ModelEntry] = {}
         self._index: dict[str, ModelEntry] = {}
         self._default_id: str | None = None
+        #: Belge düzeyindeki `upstream_id`'den **miras alan** kayıtlar. Yeni bir
+        #: cURL uygulandığında kimliğin kime yazılacağını bu küme belirler; kendi
+        #: `upstream_id`'sini açıkça taşıyan kayıt burada yoktur ve dokunulmaz.
+        self._inherited_ids: set[str] = set()
         for entry in entries or []:
             self.add(entry)
 
@@ -81,7 +85,8 @@ class ModelRegistry:
             if not isinstance(item, dict):
                 continue
             model_id = str(item.get("id", "")).strip()
-            upstream_id = str(item.get("upstream_id", "")).strip() or shared_upstream_id
+            own_upstream_id = str(item.get("upstream_id", "")).strip()
+            upstream_id = own_upstream_id or shared_upstream_id
             if not model_id or not upstream_id:
                 logger.warning("model_entry_skipped", entry=item)
                 continue
@@ -106,6 +111,8 @@ class ModelRegistry:
                     referer_path=str(item.get("referer_path") or "").strip(),
                 )
             )
+            if not own_upstream_id:
+                registry._inherited_ids.add(model_id)
         default = raw.get("default")
         if default:
             registry.set_default(str(default))
@@ -129,6 +136,42 @@ class ModelRegistry:
             logger.warning("default_model_unknown", model=model_id)
             return
         self._default_id = entry.id
+
+    def apply_shared_upstream_id(self, model_id: str) -> list[str]:
+        """cURL'den çıkan `modelAId`'i ortak kimliği miras alan kayıtlara yazar.
+
+        Gövdedeki kimlik kayıt defterinden gelir (`completion_service` →
+        `entry.upstream_id`); `settings.upstream_captured_model_id` yalnızca
+        teşhistir. Aynı `modelAId` üç modu da taşıdığı için (15 Kasım ölçümü)
+        yeni bir cURL uygulandığında üçünün birden güncellenmesi gerekir —
+        aksi hâlde varsayılan model yeni kimlikle çalışırken `web` ve `image`
+        dosyadaki bayat id'yi gönderir ve hata sessiz kalır.
+
+        Kendi `upstream_id`'sini açıkça yazan kayıt miras almaz, dokunulmaz
+        (bir mod bilinçli olarak farklı bir model kullanabilir).
+
+        Miras bilgisi yoksa — belge düzeyinde kimlik yok ya da kayıt defteri
+        elle kurulmuş — eski davranış korunur: yalnız varsayılan kayıt güncellenir.
+
+        Yeni kimliğe bağlanan model adlarını döndürür (değer zaten aynıysa da
+        listelenir; log "bu kimlik hangi modları taşıyor" sorusuna cevap versin).
+        """
+        new_id = (model_id or "").strip()
+        if not new_id:
+            return []
+        targets = [
+            self._entries[entry_id]
+            for entry_id in self._inherited_ids
+            if entry_id in self._entries
+        ]
+        if not targets:
+            try:
+                targets = [self.resolve(None)]
+            except ModelNotFoundError:
+                return []
+        for entry in targets:
+            entry.upstream_id = new_id
+        return sorted(entry.id for entry in targets)
 
     # ------------------------------------------------------------- lookups
     def resolve(self, model: str | None) -> ModelEntry:

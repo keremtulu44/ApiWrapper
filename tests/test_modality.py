@@ -98,6 +98,53 @@ def test_document_level_upstream_id_is_inherited():
     assert registry.resolve("ozel").upstream_id == "kendi-id"
 
 
+def test_new_curl_identity_reaches_every_inheriting_mode():
+    """cURL'den çıkan modelAId, miras alan modların **hepsine** yazılır.
+
+    Gövdedeki kimlik kayıt defterinden gelir (`entry.upstream_id`); yalnız
+    varsayılan kayıt güncellenirse `web` ve `image` dosyadaki bayat id'yi
+    gönderir. İstemci 200 görür, cevaplayan model yanlış olur — sessiz hata.
+    """
+    registry = ModelRegistry.from_dict(
+        {
+            "upstream_id": "bayat-id",
+            "models": [
+                {"id": "max", "modality": "chat"},
+                {"id": "web", "modality": "search"},
+                {"id": "image", "modality": "image"},
+                {"id": "ozel", "upstream_id": "kendi-id", "modality": "chat"},
+            ],
+        }
+    )
+    assert registry.apply_shared_upstream_id("yeni-id") == ["image", "max", "web"]
+    for name in ("max", "web", "image"):
+        assert registry.resolve(name).upstream_id == "yeni-id"
+    # Kendi kimliğini açıkça taşıyan kayıt miras almaz: dokunulmaz.
+    assert registry.resolve("ozel").upstream_id == "kendi-id"
+
+
+def test_identity_binding_falls_back_to_default_without_shared_id():
+    """Belge düzeyinde kimlik yoksa eski davranış korunur (geriye dönük uyum)."""
+    registry = ModelRegistry.from_dict(
+        {
+            "default": "a",
+            "models": [
+                {"id": "a", "upstream_id": "ua"},
+                {"id": "b", "upstream_id": "ub"},
+            ],
+        }
+    )
+    assert registry.apply_shared_upstream_id("yeni") == ["a"]
+    assert registry.resolve("a").upstream_id == "yeni"
+    assert registry.resolve("b").upstream_id == "ub"
+
+
+def test_blank_identity_is_a_noop():
+    registry = ModelRegistry.from_dict({"upstream_id": "s", "models": [{"id": "m"}]})
+    assert registry.apply_shared_upstream_id("   ") == []
+    assert registry.resolve("m").upstream_id == "s"
+
+
 def test_entry_without_any_upstream_id_is_skipped():
     registry = ModelRegistry.from_dict(
         {"models": [{"id": "a", "upstream_id": "ua"}, {"id": "kimliksiz"}]}
