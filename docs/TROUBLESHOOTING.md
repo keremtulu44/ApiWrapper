@@ -287,8 +287,10 @@ Hesap geçici olarak kilitli; upstream bunu metinle bildiriyor
 | Belirti | Olası neden | Yapılacak |
 |---|---|---|
 | `recaptcha_unavailable`, browser kipinde timeout | Chromium açılamıyor, Google'a çıkış yok, bellek yetersiz | Render log'unda `recaptcha_startup_failed`; planı büyütün veya `external` kipe geçin |
-| `recaptcha_rejected` | Token süresi dolmuş/reddedilmiş | `/v1/admin/recaptcha/invalidate`; kalıcı çözüm `browser`/`external` |
-| `static` kipte ara sıra 403 | Sabit token ~2 dakikada ölür | `browser` kipine geçin |
+| `recaptcha_rejected` | Token yanlış/eksik, `UPSTREAM_RECAPTCHA_FIELD` alan adı tarayıcıyla eşleşmiyor, ya da token başka bir mod/action için üretilmiş | Taze **maskesiz** cURL (`/curl`); alan adını `scripts/compare_curl.py` ile doğrula. `browser` bu hedefte çözüm **değil** (bkz. `LESSONS_2026_11_14.md` §3-§4) |
+| `static` kipte ara sıra 403 | ~~Sabit token ~2 dakikada ölür~~ — ölçümde **2+ saat** geçerli, hedef yaşı denetlemiyor | Token'ı taze cURL ile yenile; red sürüyorsa aşağıdaki "moda özgü red" satırına bak |
+| Red yalnız `web`/`image`'da, sohbet çalışıyor | Token o modun `action`'ı için üretilmemiş, ya da `UPSTREAM_CX_SEND=true` ile sohbet `cx`'i tüm modlara gönderiliyor (`cx` ölçümde her istekte değişiyor) | O modun sayfasından ayrı cURL al; `UPSTREAM_CX_SEND=false` dene; `upstream_recaptcha_rejected_body` log satırındaki gövde önizlemesi kesin sebebi söyler |
+| Modlar eklendikten sonra **sohbet** 403/401 almaya başladı | `config/models.yaml` içindeki sohbet kaydına `referer_path` yazılmış; kayıt düzeyi değer env'i ezer ve cURL'den gelen `/c/{chat_id}` parmak izini bozar | Sohbet kaydından `referer_path`'ı sil → `UPSTREAM_REFERER_PATH` (cURL'den gelen) kullanılır |
 
 Bildirim metni bu durumda "captcha token'ı üretilemedi/yenilenemedi" der ve
 site key / provider ayarını işaret eder.

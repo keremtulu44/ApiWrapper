@@ -159,7 +159,7 @@ arkasında **takılıp çıkarılabilir** dört sağlayıcı:
 | Sağlayıcı | Açıklama | Kullanım |
 |---|---|---|
 | `noop` | Boş string gönderir | Upstream doğrulamıyorsa / test |
-| `static` | `.env`'den elle alınan token | Hızlı başlangıç, kısa ömürlü (~2 dk) |
+| `static` | `.env`'den elle alınan token (gerçek tarayıcıdan) | **Bu hedefte kalıcı seçim**; ölçümde 2+ saat geçerli |
 | `external` | Tek HTTP cevabında doğrudan token döndüren yapılandırılabilir çözücü API'si | Üretim |
 | `browser` | Playwright ile hedef origin'de v3 `grecaptcha.execute()` veya Enterprise `grecaptcha.enterprise.execute()` çağırır, token'ı cache'ler (TTL 100 sn) | Bağımsız üretim |
 

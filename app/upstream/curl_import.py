@@ -447,9 +447,12 @@ def build_settings(
             env["UPSTREAM_RECAPTCHA_FIELD"] = configured_field
         warnings.append(
             "Gövdede captcha alanı bulunamadı. Mevcut RECAPTCHA_STATIC_TOKEN / "
-            "RECAPTCHA_PROVIDER ayarları korunuyor. Statik token ~2 dk ömürlüdür: "
-            "eskimişse hedef `recaptcha_rejected` döner. Kalıcı çözüm "
-            "RECAPTCHA_PROVIDER=browser (veya external); hedef captcha "
+            "RECAPTCHA_PROVIDER ayarları korunuyor — yani istekler ESKİ token ile "
+            "gider. Statik token ölçümde 2+ saat geçerli (hedef yaşı "
+            "denetlemiyor); `recaptcha_rejected` görürsen sebep yaş değil, "
+            "token'ın yanlış/eksik olması ya da UPSTREAM_RECAPTCHA_FIELD alan adı "
+            "uyumsuzluğudur. Bu hedefte RECAPTCHA_PROVIDER=browser çözüm değildir "
+            "(sunucuda üretilen token her zaman 403 aldı); hedef captcha "
             "istemiyorsa noop."
         )
 

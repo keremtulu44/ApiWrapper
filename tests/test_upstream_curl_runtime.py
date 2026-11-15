@@ -146,8 +146,8 @@ def test_missing_optional_curl_fields_do_not_reuse_old_custom_values():
     assert updated.upstream_user_agent != "OldAgent/1.0"
     # `RECAPTCHA_STATIC_TOKEN` bilinçli istisnadır: gövdede captcha alanı yoksa
     # operatörün elle girdiği statik token korunur. Silinmesi, statik kipte her
-    # isteği `recaptcha_rejected` ile düşürüyordu (canlı arıza). Token yine de
-    # ~2 dk ömürlüdür; kalıcı çözüm browser/external sağlayıcıdır.
+    # isteği `recaptcha_rejected` ile düşürüyordu (canlı arıza). Ölçümde statik
+    # token 2+ saat geçerli; bu hedefte browser sağlayıcı çözüm değil (403 alıyor).
     assert updated.recaptcha_static_token == "old-captcha"
 
 
@@ -163,6 +163,12 @@ def test_app_lifespan_uses_curl_model_id_for_default_max_model():
     with TestClient(app):
         assert app.state.settings.target_domain == "upstream.test"
         assert app.state.registry.resolve(None).id == "max"
+        # cURL'deki modelAId üç modun hepsine işlenir: depoyla gelen
+        # models.yaml ortak kimliği belge düzeyinde taşır, kayıtlar miras alır.
+        # Yalnız varsayılan kayıt güncellenirse web/image bayat id gönderir.
+        registry = app.state.registry
+        for name in ("max", "web", "image"):
+            assert registry.resolve(name).upstream_id == MODEL_ID, name
         assert app.state.registry.resolve(None).upstream_id == MODEL_ID
 
 
