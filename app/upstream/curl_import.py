@@ -12,6 +12,14 @@ import re
 from typing import Any
 from urllib.parse import urlsplit
 
+from app.upstream.auth import (
+    extract_access_token,
+    looks_like_jwt,
+    normalize_cookie_header,
+)
+from app.upstream.header_store import format_extra_headers
+from app.upstream.headers import fingerprint_conflicts
+
 
 def normalize_curl(raw: str) -> str:
     """Windows (`^`) ve bash (`\\`) satır devamı kaçışlarını temizler."""
@@ -125,8 +133,21 @@ CAPTCHA_FIELDS: tuple[str, ...] = (
 #: Tarayıcı parmak izi için korunan, dinamik olmayan ek başlıklar.
 #: Authorization/cookie gibi kimlikler ve her istekte değişen traceparent buraya
 #: alınmaz. Rastgele bütün x-* başlıklarını almak gizli anahtar da sızdırabilirdi.
+#: Client Hint ve Fetch Metadata başlıkları ise uydurulmamalıdır: özellikle mobil
+#: cURL'deki `sec-ch-ua-mobile: ?1` değerini masaüstü `?0` ile değiştirmek isteğin
+#: gerçek tarayıcı parmak izini bozar.
 PASSTHROUGH_HEADERS: tuple[str, ...] = (
+    "accept",
+    "cache-control",
     "dnt",
+    "pragma",
+    "priority",
+    "sec-ch-ua",
+    "sec-ch-ua-mobile",
+    "sec-ch-ua-platform",
+    "sec-fetch-dest",
+    "sec-fetch-mode",
+    "sec-fetch-site",
     "x-arena-web-deployment",
     "x-deployment-id",
 )
@@ -134,6 +155,9 @@ PASSTHROUGH_HEADERS: tuple[str, ...] = (
 
 #: Oturum çerezi olma ihtimali olan adlar (uyarı üretmek için).
 _SESSION_HINT = "auth"
+
+#: reCAPTCHA site key biçimi (Google "6L..." public anahtarı).
+_RECAPTCHA_SITE_KEY_RE = re.compile(r"\b6L[A-Za-z0-9_-]{30,}\b")
 
 #: Telemetri/analitik uç noktaları: yanlış isteğin cURL'ü kopyalanmış demektir.
 TELEMETRY_HOSTS: tuple[str, ...] = (
@@ -268,7 +292,7 @@ def build_settings(
             "('create-evaluation' veya 'post-to-evaluation') sağ tıklayıp cURL'ü "
             "yeniden kopyalayın."
         )
-    elif split and not _looks_like_stream_path(split.path):
+    elif split and not looks_like_stream_path(split.path):
         warnings.append(
             f"URL yolu beklenen sohbet akış ucunu içermiyor: "
             f"{split.path or '/'}. Yanlış isteğin cURL'ü kopyalanmış olabilir "
@@ -280,7 +304,7 @@ def build_settings(
         full_path = split.path
         if split.query:
             full_path = f"{full_path}?{split.query}"
-        template = _stream_path_template(full_path, body)
+        template = stream_path_template(full_path, body)
         env["UPSTREAM_STREAM_PATH"] = template
         if template != DEFAULT_STREAM_PATH:
             warnings.append(
@@ -288,7 +312,10 @@ def build_settings(
             )
 
     # --- başlıklar
-    cookie = headers.get("cookie", "").strip()
+    # HTML kaçışlı (`&amp;`) çerez metni olduğu gibi saklanırsa hem ayrıştırma
+    # hem upstream'e gönderilen başlık bozulur (kaçışın kendi `;` karakteri
+    # paketi böler). Temizlik burada, tek noktada yapılır.
+    cookie = normalize_cookie_header(headers.get("cookie", "").strip())
     # Yuva tazeleme tam bir kimlik anlık görüntüsüdür: authorization-only yeni
     # cURL'de eski cookie'nin hayatta kalıp başka oturumla karışmasını önle.
     env["UPSTREAM_COOKIE"] = cookie
@@ -315,13 +342,21 @@ def build_settings(
     # Yalnız bilinen, dinamik olmayan parmak izi başlıklarını koru. Değerler
     # tek satırlık `K1=V1;K2=V2` biçimine getirilir; eski hedefe ait değerlerin
     # kalmasını önlemek için cURL'de hiçbiri yoksa alan boş yazılır.
-    extra_headers: list[str] = []
+    extra_headers: dict[str, str] = {}
     for name in PASSTHROUGH_HEADERS:
         value = headers.get(name, "").strip()
         if value:
-            value = value.replace("\r", " ").replace("\n", " ")
-            extra_headers.append(f"{name}={value}")
-    env["UPSTREAM_EXTRA_HEADERS"] = ";".join(extra_headers)
+            extra_headers[name] = value.replace("\r", " ").replace("\n", " ")
+    env["UPSTREAM_EXTRA_HEADERS"] = format_extra_headers(extra_headers)
+
+    # Client Hint başlıkları ile UA aynı cihazdan mı? İki yakalamanın
+    # karışması ya da yanlış cURL kopyalanması burada yakalanır; aksi halde
+    # istek kendi kendisiyle çelişerek gider.
+    conflicts = fingerprint_conflicts(
+        agent or env.get("UPSTREAM_USER_AGENT", ""), extra_headers
+    )
+    for problem in conflicts:
+        warnings.append(f"Cihaz izi çelişkisi: {problem}. Aynı cihazdan tek cURL alın.")
 
     # --- referer yolu (sohbet sayfası şablonu; parmak izi için gönderilir)
     if referer_path := extract_referer_path(headers):
@@ -342,53 +377,107 @@ def build_settings(
                 "gönderilecek."
             )
     else:
-        env["UPSTREAM_AUTH_FROM_COOKIE"] = "false"
         # Cookie-only cURL ile tazelenen yuvada önceki access token kalırsa
         # açık token her zaman öncelikli olduğu için eski kimlik gönderilmeye devam eder.
         env["UPSTREAM_ACCESS_TOKEN"] = ""
-        # Cookie-only kimlik doğrulama meşru bir kurulum; oturum çerezi zaten
-        # varsa gürültü yapma. İkisi de yoksa istek anonim gider.
-        cookie_names = [
-            p.split("=", 1)[0].strip().lower() for p in cookie.split(";") if "=" in p
-        ]
-        if not any(_SESSION_HINT in name for name in cookie_names):
+        # Çerezden token çıkarılabiliyorsa bunu **aç**: aksi hâlde çerezde taze
+        # bir oturum olmasına rağmen Authorization başlığı hiç üretilmez ve hedef
+        # 401 döner. Bu, canlıda "Çerezden token okuma: kapalı" satırıyla
+        # görülen sessiz kimlik kaybının kaynağıydı.
+        # Token'ın gerçekten **JWT** olması aranır: `session=opaque` gibi opak
+        # çerezlerde bayrağı açıp Authorization başlığı uydurmak istek parmak
+        # izini bozar (bu yüzden eski sürüm bilinçli olarak kapalı bırakıyordu).
+        cookie_token = extract_access_token(cookie) if cookie else None
+        if cookie_token and not looks_like_jwt(cookie_token):
+            cookie_token = None
+        if cookie_token:
+            env["UPSTREAM_AUTH_FROM_COOKIE"] = "true"
             warnings.append(
-                "Ne 'authorization' başlığı ne de oturum çerezi var; istek anonim "
-                "gider ve hedef büyük olasılıkla 401 döner. Giriş yapmış bir "
-                "istekten cURL alın."
+                "cURL'de 'authorization' başlığı yok ama oturum çerezi token "
+                "taşıyor: UPSTREAM_AUTH_FROM_COOKIE=true yapıldı, token çerezden "
+                "ayıklanıp Authorization başlığı olarak gönderilecek."
             )
         else:
-            warnings.append(
-                "cURL'de 'authorization' başlığı yok; istek yalnızca Cookie ile "
-                "gönderilecek. Hedef 401 dönerse UPSTREAM_AUTH_FROM_COOKIE=true yapın "
-                "(token çerezden ayıklanır). Olmayan bir başlık eklemek istek parmak "
-                "izini bozacağı için bu otomatik yapılmıyor."
-            )
+            env["UPSTREAM_AUTH_FROM_COOKIE"] = "false"
+            # Cookie-only kimlik doğrulama meşru bir kurulum; oturum çerezi zaten
+            # varsa gürültü yapma. İkisi de yoksa istek anonim gider.
+            cookie_names = [
+                p.split("=", 1)[0].strip().lower() for p in cookie.split(";") if "=" in p
+            ]
+            if not any(_SESSION_HINT in name for name in cookie_names):
+                warnings.append(
+                    "Ne 'authorization' başlığı ne de oturum çerezi var; istek anonim "
+                    "gider ve hedef büyük olasılıkla 401 döner. Giriş yapmış bir "
+                    "istekten cURL alın."
+                )
+            else:
+                warnings.append(
+                    "cURL'de 'authorization' başlığı yok ve çerezden erişim token'ı "
+                    "okunamadı; istek yalnızca Cookie ile gönderilecek. Hedef 401 "
+                    "dönerse taze çerez gönderin (/cookie) veya "
+                    "UPSTREAM_ACCESS_TOKEN ayarlayın."
+                )
 
     # --- captcha
+    configured_field = (existing or {}).get("UPSTREAM_RECAPTCHA_FIELD", "").strip()
     field, captcha_token = extract_captcha(body)
     if field and captcha_token:
         env["UPSTREAM_RECAPTCHA_FIELD"] = field
         configured_provider = (existing or {}).get("RECAPTCHA_PROVIDER", "").strip().lower()
-        if configured_provider in {"browser", "external", "noop"}:
-            # Dinamik sağlayıcı seçilmişse kısa ömürlü token'ı kaydedip kipi
-            # static'e geri döndürme. Boş değer, eski statik token kalıntısını da
-            # temizler; gerçek token her istekte sağlayıcıdan alınır.
+        if configured_provider in {"browser", "external"}:
+            # Gerçekten dinamik sağlayıcılar (browser/external) seçiliyse
+            # kısa ömürlü cURL token'ını yok say; gerçek token her istekte
+            # sağlayıcıdan alınır.
             env["RECAPTCHA_PROVIDER"] = configured_provider
             env["RECAPTCHA_STATIC_TOKEN"] = ""
         else:
+            # Varsayılan/static/noop: kullanıcı cURL'ü içinde captcha token'ı
+            # kopyaladıysa hedef alanı doğruluyor demektir. noop modda bile
+            # token'ı statik olarak saklayıp gönder; aksi hâlde boş token ile
+            # her istek `recaptcha_rejected` ile düşer.
             env["RECAPTCHA_PROVIDER"] = "static"
             env["RECAPTCHA_STATIC_TOKEN"] = captcha_token
     else:
+        # Gövdede captcha alanı yok: bu, operatörün elle girdiği
+        # RECAPTCHA_STATIC_TOKEN'ı silmek için gerekçe **değildir**. Eski kod
+        # burada alanı boşaltıyordu; statik kipe dönülünce token yok oluyor ve
+        # her istek `recaptcha_rejected` ile düşüyordu. Yalnız alan adı
+        # biliniyorsa ve hâlâ ayarlıysa koru.
+        if configured_field:
+            env["UPSTREAM_RECAPTCHA_FIELD"] = configured_field
         warnings.append(
-            "Gövdede captcha alanı bulunamadı. Hedef captcha istemiyorsa "
-            "RECAPTCHA_PROVIDER=noop kullanın."
+            "Gövdede captcha alanı bulunamadı. Mevcut RECAPTCHA_STATIC_TOKEN / "
+            "RECAPTCHA_PROVIDER ayarları korunuyor. Statik token ~2 dk ömürlüdür: "
+            "eskimişse hedef `recaptcha_rejected` döner. Kalıcı çözüm "
+            "RECAPTCHA_PROVIDER=browser (veya external); hedef captcha "
+            "istemiyorsa noop."
         )
 
     # --- gövde `mode` (yeni uçlar "direct" bekler)
     mode = body.get("mode")
     if isinstance(mode, str) and mode.strip():
         env["UPSTREAM_MODE"] = mode.strip()
+
+    # --- gövde `cx` (istemci bağlamı)
+    # cURL gövdesinde `cx` varsa alanı da otomatik olarak aç: kullanıcı
+    # tarayıcısından kopyaladığı istekte bu alan bulunduysa hedef onu
+    # doğruluyor demektir; sessizce çıkarmak istemci bağlamını eksiltir.
+    cx = body.get("cx")
+    if isinstance(cx, str) and cx.strip():
+        env["UPSTREAM_CX"] = cx.strip()
+        env["UPSTREAM_CX_SEND"] = "true"
+
+    # --- reCAPTCHA site key (tarayıcı sağlayıcısı için kritik)
+    # Site key public'tir; cURL'ün başlıklarında/gövdesinde görünüyorsa doğru
+    # anahtar budur. Render blueprint'indeki sabit değer başka bir siteye aitse
+    # üretilen token hedefte `recaptcha_rejected` olarak reddedilir, bu yüzden
+    # cURL'de görülen değer sabit değerin önüne geçer.
+    site_key_source = " ".join(
+        [parsed.get("url") or "", *headers.values(), json.dumps(body, ensure_ascii=False)]
+    )
+    site_key_match = _RECAPTCHA_SITE_KEY_RE.search(site_key_source)
+    if site_key_match:
+        env["RECAPTCHA_SITE_KEY"] = site_key_match.group(0)
 
     # --- model kimliği
     model_id = body.get("modelAId")
@@ -405,7 +494,7 @@ def build_settings(
     return env, warnings, model_id
 
 
-def _looks_like_stream_path(path: str) -> bool:
+def looks_like_stream_path(path: str) -> bool:
     """cURL'ün sohbet akış ucundan alınmış olma ihtimalini sezgisel kontrol eder."""
     lowered = (path or "").lower()
     if any(hint in lowered for hint in _STREAM_PATH_HINTS):
@@ -414,7 +503,11 @@ def _looks_like_stream_path(path: str) -> bool:
     return "stream" in parts
 
 
-def _stream_path_template(path: str, body: dict[str, Any]) -> str:
+#: Eski iç ad; dış çağrılar için `looks_like_stream_path` kullanın.
+_looks_like_stream_path = looks_like_stream_path
+
+
+def stream_path_template(path: str, body: dict[str, Any]) -> str:
     """URL yolundaki sohbet kimliğini ``{chat_id}`` yer tutucusuna çevirir.
 
     Upstream yolu sürümlenebildiği ve kimliği URL'de taşımayabildiği için

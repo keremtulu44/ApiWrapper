@@ -8,8 +8,10 @@ import hmac
 from fastapi import Request
 
 from app.core.config import Settings, get_settings
-from app.core.errors import AuthenticationError
-from app.core.logging import mask_value
+from app.core.errors import AuthenticationError, PermissionError_
+from app.core.logging import get_logger, mask_value
+
+logger = get_logger(__name__)
 
 ANONYMOUS = "anonymous"
 
@@ -72,3 +74,31 @@ async def api_key_dependency(request: Request) -> str:
     request.state.api_identity = identity
     request.state.client_fingerprint = client_fingerprint(extract_api_key(request))
     return identity
+
+
+def require_admin(request: Request) -> None:
+    """Oturum kimliğini değiştirebilen `/v1/admin/*` uçları için ek yetki kapısı.
+
+    `ADMIN_API_KEYS` boşsa hiçbir şey değişmez (geriye dönük uyumluluk: bugüne
+    kadar tüm `API_KEYS` admin sayılıyordu). Doluysa yalnız listelenen anahtarlar
+    geçer; normal bir istemci anahtarı sızdığında saldırgan upstream oturumunu
+    değiştiremez, Render env'ini ezemez veya tüm sohbetleri temizleyemez.
+    """
+    settings: Settings | None = getattr(request.app.state, "settings", None)
+    if settings is None:  # pragma: no cover - uygulama her zaman settings koyar
+        return
+    allowed = [key.strip() for key in settings.admin_api_keys if key.strip()]
+    if not allowed:
+        return
+    key = extract_api_key(request) or ""
+    if settings.auth_disabled:
+        # Kimlik doğrulama kapalıyken ek kapı eklemek kurulumu kilitleyebilir;
+        # istek geçer (auth_disabled zaten "güvenli yerel ağ" varsayımıdır).
+        logger.warning("admin_gate_bypassed_auth_disabled", path=request.url.path)
+        return
+    if any(hmac.compare_digest(key, candidate) for candidate in allowed):
+        return
+    raise PermissionError_(
+        "This endpoint requires an admin API key (ADMIN_API_KEYS).",
+        code="admin_key_required",
+    )

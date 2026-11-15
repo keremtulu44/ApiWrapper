@@ -19,7 +19,14 @@ Amaç her arızada log okumaya sıfırdan başlamamak.
 | `GET /v1/admin/auth?slot=N` | Cookie'den token çıkarılabiliyor mu, süresi dolmuş mu |
 | `POST /v1/admin/breaker/reset` | Devre kesiciyi kapat (arıza geçtiyse) |
 | `POST /v1/admin/recaptcha/invalidate` | reCAPTCHA token'ını zorla yenile |
-| Telegram `/ping` | Bot → wrapper erişimi (yalnız bot katmanı) |
+| Telegram `/ping` | Wrapper `/healthz` **+ son upstream kontrolünün saati/sonucu** |
+| Telegram `/tani` | Çerez adları, oturum adayı, çerezdeki/kullanılan token, refresh token **+ tek satır "ne yapmalı"** |
+
+Genel zihinsel model (hangi katman kendiliğinden tazelenir):
+**[`docs/BIG_PICTURE.md`](BIG_PICTURE.md)**.
+
+Çerezlerin hangisi ne kadar yaşar, hangisi elle tazelenmeli:
+**[`docs/COOKIE_LIFECYCLE.md`](COOKIE_LIFECYCLE.md)**.
 
 Loglarda olay adı (event) ile arayın: `upstream_request`, `upstream_http_error`,
 `upstream_refresh_required`, `upstream_quota_exceeded`, `recaptcha_rejected_retrying`,
@@ -71,12 +78,20 @@ sayfasından okuyor (`app/upstream/deployment.py`):
      kanarya sessizce devre dışı kalır ve `UPSTREAM_CURL`'deki değer kullanılır.
      **Kanarya hiçbir zaman isteği bozmaz.**
    * Damga değiştiğinde logda `deployment_id_changed` görünür.
-2. **409 kurtarma:** 409 `refresh_required` alınırsa damga **zorla** yeniden
-   okunur; gerçekten farklıysa istek **bir kez** taze damgayla tekrar edilir
-   (bu tekrar normal retry bütçesinden yemez). Logda `deployment_stamp_refreshed`.
-3. **Son kademe:** damga değişmiyorsa oturum çerezini tazelemek için tek bir
+2. **409 kurtarma (1. kademe):** 409 `refresh_required` alınırsa damga **zorla**
+   yeniden okunur; gerçekten farklıysa istek **bir kez** taze damgayla tekrar
+   edilir (normal retry bütçesinden yemez). Logda `deployment_stamp_refreshed`.
+3. **409 kurtarma (2. kademe):** yeni damga bulunamadıysa istek, eskimiş
+   `x-deployment-id` / `x-arena-web-deployment` başlıkları **tamamen
+   çıkarılarak** bir kez daha denenir. Bu kademe hiçbir değer bilmeyi
+   gerektirmez; skew koruması olmayan istek genelde kabul edilir. Logda
+   `deployment_stamp_stripped`, metrikte `apiwrapper_deployment_stamp_strip_total`.
+   Kapalı tutmak için: `UPSTREAM_DEPLOYMENT_STAMP_STRIP_ON_CONFLICT=false`.
+4. **Son kademe:** ikisi de işe yaramazsa oturum çerezini tazelemek için tek bir
    sayfa `GET`'i yapılır (`upstream_warmup`) ve hata mevcut net mesajla
-   (`503 upstream_refresh_required`) döner.
+   (`503 upstream_refresh_required`) döner. Bu `GET` aynı zamanda sayfada
+   görünen damgayı yakalar (`deployment_id_detected`), yani bir sonraki istek
+   taze damgayla gider.
 
 İlgili ayarlar (hepsi opsiyonel):
 
@@ -112,23 +127,146 @@ olabilir. O zaman:
 * otomatik kurtarma tükendikten sonra `503` + `upstream_refresh_required` +
   `Retry-After: 300` olarak döner.
 
+**Saatte bir tekrarlayan 409 (`forced_update`) ne demek?**
+
+Canlıda gözlendi (2026-11-02, saatlik keepalive): her probe `409
+{"error":"refresh_required","reason":"forced_update"}` alıyor, yani
+**upstream yeni bir sürüm yayınladı ve elimizdeki damga geçersiz**. Bu durumda
+`/healthz` hâlâ `200` döner — süreç ayaktadır ama **hiçbir istek çalışmıyor**.
+`/ping` artık son upstream kontrolünü de yazdığı için bu sessiz kesinti
+görünür olur; PR sonrası ayrıca Telegram'a tek bir özet bildirim gider.
+Kalıcı çözüm yukarıdaki otomatik kurtarma kademeleridir; ikisi de tutmazsa
+`deployment_stamp_unchanged` logu ile yeni cURL gerekir.
+
 **409 gövdesinde `cx` geçiyorsa**
 
-Canlı cURL'lerde stabil bir `cx` değeri var; wrapper şimdilik göndermiyor ve
-istekler çalışıyor. Bir 4xx gövdesi `cx` alanına atıfta bulunmaya başlarsa logda
-`upstream_cx_flag` + `apiwrapper_upstream_cx_flags_total` metriği görünür: bu,
-alanın zorunlu hâle geldiği anlamına gelir.
+Canlı cURL'lerde stabil bir `cx` değeri var; wrapper yakalıyor ama varsayılan
+olarak göndermiyor, istekler çalışıyor. Bir 4xx gövdesi `cx` alanına atıfta
+bulunmaya başlarsa logda `upstream_cx_flag` +
+`apiwrapper_upstream_cx_flags_total` metriği görünür: bu, alanın zorunlu hâle
+geldiği anlamına gelir. O anda `UPSTREAM_CX_SEND=true` yapmak yeterlidir.
 
 ---
+
+## 1b. `409` → `401 {"message":"User not found"}` — oturum gerçekten ölmüş
+
+**Belirti (canlı, 2026-11-02)**
+
+```
+{"status":409,"marker":"refresh_required","deployment_id":"dpl_...","source":"configured",
+ "event":"deployment_stamp_unchanged"}
+{"status":409,"marker":"refresh_required","event":"deployment_stamp_stripped"}
+{"status":401,"body":"{"message":"User not found"}","event":"upstream_http_error"}
+{"error":"Upstream request failed with HTTP 401.","status_code":502,
+ "code":"upstream_failure","event":"request_failed"}
+```
+
+**Ne anlama gelir**
+
+409 (`forced_update`) **ilk kapıdır**, gerçek arıza değildir. Damga başlıkları
+çıkarılınca istek yeni deployment'a ulaşıyor ama upstream **"bu kullanıcı yok"**
+diyor: yakalanan cookie/access_token o deployment'ta geçersiz. Yani 409 damga
+sorununu, 401 ise asıl sorunu söylüyor — **oturum ölmüş**.
+
+Bu senaryoda damga kanaryası işe yaramaz: ana sayfa oturum olmadan `dpl_`
+kimliğini yayınlamıyor (`source: configured`). Sıralama doğru çalışıyor:
+tazeleme → sıyırma → hata.
+
+**Yapılacak — telefonda DevTools gerekmez**
+
+1. **`/yenile`** (veya `/refresh`) → servisteki Chromium hedef sayfayı açar,
+   gerçek bir `create-evaluation` isteğini yakalar ve cookie + sürüm damgası +
+   `cx` + referer yolunu **anında** uygular. Deploy yok, cURL yok.
+   * `✓ Oturum yakalandı` → bir mesaj atıp test edin.
+   * `⚠ Oturum yakalanamadı` → site oturumu tamamen düşmüş; 2. adıma geçin.
+2. **Elinde çerez satırı varsa:** `/cookie ad=değer; ad2=değer2` — cURL'ün
+   tamamı gerekmez, wrapper `access_token`'ı kendisi ayıklar.
+   Tam cURL varsa `/curl <cURL>`.
+   Mobilde bu satırı nasıl alacağın: **[`MOBILE_CURL.md`](MOBILE_CURL.md)**
+   (Chrome/Safari'de DevTools yok; eklenti çalıştıran Android tarayıcı gerekir).
+3. Son çare **Render:** `UPSTREAM_CURL` secret'ını güncelleyip Manual Deploy.
+4. Doğrula: bot'a bir mesaj atın ya da `/ping` → `✓ Son upstream kontrolü: ...`.
+
+API karşılıkları: `POST /v1/admin/upstream/capture` (gövdesiz) ve
+`POST /v1/admin/upstream/curl {"curl": "..."}`. Gizli değerler ne yanıtta ne de
+loglarda görünür.
+
+**Logda ayırt etme**
+
+| Olay | Anlamı |
+|---|---|
+| `upstream_session_dead` | 409'dan sonra 401 "user not found": oturum ölmüş, yeni cURL şart |
+| `upstream_refresh_required` | Yalnızca damga sorunu, oturum sağlam görünüyor |
+| `deployment_stamp_refreshed` | Otomatik kurtarma çalıştı, elle müdahale gerekmez |
+
+---
+
+## 1c. Geliştirici araçlarında `create-evaluation` **görünmüyor**
+
+Şikâyet: "Network sekmesinde mesaj attım ama `create-evaluation` isteği yok."
+
+| Sebep | Nasıl anlaşılır | Çözüm |
+|---|---|---|
+| **Akış zaten açık** — ilk mesajdan sonra sohbet tek bir açık SSE bağlantısı üzerinden yürür, yeni HTTP isteği doğmaz | İlk mesajda istek vardı, sonrakilerde yok | Sayfayı **tam yenile** (F5) → **ilk** mesajı gönder |
+| Filtre kutusunda eski metin / `Fetch/XHR` dışı tür seçili | Ağ listesi neredeyse boş | Filtre kutusunu temizle, **All** seç; EventSource ise **Other** altında çıkar |
+| Yanlış sekme/frame | — | "Preserve log" açık olsun; iframe/Service Worker varsa "Group by frame" kapat |
+| İstek engellendi | Kırmızı `ERR_BLOCKED_BY_CLIENT` | Reklam engelleyiciyi bu site için kapat |
+| Uç nokta farklı adlandırılmış | `post-to-evaluation`, `evaluation`, `stream` arayın | Arama kutusuna `evaluation` yazın |
+| Mobil tarayıcı | Network paneli yok | `/yenile` ya da Cookie-Editor → `/cookie` |
+
+**Kısayol:** `create-evaluation` şart değil. Wrapper'ın asıl ihtiyacı `Cookie`
+başlığıdır:
+
+* **En hızlı:** Cookie-Editor → Export → *Header String* → `/cookie <satır>`
+* cURL'de `cookie` varsa çalışır; yol sohbet ucu değilse wrapper **canlı akış
+  yolunu korur** ve yanıtta `⚠` uyarı döner (`allow_path_change: true` ile
+  bilinçli olarak değiştirilebilir). Yani yanlış isteğin cURL'ü servisi bozmaz.
 
 ## 2. `HTTP 401` — `upstream_unauthorized`
 
 Oturum cookie'si/token'ı ölmüş. `/v1/admin/auth?slot=N` ile hangi hesabın
 düştüğüne bakın (`expires_in_seconds: -1` = süresi dolmuş).
 
+* `UPSTREAM_ACCESS_TOKEN` doluysa `Authorization` başlığı **çerezden önce** tercih
+  edilir. Bu yüzden `/cookie` uygulandığında çerezdeki token aynı anda
+  `upstream_access_token` alanına da yazılır; yanıtta
+  `fields: ["upstream_cookie","upstream_access_token"]` görürsünüz. Yalnızca
+  `upstream_cookie` görüyorsanız çerezde token yok (çerez adıyla oturum
+  taşınıyor) ve elle verilmiş token korunur.
 * Çok hesaplı kurulumda istek otomatik olarak **sonraki hesaba devredilir**
-  (`account_switched ... reason=auth_rejected`); tek hesapta cURL tazelemek gerekir.
-* Token sabit süreliyse (genelde ~1 saat) `UPSTREAM_CURL`'ü yenilemek tek çözümdür.
+  (`account_switched ... reason=auth_rejected`); tek hesapta kimlik tazelemek gerekir.
+* Token sabit süreli değildir: ölçülen `expires_in` değerleri 3600 s ve 1200 s
+  olarak değişti (`docs/CAPTURE_TIMELINE.md`). Karar `exp` alanına dayanır.
+* **Ama `exp` pratikte bağlayıcı değil:** hedef token yaşını denetlemiyor. Aynı
+  çerez ve token'la **15+ saat** çalıştı (15 Kasım 2026 ölçümü). Yani 401'in
+  sebebi genelde süre dolması değil, **aynı hesapla tarayıcıda oturum açılması**
+  (`docs/LESSONS_2026_11_14.md`).
+* **Yer tutucu token tuzağı:** `UPSTREAM_ACCESS_TOKEN` içine "boş" anlamında
+  `APIWRAPPER_EMPTY_VALUE_V1` gibi bir metin yazıldıysa istek
+  `Authorization: Bearer APIWRAPPER_EMPTY_VALUE_V1` ile gider ve çerez ne kadar
+  taze olursa olsun **her istek 401 alır** (açık token çerezden önce tercih
+  edilir). Bu sürümden sonra bu tür yer tutucular yüklenirken boşaltılır
+  (`env_placeholder_ignored` uyarısı verilir); yine de alanı tamamen silmek
+  doğrusudur.
+* **İki kaynak çelişkisi:** `UPSTREAM_CURL` doluysa açılışta çerez ve hedef alan
+  adı **cURL'den** okunur; ayrı verilen `UPSTREAM_COOKIE` ve `TARGET_DOMAIN` yok
+  sayılır (log: `upstream_cookie_shadowed_by_curl`). Taze çerez verip "hiçbir
+  şey değişmedi" görüyorsanız güncellenmesi gereken alan `UPSTREAM_CURL`'dür.
+* `UPSTREAM_REFRESH_API_KEY` boşsa Supabase tarzı token uç noktası `apikey`
+  ister: yenileme `No API key found in request` ile döner. Public anon anahtarı
+  bir kez elle yazın (sır değildir).
+
+### 401 mi 429 mu? (karıştırılan iki arıza)
+
+| Gördüğünüz | Gerçek sebep | Yapılacak |
+|---|---|---|
+| `502 upstream_unauthorized` | Oturum öldü (401 / `user not found`) | Kimliği tazeleyin: `/cookie`, `/curl` veya `/yenile` |
+| `429 upstream_quota_reached` + `retry_after` | Hesap gerçekten kilitli, upstream bunu **metinle** söyledi | Bekleyin; `Retry-After` süresi dolmadan denemeyin |
+| `429` + `"All upstream accounts are temporarily locked ... Earliest retry in 0s"` | **Eski sürüm hatası**: ölü oturum kota gibi raporlanıyordu | Güncel sürümde bu mesaj 401 aldığınızda görünmez; görüyorsanız önce kimliği tazeleyin |
+
+> 2026-11 sürümünde düzeltildi: tek hesaplı kurulumda 401 alındığında hesap havuzu
+> boş kaldığı için orijinal hata `UpstreamQuotaExceeded` ile eziliyor ve istemci
+> "kota doldu" görüyordu. Artık 401 her zaman `upstream_unauthorized` döner.
 
 ---
 

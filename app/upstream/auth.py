@@ -119,16 +119,61 @@ NEVER_TOKEN_COOKIES = frozenset(
 )
 
 
+#: Tarayıcı arayüzünden (DevTools → HTML görünümü, panoya kopyalayan eklentiler)
+#: alınan çerez metinlerinde ``&`` karakteri ``&amp;`` olarak kaçışlanmış olabilir.
+#: Bu kaçış **kendi içinde noktalı virgül taşıdığı** için temizlenmezse çerez
+#: ayrıştırıcı ortadan böler: ``_dd_s=aid=...&amp;rum=2&amp;id=...`` tek çerez
+#: olmaktan çıkıp ``_dd_s``/``rum``/``id``/``created``/``expire``/``logs`` adlı
+#: altı sahte çerez üretir. Gerçek bir Cookie başlığında ``&`` düz karakterdir;
+#: bu yüzden kaçış, bölme işleminden **önce** çözülür.
+_HTML_ENTITIES: tuple[tuple[str, str], ...] = (
+    ("&amp;", "&"),
+    ("&#38;", "&"),
+    ("&#x26;", "&"),
+    ("&quot;", '"'),
+    ("&#39;", "'"),
+    ("&#x27;", "'"),
+    ("&apos;", "'"),
+)
+
+
+def _unescape_cookie_entities(raw: str) -> str:
+    """Çerez metnindeki HTML kaçışlarını çözer (``&amp;`` → ``&``)."""
+    if "&" not in raw:
+        return raw
+    for entity, plain in _HTML_ENTITIES:
+        if entity in raw:
+            raw = raw.replace(entity, plain)
+    return raw
+
+
+def normalize_cookie_header(raw: str) -> str:
+    """HTML kaçışlı çerez metnini düz `Cookie` başlığına çevirir.
+
+    Upstream'e giden başlık için de gerekir: kaçışın kendi noktalı virgülü,
+    sunucu tarafındaki çerez ayrıştırmasını da bozar ve tek çerez yerine birkaç
+    sahte çerez okunur.
+    """
+    return _unescape_cookie_entities(raw or "")
+
+
 def parse_cookie_header(raw: str) -> dict[str, str]:
     """Ham `Cookie` başlığını ad→değer sözlüğüne çevirir.
 
     Ayrıştırma bağışlayıcıdır: değer içinde ``=`` bulunabilir, boşluklar kırpılır,
     adsız parçalar yok sayılır. Aynı ad birden çok kez geçerse ilki korunur
     (tarayıcı davranışıyla uyumlu olarak en özgül çerez genelde başta gelir).
+
+    HTML kaçışlı girdi (``&amp;``) bölmeden önce düzeltilir; aksi halde kaçışın
+    kendi noktalı virgülü çerez paketini parçalar.
+
+    URL-encoded (``%XX``) değerler tek seviye çözülür; JWT/base64 değerleri bu
+    dönüşümden etkilenmez (alfabeleri güvenli aralıktadır).
     """
     cookies: dict[str, str] = {}
     if not raw:
         return cookies
+    raw = _unescape_cookie_entities(raw)
     for part in raw.split(";"):
         part = part.strip()
         if not part or "=" not in part:
@@ -136,6 +181,15 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
         name, _, value = part.partition("=")
         name = name.strip()
         value = value.strip().strip('"')
+        if "%" in value:
+            try:
+                decoded = unquote(value)
+                # Çift kodlanmış / JSON kaçışlı değerleri korumak için sadece
+                # geçerli UTF-8 metin ürettiyse değiştir.
+                if decoded and all(ord(c) >= 32 or c in "\r\n\t" for c in decoded):
+                    value = decoded
+            except (ValueError, TypeError, UnicodeDecodeError):
+                pass
         if name and name not in cookies:
             cookies[name] = value
     return cookies
@@ -144,8 +198,15 @@ def parse_cookie_header(raw: str) -> dict[str, str]:
 def merge_chunked_cookies(cookies: dict[str, str]) -> dict[str, str]:
     """`ad.0`, `ad.1` biçimindeki parçalı çerezleri sayısal sıraya göre birleştirir.
 
-    Orijinal parçalar da korunur; yalnızca birleştirilmiş `ad` girdisi eklenir
-    (zaten mevcutsa üzerine yazılmaz).
+    Orijinal parçalar da korunur; birleştirilmiş `ad` girdisi eklenir.
+
+    **Aynı ad hem tek parça hem parçalı geldiğinde** (ör. eski bir denemeden
+    kalmış kısa `arena-auth-prod-v1` + yeni `arena-auth-prod-v1.0/.1`) kök değer
+    her zaman oturumun tamamı **değildir**: eski kök yalnız bir access token
+    taşırken yeni parçalar refresh token da taşıyordu ve "kök varsa parçaları
+    yok say" kuralı yüzünden refresh token kaybolup otomatik yenileme sessizce
+    devre dışı kalıyordu. Bu yüzden kök korunur ama parçalardan çözülebilen
+    **daha zengin** (refresh token içeren) JSON varsa o tercih edilir.
     """
     chunks: dict[str, dict[int, str]] = {}
     for name, value in cookies.items():
@@ -156,10 +217,27 @@ def merge_chunked_cookies(cookies: dict[str, str]) -> dict[str, str]:
 
     merged = dict(cookies)
     for base, parts in chunks.items():
-        if base in merged:
-            continue
-        merged[base] = "".join(parts[idx] for idx in sorted(parts))
+        joined = "".join(parts[idx] for idx in sorted(parts))
+        existing = merged.get(base)
+        if existing is None or _session_cookie_is_richer(joined, existing):
+            merged[base] = joined
     return merged
+
+
+def _session_cookie_is_richer(candidate: str, current: str) -> bool:
+    """`candidate`, `current`'ta olmayan bir refresh token taşıyor mu?
+
+    Yalnız **refresh token** farkına bakılır: bu, oturumun tamamını taşıyan
+    değeri seçmek için güvenilir bir işarettir ve access token'ı olan kısa bir
+    kök değeri rastgele ezmez.
+    """
+    if not candidate:
+        return False
+    if not current:
+        return True
+    return bool(_refresh_from_value(candidate, allow_raw=False)) and not _refresh_from_value(
+        current, allow_raw=False
+    )
 
 
 def looks_like_jwt(value: str) -> bool:

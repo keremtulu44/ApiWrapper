@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -33,6 +34,14 @@ class Session:
         return (time.time() if now is None else now) - self.created_at
 
 
+@dataclass(slots=True)
+class _SessionGuard:
+    """Bir sohbet anahtarındaki acquire işlemlerini sıraya alan kısa ömürlü kilit."""
+
+    lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    users: int = 0
+
+
 class SessionManager:
     """İstemci → upstream `chat_id` eşlemesini yönetir.
 
@@ -53,6 +62,11 @@ class SessionManager:
         self._cache: LRUTTLCache[str, Session] = LRUTTLCache(
             maxsize=settings.session_cache_size, ttl=settings.session_ttl
         )
+        # Cache get/set ayrı ayrı kilitlidir; ilk isteğin get → warmup → set
+        # birleşimi de aynı anahtar için atomik olmalı. Guard'lar bekleyen kalmayınca
+        # silinir, dolayısıyla rastgele conversation_id'ler ikinci bir cache gibi
+        # sınırsız bellek büyütmez. Farklı sohbetler birbirini beklemez.
+        self._guards: dict[str, _SessionGuard] = {}
 
     # ------------------------------------------------------------ rotation
     def _rotation_reason(self, session: Session) -> str | None:
@@ -86,33 +100,46 @@ class SessionManager:
             session.touch()
             return session
 
-        cached = await self._cache.get(key)
-        if cached is not None:
-            reason = self._rotation_reason(cached)
-            if reason is None:
-                cached.touch()
-                logger.debug(
-                    "session_reused", key=key, chat_id=cached.chat_id,
-                    message_count=cached.message_count,
-                )
-                return cached
-            logger.info(
-                "session_rotated", key=key, old_chat_id=cached.chat_id,
-                message_count=cached.message_count, reason=reason,
-            )
-            self._rotations += 1
-            metrics.inc("apiwrapper_sessions_rotated_total")
-            await self._cache.delete(key)
+        guard = self._guards.get(key)
+        if guard is None:
+            guard = _SessionGuard()
+            self._guards[key] = guard
+        guard.users += 1
+        try:
+            async with guard.lock:
+                # Kilidi beklerken önceki istek oturumu oluşturmuş/döndürmüş
+                # olabilir; cache kontrolü özellikle kilidin İÇİNDE yapılır.
+                cached = await self._cache.get(key)
+                if cached is not None:
+                    reason = self._rotation_reason(cached)
+                    if reason is None:
+                        cached.touch()
+                        logger.debug(
+                            "session_reused", key=key, chat_id=cached.chat_id,
+                            message_count=cached.message_count,
+                        )
+                        return cached
+                    logger.info(
+                        "session_rotated", key=key, old_chat_id=cached.chat_id,
+                        message_count=cached.message_count, reason=reason,
+                    )
+                    self._rotations += 1
+                    metrics.inc("apiwrapper_sessions_rotated_total")
+                    await self._cache.delete(key)
 
-        session = Session(chat_id=new_chat_id())
-        await self._maybe_warm(session, warmup)
-        session.touch()
-        await self._cache.set(key, session)
-        logger.debug(
-            "session_created", key=key, chat_id=session.chat_id,
-            conversation_id=conversation_id,
-        )
-        return session
+                session = Session(chat_id=new_chat_id())
+                await self._maybe_warm(session, warmup)
+                session.touch()
+                await self._cache.set(key, session)
+                logger.debug(
+                    "session_created", key=key, chat_id=session.chat_id,
+                    conversation_id=conversation_id,
+                )
+                return session
+        finally:
+            guard.users -= 1
+            if guard.users == 0 and self._guards.get(key) is guard:
+                self._guards.pop(key, None)
 
     def _session_key(
         self,

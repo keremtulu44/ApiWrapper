@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import os
+import secrets
 from collections.abc import AsyncIterator
 from pathlib import Path
 
@@ -28,10 +30,12 @@ from app.services.keepalive import run_upstream_keepalive
 from app.services.model_registry import ModelEntry, ModelRegistry
 from app.services.recaptcha import create_recaptcha_provider
 from app.services.session_manager import SessionManager
+from app.services.token_refresh import run_token_refresher
 from app.telegram.bot import TelegramSettings, run_from_settings
 from app.upstream.browser_login import SessionKeeper, login_configured, run_session_keeper
 from app.upstream.client import UpstreamClient
 from app.upstream.curl_runtime import apply_upstream_curl
+from app.upstream.state_store import restore_runtime_state
 
 logger = get_logger(__name__)
 
@@ -95,13 +99,21 @@ def _embedded_telegram_settings(settings: Settings) -> TelegramSettings | None:
 
 
 async def _run_embedded_telegram(settings: TelegramSettings) -> None:
-    try:
-        await run_from_settings(settings)
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        # httpx hata metni Telegram token'lı URL taşıyabilir; yalnız türü logla.
-        logger.error("telegram_bot_stopped_unexpectedly", error_type=type(exc).__name__)
+    while True:
+        try:
+            await run_from_settings(settings)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            # httpx hata metni Telegram token'lı URL taşıyabilir; yalnız türü logla
+            # ve kısa bir beklemeden sonra botu yeniden başlat (Render'da kalıcı
+            # olarak susmasını önler).
+            logger.error(
+                "telegram_bot_restarting_after_error",
+                error_type=type(exc).__name__,
+            )
+            await asyncio.sleep(5)
 
 
 @contextlib.asynccontextmanager
@@ -124,19 +136,37 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await upstream.startup()
 
     recaptcha = create_recaptcha_provider(settings)
-    try:
-        await recaptcha.startup()
-    except Exception as exc:
-        # Captcha sağlayıcısı başlatılamazsa servis yine ayakta kalsın;
-        # hata ilk istekte anlamlı biçimde raporlanır.
-        logger.error("recaptcha_startup_failed", provider=recaptcha.name, error=str(exc))
+    # Free Render 512 MB RAM limitinde uygulama açılırken Chromium'u koşulsuz
+    # başlatmak OOM yüzünden deploy'un crash-loop'a girmesine yol açıyordu.
+    # Browser sağlayıcı LAZY (ilk gerçek token üretim talebinde) başlar;
+    # _produce_token / browser_context içindeki self-startup zaten var ve
+    # çöken tarayıcıyı otomatik yeniden dener.
+    #
+    # static/noop sağlayıcılar için startup() hızlı bir no-op/uyarıdır,
+    # onlar hemen başlatılır (hata vermezler, bellek yemezler).
+    if recaptcha.name in {"static", "noop"}:
+        try:
+            await recaptcha.startup()
+        except Exception as exc:
+            logger.error(
+                "recaptcha_startup_failed",
+                provider=recaptcha.name,
+                error=str(exc),
+            )
+    else:
+        logger.info(
+            "recaptcha_provider_deferred_startup",
+            provider=recaptcha.name,
+            hint="İlk token talebinde başlatılacak (Free Render hafıza dostu).",
+        )
 
     sessions = SessionManager(settings, warmup=upstream.warmup)
     registry = _load_registry(settings)
     if model_id := app.state.upstream_curl_model_id:
-        entry = registry.resolve(None)
-        entry.upstream_id = model_id
-        logger.info("upstream_curl_model_loaded", model=entry.id)
+        # Aynı modelAId üç modu da taşır: kimlik miras alan kayıtların hepsine
+        # yazılır, yoksa varsayılan model tazelenirken web/image bayat id gönderir.
+        bound = registry.apply_shared_upstream_id(model_id)
+        logger.info("upstream_curl_model_loaded", models=bound)
     accounts = build_account_pool(settings)
 
     app.state.upstream = upstream
@@ -157,6 +187,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if telegram_settings := _embedded_telegram_settings(settings):
         telegram_task = asyncio.create_task(
             _run_embedded_telegram(telegram_settings), name="telegram-bot"
+        )
+
+    alerter = build_alerter(settings)
+
+    refresh_task: asyncio.Task[None] | None = None
+    if settings.upstream_refresh_enabled:
+        # Erişim token'ı ~1 saatte ölüyor: süresi yaklaşınca kendiliğinden yenile
+        # ve yeni token/çerezi AccountPool + UpstreamClient jar'larına aktar.
+        refresh_task = asyncio.create_task(
+            run_token_refresher(
+                settings,
+                accounts=accounts,
+                upstream=upstream,
+                alerter=alerter,
+            ),
+            name="upstream-token-refresh",
         )
 
     # Kalıcı tarayıcı girişi: platform oturumu ~3 saatte düştüğü için
@@ -183,7 +229,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.upstream_keepalive_interval_seconds > 0:
         # Aynı görev hem canlılık denemesi hem teşhis/bildirim kaynağıdır.
         keepalive_task = asyncio.create_task(
-            run_upstream_keepalive(settings, alerter=build_alerter(settings)),
+            run_upstream_keepalive(settings, alerter=alerter),
             name="upstream-keepalive",
         )
 
@@ -198,6 +244,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         yield
     finally:
+        if refresh_task is not None:
+            refresh_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await refresh_task
         if keeper_task is not None:
             keeper_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -222,9 +272,83 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Uygulamayı oluşturur (testler kendi Settings'ini geçebilir)."""
+    from_env = settings is None
     settings = settings or get_settings()
-    settings, upstream_curl_model_id = apply_upstream_curl(settings)
+    upstream_curl_model_id: str | None = None
+    #: `UPSTREAM_CURL` doluysa başlangıçta çerez/alan adı **ondan** okunur ve
+    #: ayrı verilen `UPSTREAM_COOKIE` / `TARGET_DOMAIN` değerlerinin üzerine
+    #: yazar. Bu sessiz üstünlük, "yeni çerez verdim ama hiçbir şey değişmedi"
+    #: şikâyetinin kaynağıydı; artık uyarı loglanır.
+    declared_cookie = (settings.upstream_cookie or "").strip()
+    if from_env:
+        try:
+            settings, upstream_curl_model_id = apply_upstream_curl(settings)
+        except ValueError as exc:
+            # Kullanıcı Render'da UPSTREAM_CURL içine yanlışlıkla yalnız çerez
+            # veya eksik bir komut yapıştırdıysa uvicorn açılışta çökmesin;
+            # çerez olarak uygulanabiliyorsa uygula, değilse uyarı logla.
+            raw_curl = (settings.upstream_curl or "").strip()
+            from app.upstream.session_capture import apply_cookie_to_settings
+
+            with contextlib.suppress(ValueError):
+                apply_cookie_to_settings(settings, raw_curl)
+            settings.upstream_curl = ""
+            logger.warning("upstream_curl_startup_fallback", detail=str(exc))
+    else:
+        settings, upstream_curl_model_id = apply_upstream_curl(settings)
+
+    if from_env and declared_cookie and (settings.upstream_cookie or "").strip() != declared_cookie:
+        logger.warning(
+            "upstream_cookie_shadowed_by_curl",
+            hint=(
+                "UPSTREAM_CURL dolu olduğu için UPSTREAM_COOKIE yok sayıldı; "
+                "çerezi tek yerden yönetin (ya cURL'ü ya bu alanı güncelleyin)."
+            ),
+        )
+
+    if from_env and (
+        os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID")
+    ):
+        target = (settings.target_domain or "").strip().lower()
+        if target in {"", "localhost", "127.0.0.1"}:
+            # Hedef alan adı KODA GÖMÜLMEZ (config.py modül kuralı). Burada bir
+            # ara `arena.ai` yazılıydı: TARGET_DOMAIN ve UPSTREAM_CURL boşken
+            # istekler (ve oturum çerezleri) sessizce o alan adına gidiyordu.
+            # Aynı hata, maskeli alan adı kullanan kurulumda kimlik bilgisini
+            # yanlış host'a göndermek demek. Artık uyarı verilir ve `/readyz`
+            # not_ready döner; sessiz yönlendirme yok.
+            logger.warning(
+                "target_domain_missing_on_render",
+                target_domain=settings.target_domain or "(empty)",
+                hint=(
+                    "TARGET_DOMAIN (şemasız, ör. example.com) veya UPSTREAM_CURL "
+                    "ayarlanmalı. Bu hâlde upstream istekleri atılmaz."
+                ),
+            )
+        keys = [k.strip() for k in settings.api_keys if k.strip()]
+        if not keys or keys == ["sk-local-dev-key"]:
+            settings.api_keys = [f"sk-render-{secrets.token_urlsafe(24)}"]
+
+    # Kalıcı durum geri yüklemesi alan adı eşleşmesine bakar; bu yüzden
+    # TARGET_DOMAIN (veya UPSTREAM_CURL) geri yüklemeden ÖNCE belirlenmiş olmalı.
+    restore_runtime_state(settings)
+
     configure_logging(settings.log_level, settings.log_json)
+    if (
+        from_env
+        and (os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID"))
+        and settings.upstream_refresh_enabled
+        and not (
+            settings.render_api_key.strip() and settings.render_service_id.strip()
+        )
+    ):
+        logger.warning(
+            "render_env_sync_not_configured",
+            hint=(
+                "Free Render has no persistent disk. Set RENDER_API_KEY so rotated "
+                "cookies/tokens survive restart; RENDER_SERVICE_ID is automatic."
+            ),
+        )
 
     app = FastAPI(
         title=settings.app_name,

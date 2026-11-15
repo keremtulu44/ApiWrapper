@@ -37,6 +37,10 @@ class BuiltRequest:
     user_message_id: str
     model_message_id: str
     upstream_model_id: str
+    #: Model kaydından gelen mod (gövdeye yazıldı; teşhis/log için de taşınır).
+    modality: str = "chat"
+    #: Model kaydına ait referer yolu; boşsa ayarlardaki değer kullanılır.
+    referer_path: str = ""
 
 
 def _requested_unsupported(request: ChatCompletionRequest) -> list[str]:
@@ -88,8 +92,15 @@ def build_upstream_request(
     upstream_model_id: str,
     chat_id: str,
     recaptcha_token: str,
+    modality: str = "chat",
+    referer_path: str = "",
 ) -> BuiltRequest:
-    """OpenAI isteğinden `UpstreamPayload` üretir."""
+    """OpenAI isteğinden `UpstreamPayload` üretir.
+
+    `modality` model kaydından gelir (`chat` · `search` · `image`). Gövdede
+    **birebir** bu adla gönderilir: hedef modu bu alandan okur, referer yolundan
+    değil. İkisi birlikte tutarlı olmalıdır (örn. `search` + `/search/direct`).
+    """
     validate_request(request, settings)
 
     include_hints = settings.unsupported_params == "hint"
@@ -120,6 +131,9 @@ def build_upstream_request(
 
     user_message_id = new_message_id()
     model_message_id = new_message_id()
+    # Normalizasyon tek yerde: hem gövdeye yazılan değer hem teşhis/log için
+    # döndürülen değer aynı olsun (boş/ büyük harfli yazım upstream'e sızmasın).
+    resolved_modality = (modality or "").strip().lower() or "chat"
 
     payload = UpstreamPayload(
         id=chat_id,
@@ -131,9 +145,12 @@ def build_upstream_request(
             experimental_attachments=collect_attachments(request.messages),
             metadata=metadata,
         ),
-        modality="chat",
+        modality=resolved_modality,
         recaptchaV3Token=recaptcha_token,
         mode=settings.upstream_mode.strip() or None,
+        # `cx` yalnızca açıkça istendiğinde gönderilir; varsayılan davranış
+        # (alan yok) canlıda çalıştığı gözlendi, gereksiz risk alınmaz.
+        cx=(settings.upstream_cx.strip() or None) if settings.upstream_cx_send else None,
     )
 
     return BuiltRequest(
@@ -143,4 +160,6 @@ def build_upstream_request(
         user_message_id=user_message_id,
         model_message_id=model_message_id,
         upstream_model_id=upstream_model_id,
+        modality=resolved_modality,
+        referer_path=(referer_path or "").strip(),
     )

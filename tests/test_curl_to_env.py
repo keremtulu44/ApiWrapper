@@ -15,6 +15,7 @@ import time
 
 import pytest
 
+from app.upstream.header_store import parse_extra_headers
 from scripts.compare_curl import parse_curl
 from scripts.curl_to_env import (
     build_settings,
@@ -103,18 +104,36 @@ def test_extracts_only_safe_static_extra_headers(sample):
     curl = (
         "curl 'https://example-llm.ai/nextjs-api/stream/create-evaluation' "
         f"-H 'cookie: {sample['cookie']}' "
+        "-H 'accept: */*' "
+        "-H 'cache-control: no-cache' "
         "-H 'dnt: 1' "
+        "-H 'pragma: no-cache' "
+        "-H 'priority: u=1, i' "
+        "-H 'sec-ch-ua: \"Chromium\";v=\"154\", \"Lemur\";v=\"154\"' "
+        "-H 'sec-ch-ua-mobile: ?1' "
+        "-H 'sec-ch-ua-platform: \"Android\"' "
+        "-H 'sec-fetch-dest: empty' "
+        "-H 'sec-fetch-mode: cors' "
+        "-H 'sec-fetch-site: same-origin' "
         "-H 'x-arena-web-deployment: dpl_test' "
         "-H 'x-deployment-id: dpl_test' "
         "-H 'traceparent: dynamic-value' "
         f"--data-raw '{json.dumps(sample['body'])}'"
     )
     env, _, _ = build_settings(parse_curl(curl))
-    extra = dict(
-        part.split("=", 1) for part in env["UPSTREAM_EXTRA_HEADERS"].split(";")
-    )
+    extra = parse_extra_headers(env["UPSTREAM_EXTRA_HEADERS"])
     assert extra == {
+        "accept": "*/*",
+        "cache-control": "no-cache",
         "dnt": "1",
+        "pragma": "no-cache",
+        "priority": "u=1, i",
+        "sec-ch-ua": '"Chromium";v="154", "Lemur";v="154"',
+        "sec-ch-ua-mobile": "?1",
+        "sec-ch-ua-platform": '"Android"',
+        "sec-fetch-dest": "empty",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-site": "same-origin",
         "x-arena-web-deployment": "dpl_test",
         "x-deployment-id": "dpl_test",
     }
@@ -209,6 +228,44 @@ def test_update_models_yaml_replaces_first_upstream_id(tmp_path):
 
 def test_update_models_yaml_missing_file_is_reported(tmp_path):
     assert update_models_yaml(tmp_path / "yok.yaml", "x") is False
+
+
+def test_update_models_yaml_already_current_is_not_a_failure(tmp_path):
+    """Değer zaten aynıysa işlem başarılıdır; "elle yazın" uyarısı çıkmaz.
+
+    Eski davranış `False` döndürüyordu ve operatör doğru durumdaki dosyayı
+    elle bozmaya yönlendiriliyordu.
+    """
+    path = tmp_path / "models.yaml"
+    original = "upstream_id: ayni-deger\nmodels:\n  - id: a\n"
+    path.write_text(original, encoding="utf-8")
+    assert update_models_yaml(path, "ayni-deger") is True
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_update_models_yaml_prefers_document_level_shared_id(tmp_path):
+    """İlk eşleşme belge düzeyindeki ortak satırdır; üç mod onu miras alır.
+
+    `config/models.yaml` düzeni bu: modelAId bir kez yazılır, chat/search/image
+    kayıtları miras alır. Böylece tek satırın güncellenmesi üç modu tazeler.
+    """
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "default: max\n"
+        "upstream_id: ESKI\n"
+        "models:\n"
+        "  - id: max\n    modality: chat\n"
+        "  - id: web\n    modality: search\n",
+        encoding="utf-8",
+    )
+    assert update_models_yaml(path, "YENI") is True
+
+    from app.services.model_registry import ModelRegistry
+
+    registry = ModelRegistry.from_file(path)
+    assert registry.resolve("max").upstream_id == "YENI"
+    assert registry.resolve("web").upstream_id == "YENI"
+    assert registry.resolve("web").modality == "search"
 
 
 def test_windows_cmd_curl_format_is_parsed():
@@ -518,3 +575,89 @@ def test_list_accounts_flags_unusable_slots(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "2 kullanılabilir hesap var" in out
     assert "KULLANILAMIYOR" in out
+
+
+def test_curl_body_cx_field_is_captured_and_sent():
+    """cURL gövdesindeki `cx` alanı okunmalı ve canlı istekte gönderilmeli.
+
+    Canlı cURL'de `cx` gövdede geliyordu ama kod hiç okumuyordu; istek onsuz
+    gidiyordu.
+    """
+    import json
+
+    from app.adapters.openai_to_upstream import build_upstream_request
+    from app.schemas.openai import ChatCompletionRequest
+    from app.upstream.curl_import import build_settings, parse_curl
+
+    body = {
+        "id": "chat-1",
+        "modelAId": "model-1",
+        "userMessageId": "u1",
+        "modelAMessageId": "m1",
+        "modality": "chat",
+        "cx": "AibRul-WjekSN8tE0xEE",
+        "userMessage": {"content": "selam"},
+    }
+    curl = (
+        "curl --url 'https://arena.ai/nextjs-api/stream/create-evaluation' "
+        "-b '_ga=1; arena-auth-prod-v1="
+        "base64-eyJhY2Nlc3NfdG9rZW4iOiJleUpoYkdjaU9pSkZVekkxTmlKOSJ9' "
+        f"--data-raw '{json.dumps(body)}'"
+    )
+
+    env, _, _ = build_settings(parse_curl(curl))
+    assert env.get("UPSTREAM_CX") == "AibRul-WjekSN8tE0xEE"
+    # cURL'de cx gövdesi mevcutsa otomatik olarak gönderim de açılır: kullanıcı
+    # tarayıcıdan kopyaladığı istekte bu alan varsa hedef doğruluyor demektir.
+    assert env.get("UPSTREAM_CX_SEND") == "true"
+
+    from tests.conftest import make_settings
+
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "merhaba"}],
+    )
+
+    def wire_for(cfg):
+        built = build_upstream_request(
+            request,
+            settings=cfg,
+            upstream_model_id="model-1",
+            chat_id="chat-1",
+            recaptcha_token="token",
+        )
+        return built.payload.to_wire(cfg.upstream_recaptcha_field)
+
+    # cx ayarlanmamışsa alan gönderilmez (eski varsayılan davranış korunur).
+    plain = make_settings()
+    assert "cx" not in wire_for(plain)
+
+    # cURL'den uygulanan ayar (UPSTREAM_CX_SEND=true) cx'i gövdeye koyar.
+    enabled = make_settings(
+        upstream_cx=env["UPSTREAM_CX"], upstream_cx_send=True
+    )
+    assert wire_for(enabled)["cx"] == "AibRul-WjekSN8tE0xEE"
+
+
+def test_empty_cx_is_not_sent():
+    from app.schemas.upstream import UpstreamPayload, UserMessage
+
+    payload = UpstreamPayload(
+        id="c", modelAId="m", userMessageId="u", modelAMessageId="a",
+        userMessage=UserMessage(content="x"), mode="direct-battle",
+    )
+    assert "cx" not in payload.to_wire()
+
+
+def test_escaped_ampersand_in_cookie_is_normalized(sample):
+    """DevTools/eklenti çıktısında çerez `&amp;` ile kaçışlı gelebilir.
+
+    Kaçışın kendi `;` karakteri olduğu gibi saklanırsa `UPSTREAM_COOKIE` bozulur:
+    tek bir telemetri çerezi (`_dd_s`) upstream tarafında altı sahte çereze
+    ayrılır. Temizlik içe aktarma anında yapılır.
+    """
+    cookie = sample["cookie"] + "; _dd_s=aid=abc&amp;rum=2&amp;id=sess-1"
+    env, _, _ = build_settings(parse_curl(_curl(cookie, sample["body"])))
+
+    assert "&amp;" not in env["UPSTREAM_COOKIE"]
+    assert "_dd_s=aid=abc&rum=2&id=sess-1" in env["UPSTREAM_COOKIE"]

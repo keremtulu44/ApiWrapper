@@ -56,6 +56,62 @@ def test_collect_attachments_from_last_user_message():
     assert attachments[0]["contentType"] == "image/jpeg"
 
 
+def test_collect_attachments_preserves_images_from_earlier_turns():
+    """Çok turlu sohbette önceki kullanıcı mesajlarındaki görseller kaybolmamalı."""
+    img1 = [
+        {"type": "text", "text": "ilk görsel"},
+        {"type": "image_url", "image_url": {"url": "https://x.test/first.png"}},
+    ]
+    img2 = [
+        {"type": "text", "text": "ikinci görsel"},
+        {"type": "image_url", "image_url": {"url": "https://x.test/second.jpg"}},
+    ]
+    attachments = collect_attachments(
+        [
+            msg("user", img1),
+            msg("assistant", "İlk görseli gördüm."),
+            msg("user", img2),
+        ]
+    )
+    assert len(attachments) == 2
+    assert attachments[0]["url"] == "https://x.test/first.png"
+    assert attachments[1]["url"] == "https://x.test/second.jpg"
+
+
+def test_collect_attachments_deduplicates_same_url():
+    """Aynı görsel birden çok turda tekrar edilirse mükerrer eklenmez."""
+    content = [
+        {"type": "image_url", "image_url": {"url": "https://x.test/a.png"}},
+    ]
+    attachments = collect_attachments(
+        [
+            msg("user", content),
+            msg("assistant", "?"),
+            msg("user", content),
+        ]
+    )
+    assert len(attachments) == 1
+
+
+def test_attachment_name_extracted_from_url():
+    content = [
+        {"type": "image_url", "image_url": {"url": "https://cdn.test/photos/kedi.jpg?w=800"}},
+    ]
+    attachments = msg("user", content).attachments()
+    assert len(attachments) == 1
+    assert attachments[0]["name"] == "kedi.jpg"
+
+
+def test_attachment_name_from_data_uri():
+    content = [
+        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAA"}},
+    ]
+    attachments = msg("user", content).attachments()
+    assert len(attachments) == 1
+    assert attachments[0]["name"] == "image-1.jpg"
+    assert attachments[0]["contentType"] == "image/jpeg"
+
+
 def test_tool_definitions_rendered_into_prompt():
     tools = [{"type": "function", "function": {"name": "search", "description": "web"}}]
     prompt = build_prompt([msg("user", "ara")], tools=tools)

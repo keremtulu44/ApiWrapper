@@ -6,15 +6,49 @@ Hedef domain ve model kimlikleri KODA GÖMÜLMEZ; config'den gelir.
 
 from __future__ import annotations
 
+import re
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, ValidationInfo, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+
+from app.upstream.header_store import parse_extra_headers
 
 UnsupportedParamPolicy = Literal["ignore", "hint", "error"]
 RecaptchaProviderName = Literal["static", "noop", "browser", "external"]
 RecaptchaVersion = Literal["v3", "enterprise"]
+
+#: Env arayüzlerinde (Render panosu, docker-compose) bir değeri boşaltmak
+#: her zaman mümkün olmuyor; kullanıcı bunun yerine "boş" anlamına gelen bir yer
+#: tutucu yazıyor (`APIWRAPPER_EMPTY_VALUE_V1`, `__APIWRAPPER_EMPTY_VALUE_V1__`).
+#: Bu değer **token sanılırsa** `Authorization: Bearer APIWRAPPER_EMPTY_VALUE_V1`
+#: gider ve upstream her istekte 401 döner — çerez ne kadar taze olursa olsun,
+#: çünkü açık token çerezden önce tercih edilir. Bu yüzden yer tutucular
+#: yüklenirken boşaltılır ve tek satır uyarı loglanır.
+_PLACEHOLDER_VALUE_RE = re.compile(
+    r"^_*(?:(?:APIWRAPPER[_-]?)?EMPTY(?:[_-]?VALUE)?(?:[_-]?V\d+)?|NULL|NONE|CHANGEME|TODO)_*$",
+    re.IGNORECASE,
+)
+
+#: Yer tutucu gelirse boşaltılan gizli değer alanları.
+PLACEHOLDER_SECRET_FIELDS: tuple[str, ...] = (
+    "upstream_access_token",
+    "upstream_access_token_2",
+    "upstream_access_token_3",
+    "upstream_access_token_4",
+    "upstream_refresh_token",
+    "upstream_refresh_api_key",
+    "upstream_cookie",
+    "upstream_cookie_2",
+    "upstream_cookie_3",
+    "upstream_cookie_4",
+    "recaptcha_static_token",
+    "recaptcha_static_token_2",
+    "recaptcha_static_token_3",
+    "recaptcha_static_token_4",
+    "upstream_cx",
+)
 
 #: cURL içe aktarıcı ve hesap havuzu yalnızca aşağıda açıkça tanımlanan
 #: soneksiz/_2/_3/_4 yuvalarını destekler. Araçların daha fazla yuvaya
@@ -49,6 +83,11 @@ class Settings(BaseSettings):
     )
     #: True ise kimlik doğrulama tamamen devre dışı (yalnız güvenli yerel ağda).
     auth_disabled: bool = False
+    #: `/v1/admin/*` uçlarına erişebilecek anahtarlar (virgülle ayrılmış).
+    #: **Boşsa** geriye dönük uyumluluk için tüm `API_KEYS` admin sayılır.
+    #: Doluysa, oturum kimliğini değiştirebilen uçlar yalnız bu anahtarlara açılır:
+    #: normal istemci anahtarı sızdığında upstream oturumu ele geçirilemez.
+    admin_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # ------------------------------------------------------------------ CORS
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])
@@ -69,6 +108,17 @@ class Settings(BaseSettings):
     upstream_stream_path: str = "/nextjs-api/stream/post-to-evaluation/{chat_id}"
     #: Tarayıcıdaki sohbet sayfası yolu (referer üretimi için).
     upstream_referer_path: str = "/c/{chat_id}"
+    #: Son uygulanan cURL gövdesindeki modelAId. Ham cURL saklanmaz; yalnızca
+    #: secret olmayan upstream model kimliği Free Render restart'ında korunur.
+    upstream_captured_model_id: str = ""
+    #: 0 = eski, yalnız credential senkronu; 1 = tarayıcı parmak izi dahil tam snapshot.
+    upstream_snapshot_version: int = 0
+    #: cURL gövdesindeki `cx` alanı (oturum/istemci bağlamı işareti).
+    #: Varsayılan olarak **gönderilmez**: canlı gözlemlerde wrapper bu alan
+    #: olmadan başarılı istek atıyordu (docs/RENDER.md §7, docs/TROUBLESHOOTING.md).
+    #: Gönderimi `UPSTREAM_CX_SEND=true` ile açılır.
+    upstream_cx: str = ""
+    upstream_cx_send: bool = False
     #: Gövdeye yazılacak `mode` alanı (örn. "direct"). Boşsa alan gönderilmez.
     upstream_mode: str = ""
     #: Gövdedeki reCAPTCHA alanının adı. Hedefe göre "recaptchaV3Token" veya
@@ -84,8 +134,6 @@ class Settings(BaseSettings):
     upstream_cookie: str = ""
     #: Doğrudan bearer token. Verilirse çerezden ayıklamaya gerek kalmaz (en yüksek öncelik).
     upstream_access_token: str = ""
-    #: Çerezden okunan yenileme anahtarı (kalıcı tarayıcı girişi yazar).
-    upstream_refresh_token: str = ""
     #: Cookie içinden `access_token` ayıklanıp `Authorization: Bearer` olarak eklensin mi?
     #: Varsayılan False: tarayıcı cURL'inde bu başlık yoksa eklemek parmak izini bozar.
     #: Hedef 401 döndürüyorsa true yapın.
@@ -117,6 +165,11 @@ class Settings(BaseSettings):
     #: tekrar edilsin mi? (Tekrar edilen istek mevcut retry bütçesinden bir yuva
     #: kullanır; 409 zaten nadirdir.)
     deployment_id_auto_retry: bool = True
+    #: Damga tazelenemiyorsa (kanarya yeni değeri bulamadı) istek, eskimiş
+    #: deployment başlıkları **çıkarılarak** bir kez daha denenir. Skew koruması
+    #: olmayan istekler genelde kabul edilir; bu kademe hiçbir şey bilmeden
+    #: çalıştığı için 409 sınıfını tamamen kapatabilir.
+    deployment_stamp_strip_on_conflict: bool = True
 
     # --------------------------------------------------------------- quota
     #: Upstream'in hesap kısıtlamasını bildiren metin işaretleri (virgülle ayrılmış).
@@ -210,6 +263,31 @@ class Settings(BaseSettings):
     total_request_timeout: float = 600.0
     #: İki token arasında izin verilen en uzun sessizlik.
     stream_idle_timeout: float = 120.0
+
+    # ------------------------------------------------ token yenileme (refresh)
+    #: Refresh token ile erişim token'ı yenileme. `refresh_token` çerezden
+    #: okunabildiği sürece çalışır; token ~1 saatte öldüğü için varsayılan açık.
+    upstream_refresh_enabled: bool = True
+    #: Token'ın bitmesine bu kadar saniye kalınca yenile (vars. 10 dk).
+    upstream_refresh_leeway_seconds: int = 600
+    #: Arka plan denetim aralığı (saniye). Yalnız süre dolunca istek atılır.
+    upstream_refresh_check_interval_seconds: float = 60.0
+    #: Boş bırakılırsa uç nokta çerezdeki JWT `iss` alanından türetilir.
+    upstream_refresh_url: str = ""
+    #: Upstream `apikey` istiyorsa (ör. Supabase anon anahtarı) buraya.
+    upstream_refresh_api_key: str = ""
+    #: Refresh token (çerezden okunamıyorsa). Yenilemede dönen yeni değer
+    #: bellekte buraya yazılır; kalıcı tarayıcı girişi (`SessionKeeper`) de
+    #: çerezden okuduğu yenileme anahtarını bu alana bırakır.
+    upstream_refresh_token: str = ""
+    #: Dönen refresh/access token ve türev değerlerin atomik yazılacağı yerel
+    #: durum dosyası (örn. ".cache/upstream_state.json"). Kalıcılığı dosya
+    #: sisteminin ömrüyle sınırlıdır; Free Render'da Render env sync gerekir.
+    upstream_state_file: str = ""
+    #: Render gibi geçici diskli ortamlarda dönen oturum bilgilerini servis env
+    #: değişkenlerine sessizce yazmak için opsiyonel Render API bilgileri.
+    render_api_key: str = ""
+    render_service_id: str = ""
 
     # ------------------------------------------------------------- keepalive
     #: 0 = kapalı. Örn. 10800 üç saatte bir sentetik non-stream completion.
@@ -313,6 +391,7 @@ class Settings(BaseSettings):
     # ----------------------------------------------------------- validators
     @field_validator(
         "api_keys",
+        "admin_api_keys",
         "cors_origins",
         "upstream_token_cookie_names",
         "upstream_token_cookie_names_2",
@@ -359,6 +438,41 @@ class Settings(BaseSettings):
                 v = v.split("/", 1)[0]
         return v
 
+    @field_validator("*", mode="before")
+    @classmethod
+    def _strip_wrapping_quotes(cls, v: object) -> object:
+        """Değerin etrafındaki tırnakları atar.
+
+        `.env` dosyasında tırnakları `python-dotenv` zaten siler, ama Render
+        panosu ve `docker-compose env_file` silmez: `"tr,en;q=0.9"` yazan
+        kullanıcının isteği upstream'e **tırnaklı** `accept-language` başlığıyla
+        gider ve parmak izi bozulur. Giriş noktası ne olursa olsun aynı sonucu
+        vermek için tırnak soyma tek yerde yapılır.
+        """
+        if isinstance(v, str) and len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+            return v[1:-1]
+        return v
+
+    @field_validator(*PLACEHOLDER_SECRET_FIELDS, mode="before")
+    @classmethod
+    def _blank_placeholder_secrets(cls, v: object, info: ValidationInfo) -> object:
+        """Yer tutucu "boş" değerlerini boşaltır (token sanılıp gönderilmesin)."""
+        if isinstance(v, str):
+            text = v.strip()
+            if text and _PLACEHOLDER_VALUE_RE.match(text):
+                from app.core.logging import get_logger
+
+                get_logger(__name__).warning(
+                    "env_placeholder_ignored",
+                    field=info.field_name,
+                    hint=(
+                        "Bu alan bir yer tutucu içeriyordu ve boş kabul edildi. "
+                        "Değeri ya tamamen silin ya da gerçek değeri yazın."
+                    ),
+                )
+                return ""
+        return v
+
     @field_validator("log_level", mode="before")
     @classmethod
     def _upper(cls, v: object) -> object:
@@ -390,8 +504,17 @@ class Settings(BaseSettings):
     def stream_url(self, chat_id: str) -> str:
         return self._join_url(self.base_url, self.upstream_stream_path, chat_id)
 
-    def referer_url(self, chat_id: str) -> str:
-        return self._join_url(self.base_url, self.upstream_referer_path, chat_id)
+    def referer_url(self, chat_id: str, path: str | None = None) -> str:
+        """Referer URL'si.
+
+        `path` verilirse model kaydının kendi yolu kullanılır: modality'ye göre
+        referer değişir (`/text/direct` · `/search/direct` · `/image/direct`) ve
+        hedef bu değeri parmak izinin parçası olarak görür. Verilmezse
+        `UPSTREAM_REFERER_PATH` (cURL'den içe aktarılan değer) geçerlidir.
+        """
+        return self._join_url(
+            self.base_url, (path or "").strip() or self.upstream_referer_path, chat_id
+        )
 
     # ------------------------------------------- kalıcı tarayıcı girişi
     #: Sunucudaki Chromium siteye mail+şifre ile girip çerezi tazelesin mi?
@@ -418,16 +541,7 @@ class Settings(BaseSettings):
         return self._join_url(self.base_url, path, "")
 
     def parsed_extra_headers(self) -> dict[str, str]:
-        out: dict[str, str] = {}
-        for part in self.upstream_extra_headers.split(";"):
-            part = part.strip()
-            if not part or "=" not in part:
-                continue
-            key, _, value = part.partition("=")
-            key, value = key.strip(), value.strip()
-            if key:
-                out[key] = value
-        return out
+        return parse_extra_headers(self.upstream_extra_headers)
 
 
 @lru_cache(maxsize=1)

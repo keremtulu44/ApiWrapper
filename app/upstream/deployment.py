@@ -230,6 +230,41 @@ class DeploymentIdResolver:
         # Domain loglanmaz: yalnızca kanaryanın hangi aşamada takıldığı görünür.
         logger.warning(event, **fields)
 
+    def ingest(self, response: httpx.Response, base_url: str) -> str | None:
+        """Zaten yapılmış bir sayfa yanıtından damgayı önbelleğe alır.
+
+        Ek istek üretmez: `warmup()` (sohbet sayfası GET'i) ve 409 sonrası
+        tazeleme GET'i aynı yanıtı hem çerez hem damga için kullanır. Böylece
+        deployment kimliği ana sayfada görünmese bile sohbet sayfasından
+        yakalanabilir.
+        """
+        if not self.active or response is None:
+            return None
+        if not (200 <= response.status_code < 400):
+            return None
+        value = _from_headers(response.headers) or _from_body(response.text or "")
+        if not value:
+            return None
+        entry = self._entries.setdefault(base_url, _Entry())
+        previous = entry.value
+        entry.value = value
+        entry.source = "page"
+        entry.checked_at = time.monotonic()
+        if previous is None:
+            logger.info("deployment_id_detected", source="page")
+        elif previous != value:
+            logger.warning(
+                "deployment_id_changed",
+                previous=previous,
+                current=value,
+                source="page",
+                hint=(
+                    "Upstream yeni bir sürüm yayınladı; istekler yeni kimlikle "
+                    "gönderilecek."
+                ),
+            )
+        return value
+
     def snapshot(self, base_url: str) -> dict[str, object]:
         """Sağlık uç noktası için özet: **değer** değil, durum bilgisi.
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
 from collections.abc import AsyncIterator
 
@@ -33,6 +34,7 @@ from app.services.account import Account, AccountPool
 from app.services.model_registry import ModelRegistry
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
+from app.upstream.auth import is_token_expired
 from app.upstream.client import UpstreamClient
 from app.upstream.exceptions import (
     CircuitOpen,
@@ -46,7 +48,12 @@ from app.upstream.exceptions import (
     UpstreamTimeout,
 )
 from app.upstream.quota import QuotaTextScanner, find_quota_marker, quota_error_message
-from app.upstream.stream_parser import parse_stream
+from app.upstream.refresh import (
+    cookie_access_token,
+    cookie_refresh_token,
+    refresh_upstream_token,
+)
+from app.upstream.stream_parser import PartShapeSummary, parse_stream
 from app.utils.ids import new_completion_id, now_ts
 from app.utils.sse import sse_done, sse_event
 from app.utils.tokens import count_tokens, tiktoken_available
@@ -146,8 +153,7 @@ class CompletionService:
         suffix = "tiktoken" if tiktoken_available() else "estimate"
         return f"fp_{self.settings.app_version.replace('.', '')}_{suffix}"
 
-    @staticmethod
-    def _translate(exc: Exception) -> APIWrapperError:
+    def _translate(self, exc: Exception) -> APIWrapperError:
         """Upstream istisnalarını API hatalarına çevirir."""
         if isinstance(exc, APIWrapperError):
             return exc
@@ -184,9 +190,43 @@ class CompletionService:
                 code="upstream_unauthorized",
             )
         if isinstance(exc, RecaptchaRejected):
+            # Sağlayıcıya göre anlamlı eylem metni:
+            # - static: token elle ayarlanmış/kısa ömürlü cURL'den geliyor, ~2 dk'da ölür
+            # - noop: alan hiç gönderilmiyor ama hedef doğruluyor → captcha gerekiyor
+            # - browser/external: tek denemede başarısız oldu, üretim kendini tekrar
+            #   deneyecek (invalidate + retry zaten yapıldı); yine düşerse sağlayıcı
+            #   tarafında bir sorun var (örn. site-key yanlış, script erişilemiyor).
+            provider = (
+                getattr(exc, "provider", "")
+                or self.settings.recaptcha_provider
+                or ""
+            )
+            if provider == "static":
+                action = (
+                    "The static reCAPTCHA token has expired or is invalid. "
+                    "Re-copy a fresh browser cURL within the last 1–2 minutes and "
+                    "resubmit it via /upstream/curl, or set RECAPTCHA_PROVIDER=browser "
+                    "for automatic token generation."
+                )
+            elif provider == "noop":
+                action = (
+                    "Upstream requires a reCAPTCHA token but RECAPTCHA_PROVIDER=noop "
+                    "is set (no token is being sent). Re-apply a fresh cURL (it will "
+                    "auto-switch to static) or set RECAPTCHA_PROVIDER=browser."
+                )
+            elif provider in {"browser", "external"}:
+                action = (
+                    "The browser/external reCAPTCHA provider produced a rejected "
+                    "token. Re-try once; if it keeps failing verify RECAPTCHA_SITE_KEY, "
+                    "RECAPTCHA_VERSION and RECAPTCHA_ACTION match the upstream site."
+                )
+            else:
+                action = (
+                    "Refresh RECAPTCHA_STATIC_TOKEN or switch RECAPTCHA_PROVIDER to "
+                    "'browser'/'external' for automatic token generation."
+                )
             return RecaptchaError(
-                "The upstream service rejected the reCAPTCHA token. "
-                "Refresh RECAPTCHA_STATIC_TOKEN or use the 'browser'/'external' provider.",
+                "The upstream service rejected the reCAPTCHA token. " + action,
                 code="recaptcha_rejected",
             )
         if isinstance(exc, UpstreamTimeout):
@@ -296,6 +336,10 @@ class CompletionService:
             upstream_model_id=entry.upstream_id,
             chat_id=session.chat_id,
             recaptcha_token=token,
+            # Mod ve referer yolu model kaydından gelir: istemci `model` alanıyla
+            # modu seçer (chat/search/image), OpenAI şemasına yeni alan eklenmez.
+            modality=entry.modality,
+            referer_path=entry.referer_path,
         )
         return entry, built
 
@@ -334,10 +378,36 @@ class CompletionService:
         max_switches = max(0, self.settings.account_max_switches)
         switches = 0
         captcha_retried = False
+        auth_refresh_retried = False
+        proactive_refresh_tried = False
         emitted = 0
         account = self._pick_account()
 
         while True:
+            slot = account.slot if account is not None else 1
+            if (
+                not proactive_refresh_tried
+                and not auth_refresh_retried
+                and self.settings.upstream_refresh_enabled
+                and cookie_refresh_token(self.settings, slot=slot)
+            ):
+                proactive_refresh_tried = True
+                access_tok = cookie_access_token(self.settings, slot=slot)
+                if access_tok and is_token_expired(access_tok):
+                    with contextlib.suppress(Exception):
+                        outcome = await refresh_upstream_token(self.settings, slot=slot)
+                        if outcome.ok:
+                            from app.services.token_refresh import record_refresh
+
+                            auth_refresh_retried = True
+                            record_refresh(ok=True, detail=outcome.detail)
+                            self.accounts.reload_credentials(self.settings)
+                            await self.upstream.reset_account_clients()
+                            logger.info(
+                                "upstream_auth_refreshed_proactively",
+                                account=account.label if account else None,
+                                slot=slot,
+                            )
             # Kota taraması burada yapılır — çağıran tarafta değil. Aksi halde
             # istisna `except UpstreamQuotaExceeded` bloğunun *dışında* fırlar
             # ve hesap devri/cooldown/AIMD hiç devreye girmez (HTTP hata
@@ -348,6 +418,10 @@ class CompletionService:
             # korunursa birinci hesabın kota metni ikinci hesabın normal
             # cevabıyla birleşir ve sağlam hesap da kilitlenir.
             scanner = self._new_quota_scanner()
+            # Metin-dışı parçaların biçim özeti (deneme başına sıfırlanır):
+            # görsel/arama modlarında sonuç `0:` dışında bir kodda geliyorsa
+            # hangi kod ve alan adlarında geldiği buradan okunur. Değer loglanmaz.
+            shapes = PartShapeSummary()
             # Upstream isteği kabul ettiğinde pencereye BİR mesaj işlenir.
             # `emitted` ile kontrol edilmez: `emitted` yalnızca istemciye içerik
             # taşıyan TEXT olaylarında artar, `f:` (START) olayında artmaz —
@@ -363,6 +437,7 @@ class CompletionService:
                 "upstream_request",
                 model=entry.id,
                 upstream_model=entry.upstream_id,
+                modality=built.modality,
                 chat_id=built.chat_id,
                 account=account_label,
                 prompt_chars=len(built.prompt),
@@ -373,6 +448,7 @@ class CompletionService:
                     built.chat_id,
                     built.payload.to_wire(self.settings.upstream_recaptcha_field),
                     account=account,
+                    referer_path=built.referer_path,
                 ) as chunks:
                     idle = self.settings.stream_idle_timeout
                     iterator = parse_stream(chunks).__aiter__()
@@ -383,7 +459,9 @@ class CompletionService:
                             )
                         except StopAsyncIteration:
                             break
-                        except TimeoutError as exc:
+                        # Python 3.10'da asyncio.TimeoutError, yerleşik TimeoutError
+                        # ile aynı sınıf değildir; ikisini de yakala.
+                        except (TimeoutError, asyncio.TimeoutError) as exc:
                             raise UpstreamTimeout(
                                 f"No data received from upstream for {idle}s."
                             ) from exc
@@ -400,9 +478,19 @@ class CompletionService:
                             self._raise_for_quota(marker, event.text)
                         elif event.type is EventType.TEXT and event.text and scanner.active:
                             self._raise_for_quota(scanner.feed(event.text), event.text)
+                        shapes.add(event)
                         if event.type in _CLIENT_VISIBLE_EVENTS and event.text:
                             emitted += 1
                         yield event
+                if shapes:
+                    # Yalnız gerçekten metin-dışı parça geldiyse loglanır: düz
+                    # sohbet akışlarında satır üretmez (gürültü yok).
+                    logger.info(
+                        "stream_non_text_parts",
+                        modality=built.modality,
+                        counts=shapes.counts,
+                        shapes=shapes.shapes,
+                    )
                 return
             except UpstreamQuotaExceeded:
                 if account is not None:
@@ -426,12 +514,40 @@ class CompletionService:
                 account = replacement
                 continue
             except UpstreamAuthRejected:
-                # Oturum kimliği reddedildi (401). Kota yolundan farkı: hesabı
-                # cezalandırmıyoruz (token global olarak düşmüş olabilir), ama
-                # başka hesap varsa onu denemek toplam kesintiyi önler.
+                # 1. Kademe: Henüz istemciye tek parça gönderilmediyse ve
+                # hesabın refresh token'ı varsa, erişim token'ını anında yenileyip
+                # aynı hesapla bir kez tekrar dene (kullanıcı 401 görmez).
+                slot = account.slot if account is not None else 1
+                if (
+                    emitted == 0
+                    and not auth_refresh_retried
+                    and self.settings.upstream_refresh_enabled
+                    and cookie_refresh_token(self.settings, slot=slot)
+                ):
+                    auth_refresh_retried = True
+                    outcome = await refresh_upstream_token(self.settings, slot=slot)
+                    if outcome.ok:
+                        from app.services.token_refresh import record_refresh
+
+                        record_refresh(ok=True, detail=outcome.detail)
+                        self.accounts.reload_credentials(self.settings)
+                        await self.upstream.reset_account_clients()
+                        logger.info(
+                            "upstream_auth_refreshed_retrying",
+                            account=account_label,
+                            slot=slot,
+                        )
+                        continue
+
+                # 2. Kademe: Oturum kimliği yenilenemedi; başka hesap varsa
+                # onu denemek toplam kesintiyi önler.
                 retryable = emitted == 0 and switches < max_switches and account is not None
+                # Burada bilinçli olarak `self.accounts.pick` kullanılıyor, `_pick_account`
+                # değil: `_pick_account` havuz boşken UpstreamQuotaExceeded fırlatır ve bu,
+                # tam da bu blokta orijinal 401'i ezip istemciye "kota doldu" (429) olarak
+                # görünmesine yol açıyordu. Oturum ölüyse cevap "unauthorized" olmalı.
                 replacement = (
-                    self._pick_account(exclude_slot=account.slot)
+                    self.accounts.pick(exclude_slot=account.slot)
                     if retryable and account is not None
                     else None
                 )
@@ -452,11 +568,29 @@ class CompletionService:
                 continue
             except RecaptchaRejected:
                 self.recaptcha.invalidate()
+                # Statik kipte account'ların kendi captcha_token önbelleği vardır
+                # (`_prepare` içindeki `has_own_captcha_token` dalı). Bu token
+                # reddedildiyse bir sonraki istekte de aynı (süresi dolmuş/yanlış)
+                # token kullanılıp tekrar 503 alınıyordu. Account seviyesindeki eski
+                # token'ı temizle: bir sonraki istek `recaptcha.get_token()` üzerinden
+                # global/ayardaki değeri kullanır (yeni cURL veya yenilenmiş sağlayıcı
+                # oradaysa gelsin). Burada `reload_credentials` ÇAĞRILMAZ: o metot
+                # account.recaptcha_token'ı settings'deki (hâlâ eski/ölü) değerden
+                # tekrar doldurur ve temizlemeyi geri alır.
+                if self.settings.recaptcha_provider == "static" and self.accounts.size:
+                    for acc in self.accounts.accounts:
+                        acc.recaptcha_token = ""
+                # Yalnız gerçekten yeni token üretebilen sağlayıcılar (browser/external)
+                # tekrar denesin. Static/noop'ta retry anlamsızdır: sabit token/boş
+                # değer ile yine aynı sonuç alınır (bkz. test_no_retry_with_same_token).
                 can_refresh = self.settings.recaptcha_provider in {"browser", "external"}
                 if not can_refresh or captcha_retried or emitted > 0:
                     raise
                 captcha_retried = True
-                logger.warning("recaptcha_rejected_retrying")
+                logger.warning(
+                    "recaptcha_rejected_retrying",
+                    provider=self.settings.recaptcha_provider,
+                )
                 continue
 
     # --------------------------------------------------------- non-stream
@@ -542,7 +676,26 @@ class CompletionService:
         return response
 
     # ------------------------------------------------------------- stream
-    async def stream_completion(
+    def stream_completion(
+        self,
+        request: ChatCompletionRequest,
+        is_disconnected=None,
+        client_identity: str | None = None,
+    ) -> AsyncIterator[str]:
+        """SSE gövdesi. Model çözümü burada, yanıt başlamadan yapılır.
+
+        `_stream_completion` bir async generator olduğu için içindeki `yield`lara kadar
+        hiçbir satırı çalışmaz. Model çözümü generator'ın içinde kalsaydı, HTTP 200 ve
+        başlıklar gönderildikten sonra `ModelNotFoundError` fırlar; istemci boş/kesik bir
+        akış görür ve sunucu "response already started" hatası loglardı. Bu yüzden model
+        burada, döndürmeden önce çözülür ve hata normal 404 yolundan çıkar.
+        """
+        self.registry.resolve(request.model)
+        return self._stream_completion(
+            request, is_disconnected=is_disconnected, client_identity=client_identity
+        )
+
+    async def _stream_completion(
         self,
         request: ChatCompletionRequest,
         is_disconnected=None,

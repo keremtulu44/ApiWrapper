@@ -1,10 +1,10 @@
-# Render Blueprint: tek instance, sleep etmeyen Docker Web Service.
+# Render Blueprint: tek instance, ücretsiz Docker Web Service.
 # Gizli değerler depoya yazılmaz; Blueprint oluşturulurken Render sorar.
 services:
   - type: web
     name: apiwrapper
     runtime: docker
-    plan: starter
+    plan: free
     dockerfilePath: ./Dockerfile
     dockerContext: .
     numInstances: 1
@@ -13,6 +13,12 @@ services:
     healthCheckPath: /readyz
     envVars:
       - key: API_KEYS
+        sync: false
+      # Free planda kalıcı disk yoktur. Dönen refresh token/çerezlerin restart
+      # sonrası korunması için Render API key'i girin. RENDER_SERVICE_ID,
+      # Render tarafından otomatik sağlanır; ayrıca yazılmaz. Env güncellemesi
+      # deploy tetiklemez ve ek ücretli kaynak oluşturmaz.
+      - key: RENDER_API_KEY
         sync: false
       # Network'teki tamamlanmış create-evaluation isteğini normal cURL olarak
       # yapıştırın. Domain, yol, mode, cookie/token ve tarayıcı header'ları
@@ -25,8 +31,12 @@ services:
         value: "true"
       - key: AUTH_DISABLED
         value: "false"
+      # KALICI değer `static`. Sunucudaki Chromium'un ürettiği token hedefte
+      # `403 recaptcha validation failed` alıyor (14 Kasım ölçümü); aynı
+      # çerez/gövde ile gerçek tarayıcıdan alınmış statik token çalışıyor.
+      # `browser` seçilirse token üretimi 20-30 sn sürer ve yine reddedilir.
       - key: RECAPTCHA_PROVIDER
-        value: browser
+        value: static
       # reCAPTCHA site key public'tir; cookie/token değildir.
       - key: RECAPTCHA_SITE_KEY
         value: 6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0
@@ -36,3 +46,7 @@ services:
         value: chat_submit
       - key: RECAPTCHA_BROWSER_TIMEOUT
         value: "45"
+      # KALICI değer `false`. Yenileme ucu Supabase `apikey` istiyor; o anahtar
+      # elde edilemiyor. `true` yapmak denenmeye değer bir yol değildir.
+      - key: UPSTREAM_REFRESH_ENABLED
+        value: "false"

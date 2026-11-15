@@ -22,6 +22,39 @@ logger = get_logger(__name__)
 
 Handler = Callable[[Request], Awaitable[Response]]
 
+#: Metrik/log etiketi olarak kullanılacak **bilinen** yollar. Bilinmeyen yollar
+#: tek bir `other` kovasında toplanır: aksi halde rastgele URL deneyen bir bot
+#: her yol için yeni bir metrik serisi bırakır (bellek sızıntısı + devasa /metrics).
+_KNOWN_PATHS = frozenset(
+    {
+        "/",
+        "/health",
+        "/healthz",
+        "/readyz",
+        "/metrics",
+        "/docs",
+        "/redoc",
+        "/openapi.json",
+        "/v1/models",
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/models",
+        "/chat/completions",
+        "/completions",
+    }
+)
+_KNOWN_PREFIXES = ("/v1/admin/", "/v1/models/")
+
+
+def metric_path(path: str) -> str:
+    """İsteği metrik etiketi için normalize eder (kardinalite koruması)."""
+    if path in _KNOWN_PATHS:
+        return path
+    for prefix in _KNOWN_PREFIXES:
+        if path.startswith(prefix):
+            return prefix.rstrip("/") + "/*"
+    return "other"
+
 
 class RequestIDMiddleware(BaseHTTPMiddleware):
     """Gelen `X-Request-ID` başlığını yayar veya yenisini üretir."""
@@ -45,27 +78,40 @@ class AccessLogMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Handler) -> Response:
         started = time.monotonic()
         path = request.url.path
+        # Ham yollar, ör. dinamik model kimlikleri veya saldırgan kontrollü
+        # 404 yolları, log ve metrik etiketlerinde sınırsız kardinalite yaratabilir
+        # ve URL içinde taşınan hassas değerleri açığa çıkarabilir.
+        label_path = metric_path(path)
         try:
             response = await call_next(request)
         except Exception:
             duration = time.monotonic() - started
             logger.exception(
-                "request_error", method=request.method, path=path, duration_ms=duration * 1000
+                "request_error",
+                method=request.method,
+                path=label_path,
+                duration_ms=duration * 1000,
             )
-            metrics.inc("apiwrapper_requests_total", labels={"path": path, "status": "500"})
+            metrics.inc(
+                "apiwrapper_requests_total",
+                labels={"path": label_path, "status": "500"},
+            )
+            metrics.observe(
+                "apiwrapper_request_duration_seconds", duration, {"path": label_path}
+            )
             raise
 
         duration = time.monotonic() - started
         metrics.inc(
             "apiwrapper_requests_total",
-            labels={"path": path, "status": str(response.status_code)},
+            labels={"path": label_path, "status": str(response.status_code)},
         )
-        metrics.observe("apiwrapper_request_duration_seconds", duration, {"path": path})
+        metrics.observe("apiwrapper_request_duration_seconds", duration, {"path": label_path})
         if path not in ("/health", "/healthz", "/readyz", "/metrics"):
             logger.info(
                 "request",
                 method=request.method,
-                path=path,
+                path=label_path,
                 status=response.status_code,
                 duration_ms=round(duration * 1000, 2),
                 client=request.client.host if request.client else None,
@@ -188,7 +234,11 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
         allowed, retry_after = await self.limiter.acquire(key)
         if not allowed:
-            logger.warning("rate_limited", path=request.url.path, retry_after=retry_after)
+            logger.warning(
+                "rate_limited",
+                path=metric_path(request.url.path),
+                retry_after=retry_after,
+            )
             return JSONResponse(
                 status_code=429,
                 content=error_payload(

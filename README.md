@@ -9,8 +9,62 @@ OpenAI-compatible istemcilerle çalışır.
         ◀──(SSE chat.completion.chunk)──          ◀──(AI SDK data-stream)──
 ```
 
+> ## ⚠️ Önce oku (en sık yapılan 3 hata)
+>
+> **1. Çerezi öldüren şey zaman değil, çakışma.** Çerez **15+ saat** yaşar
+> (ölçüldü). Onu öldüren şey **aynı hesapla tarayıcıda oturum açmaktır** —
+> platform yeni oturumu tek geçerli sayar, sunucudaki çerez iptal olur.
+> `401 User not found` görürsen **hemen cURL arama**, tarayıcıya girmeden bekle;
+> kod 401'de çerezi silmez, genelde kendi kendine döner.
+>
+> **2. `RECAPTCHA_PROVIDER=static` kalıcı.** Sunucudaki Chromium'un ürettiği
+> token reddediliyor (`403 recaptcha validation failed`). Aynı çerez/gövde ile
+> gerçek tarayıcıdan alınan statik token çalışıyor. Ölçüldü, tartışmaya kapalı.
+>
+> **3. "Bildirim aldım" ≠ "oturum öldü".** Bildirim tek başına çerezi bozmaz.
+> Bozan şey **giriş yapmaktır**.
+>
+> Tam liste: **[`docs/INDEX.md`](docs/INDEX.md)** · ölçümler:
+> **[`docs/LESSONS_2026_11_14.md`](docs/LESSONS_2026_11_14.md)**
+
+**Doküman rehberi (buradan başla): [`docs/INDEX.md`](docs/INDEX.md)**
+
+> **Otomatik tarayıcı girişi (Chromium) bu dalda yoktur.** Kod yazıldı ve test
+> edildi ama `main`'e bilerek alınmadı — şu an gerekmiyor (çerez 15+ saat
+> yaşıyor) ve kullanıcının tarayıcı oturumuyla çakışabilir. Nerede durduğu,
+> bekleme modu ve nasıl devreye alınacağı:
+> **[`docs/INDEX.md` § Chromium](docs/INDEX.md#chromium--otomatik-tarayıcı-girişi--nerede-duruyor)**
+
 Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** ·
-arıza/teşhis için: **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)**
+büyük resim ve 3 çerez katmanı: **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)** ·
+çerez ömrü ve otomatik yenileme: **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)** ·
+Render kurulumu: **[`docs/RENDER.md`](docs/RENDER.md)** ·
+mobilden çerez/cURL alma: **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** ·
+arıza/teşhis için: **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** ·
+son uçtan uca denetim kaydı: **[`docs/AUDIT_2026_11.md`](docs/AUDIT_2026_11.md)** ·
+**yeni oturum başlangıç dosyası: [`docs/START_HERE.md`](docs/START_HERE.md)** ·
+oturum devir dosyası (dosya/satır konumları): **[`docs/HANDOFF.md`](docs/HANDOFF.md)**
+
+> **Dağıtım notu:** Render, servis ayarlarında seçili production dalı deploy eder;
+> `render.yaml` dal seçmez. Canlı servisin hangi dalı izlediğini Render panelinden
+> doğrulayın. Geçmiş merge kayıtları: **[`docs/MERGE_TARGET.md`](docs/MERGE_TARGET.md)**.
+
+---
+
+## Hızlı Belge ve Operasyon Rehberi
+
+Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damgası**, **Geçici reCAPTCHA/Anti-bot**) birbirinden ayırarak kendi kendini idame ettirir (`self-healing`):
+
+| Konu | Belge | Kısa Özet |
+|---|---|---|
+| **Büyük Resim & 3 Katman** | **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)** | Neden saat başı cURL gerekmez? Hangi değer sabit, hangisi döner, sistem nasıl kendi kendine yeniler? |
+| **Çerez Ömrü & Otomatik Refresh** | **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)** | `refresh_token` rotasyonu, `apikey` otomatik keşfi, parçalı çerez (`.0`/`.1`) yeniden yazımı ve 401 kurtarma |
+| **Yakalama Zaman Çizelgesi (ölçüm)** | **[`docs/CAPTURE_TIMELINE.md`](docs/CAPTURE_TIMELINE.md)** | Üç cURL'ün zaman sırasına göre farkı: hangi değer istek / sayfa / giriş / deploy başına döner; ölçülen `expires_in` (3600 → 1200 s) |
+| **Free Render Kurulumu** | **[`docs/RENDER.md`](docs/RENDER.md)** | `UPSTREAM_CURL`, `RENDER_API_KEY` ile restart sonrası kalıcılık, uyku davranışı ve gömülü Telegram botu |
+| **Telefondan Yönetim** | **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** | Bilgisayar yokken `/tani`, `/token`, `/apikey`, `/yenile`, `/cookie` ve `/curl` komutları |
+| **Arıza & Teşhis Sözlüğü** | **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** | 401 / 403 / 409 / 429 hata kodlarının anlamı ve otomatik kurtarma kademeleri |
+| **Yeni Oturum Başlangıcı** | **[`docs/START_HERE.md`](docs/START_HERE.md)** | Okuma sırası, kurulum, doğrulama, problem tespit adımları, düzenleme kuralları |
+| **Oturum Devri (dosya/satır haritası)** | **[`docs/HANDOFF.md`](docs/HANDOFF.md)** | Hangi davranış hangi dosyada, hangi satırda; doğrulanmış konum listesi |
 
 ---
 
@@ -19,6 +73,7 @@ arıza/teşhis için: **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)**
 | Alan | Ayrıntı |
 |---|---|
 | Uç noktalar | `POST /v1/chat/completions` (stream + non-stream), `POST /v1/completions`, `GET /v1/models`, `GET /v1/models/{id}`, `GET /health`, `GET /metrics`, `/v1/admin/*` |
+| Modlar | Sohbet · **web arama** · **görsel**: istemci `model` adıyla seçer (`max` / `web` / `image`), gövdede `modality` + referer yolu birlikte değişir. Tek `UPSTREAM_CURL` üç modu da taşır |
 | Akış | Vercel AI SDK data-stream (`0:`, `f:`, `e:`, `d:`, `3:` …) → OpenAI SSE; UTF-8 sınır güvenli; `[DONE]` garantili |
 | Upstream auth | Cookie'den `access_token` ayıklama (JSON/base64/parçalı) → `Authorization: Bearer`; `/v1/admin/auth` teşhisi |
 | Güvenlik | Sabit zamanlı API key doğrulama, log maskeleme, gövde/mesaj/prompt limitleri, SSRF'e kapalı sabit hedef |
@@ -54,14 +109,53 @@ make run                  # http://localhost:8000/docs
 |---|---|
 | `UPSTREAM_CURL` (Render önerisi) | Tam `create-evaluation` cURL'ü; domain, yol, mode, cookie/token ve model ID'yi başlangıçta çıkarır |
 | `TARGET_DOMAIN` | `UPSTREAM_CURL` yoksa hedef servis domaini, **şemasız** (örn. `example-llm.com`) |
-| `API_KEYS` | Yerel istemcilerin kullanacağı anahtarlar (virgülle ayrılmış) |
-| `RECAPTCHA_PROVIDER=browser` + `RECAPTCHA_SITE_KEY` | Enterprise token'ını dinamik üretir; public site key örnekte hazır |
-| `config/models.yaml` | `id` ↔ `upstream_id` (`modelAId`) eşlemesi |
+| `API_KEYS` | Yerel istemcilerin kullanacağı anahtarlar (virgülle ayrıştırılmış) |
+| `ADMIN_API_KEYS` | Oturum kimliğini değiştiren `/v1/admin` uçlarına izinli anahtarlar; **boşsa tüm `API_KEYS` admin sayılır** (eski davranış) |
+| `RECAPTCHA_PROVIDER=static` + `RECAPTCHA_STATIC_TOKEN` | **KALICI seçim.** Sunucudan token üretimi (`browser`) hedefte reddediliyor; gerçek tarayıcıdan alınmış statik token çalışıyor (`docs/LESSONS_2026_11_14.md`) |
+| `config/models.yaml` | `id` ↔ `upstream_id` (`modelAId`) eşlemesi + **mod** (`modality`, `referer_path`) |
 
 > Hedef domain ve model kimlikleri çalıştırma koduna gömülü değildir; `.env` ve
 > `config/models.yaml` üzerinden okunur. Örnek ayar son cURL'deki
 > `/nextjs-api/stream/create-evaluation` yolunu kullanır. Hedef değişirse yolu yeni
 > cURL'den içe aktarın; yanlış yol upstream **HTTP 404** üretir.
+
+### `.env` denetimi
+
+Değer değiştirip hiçbir şeyin değişmediği durum neredeyse her zaman **okunmayan
+bir addan** kaynaklanır: `Settings` bilinmeyen adı sessizce yok sayar. Denetim
+betiği dosyayı uygulamanın gerçek alanlarıyla karşılaştırır ve yalnız durum
+bildirir (gizli değer yazdırmaz):
+
+```bash
+python -m scripts.env_audit .env          # metin
+python -m scripts.env_audit .env --json   # makine okunur
+python -m scripts.env_audit .env --strict # ölü/yer tutucu/ezilen varsa çıkış 1
+```
+
+Çıktı beş bölümdür: **ölü anahtarlar** (yakın doğru ad varsa önerilir),
+**yer tutucu gizliler**, **sabitlenmemesi gerekenler** (istek/oturum başına
+üretilen `cx` ve statik captcha token'ı gibi), **birbirini ezen anahtarlar**
+(`UPSTREAM_CURL` açılışta `UPSTREAM_COOKIE`'yi ezer) ve **katman eksikleri**
+(`/v1/admin/auth` ile aynı karar katmanından gelir).
+
+Sıfırdan dolduruyorsan hazır dosyayı kopyala — beş satır doldurulacak, gerisi hazır:
+
+```bash
+cp env.mobile.example .env
+$EDITOR .env    # TARGET_DOMAIN, API_KEYS, ADMIN_API_KEYS, UPSTREAM_USER_AGENT, UPSTREAM_CURL
+python -m scripts.env_audit .env
+```
+
+`env.mobile.example` üretilir (`python -m scripts.env_template --env --out env.mobile.example`),
+elle düzenlenmez; üç bölümden oluşur: **doldur**, **hazır (mobil profil)**, **boş bırak / yazma**.
+
+Tam liste (150 anahtar, alfabetik, her satırda "ne yazacaksın") için
+[`docs/ENV_FULL.md`](docs/ENV_FULL.md). O dosya üretilir, elle düzenlenmez:
+
+```bash
+python -m scripts.env_template          # docs/ENV_FULL.md'yi yeniler
+python -m scripts.env_template --env    # kopyalanabilir .env iskeleti
+```
 
 ---
 
@@ -102,9 +196,13 @@ Desteklenen çerez biçimleri (`app/upstream/auth.py`):
 > `UPSTREAM_EXTRA_HEADERS` en son uygulanır; `authorization=...` yazarak
 > otomatik üretilen başlığı bilinçli olarak ezebilirsiniz.
 >
-> Cookie içindeki `refresh_token` ayrıştırılıp `/v1/admin/auth` altında maskeli olarak
-> teşhis edilebilir. Ancak hedefe özel refresh HTTP çağrısı henüz uygulanmamıştır;
-> access token yenilemesi için upstream'in gerçek refresh isteği/cevabı tanımlanmalıdır.
+> **Otomatik Token Yenileme & Kalıcılık (`app/upstream/refresh.py`, `app/upstream/state_store.py`):**
+> Oturum çerezindeki `refresh_token` ayrıştırılır; `access_token` bitmesine 10 dk
+> kala (veya istek anında 401 alındığında) otomatik yenilenir, parçalı çereze ve
+> aktif `AccountPool` / `UpstreamClient` cookie jar'larına yayılır. Dönen yeni
+> `refresh_token` yerel durum dosyasına (`UPSTREAM_STATE_FILE`) ve yapılandırılmışsa
+> Render servis ortam değişkenlerine (`RENDER_API_KEY` + `RENDER_SERVICE_ID`)
+> sessizce kaydedilir. Ayrıntılar: **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)**.
 
 ### Teşhis
 
@@ -224,6 +322,66 @@ for chunk in stream:
 
 ---
 
+## Modlar: sohbet · web arama · görsel
+
+Hedef servis üç modu **aynı uçtan** (`create-evaluation`), aynı çerez, aynı
+`mode` (`direct-battle`) ve aynı `modelAId` ile sunuyor. Aradaki tek fark
+gövdedeki `modality` ve başlıktaki `referer` (15 Kasım ölçümü — iki ayrı
+yakalama karşılaştırıldı):
+
+| Mod | `model` | Gövde `modality` | `referer` |
+|---|---|---|---|
+| Sohbet | `max` | `chat` | `/text/direct` |
+| Web arama | `web` | `search` | `/search/direct` |
+| Görsel | `image` | `image` | `/image/direct` |
+
+Bu yüzden **üç ayrı cURL gerekmez**: tek `UPSTREAM_CURL` üç modu da taşır.
+Modu seçmek OpenAI şemasını bozmaz — istemci yalnızca `model` adını değiştirir,
+böylece Continue / Cursor / Open WebUI / OpenAI SDK olduğu gibi çalışır:
+
+```bash
+curl -s "$BASE/v1/chat/completions" -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"web","messages":[{"role":"user","content":"güncel haberler"}]}'
+```
+
+Takma adlar da geçerlidir: `search` / `web-search` / `ara` → `web`;
+`gorsel` / `görsel` / `img` → `image`.
+
+**Yeni mod eklemek** `config/models.yaml`'a kayıt eklemektir, kod değişikliği
+değildir:
+
+```yaml
+  - id: web
+    modality: search          # gövdeye birebir bu değer yazılır
+    referer_path: /search/direct   # modality ile tutarlı olmalı
+```
+
+`upstream_id` yazılmazsa belge düzeyindeki ortak `modelAId` miras alınır; böylece
+`scripts/curl_to_env.py` tek satırı güncellediğinde **üç mod birden** tazelenir.
+Aynı kural çalışma zamanında da geçerlidir: `UPSTREAM_CURL` ile açılış ve
+`POST /v1/admin/upstream/curl` (Telegram `/curl`) gövdeden çıkan `modelAId`'i
+miras alan kayıtların hepsine yazar — yanıt `models_bound` alanında hangi
+modların bağlandığını listeler. İstek gövdesindeki kimlik kayıt defterinden
+geldiği için bu adım atlanırsa sohbet tazelenirken `web`/`image` dosyadaki bayat
+id'yi gönderir; istemci 200 görür, cevaplayan model yanlış olur.
+Bir mod farklı bir `modelAId` isterse o kayda kendi satırını yaz (kayıt düzeyi
+önceliklidir). Bilinmeyen bir `modality` değeri reddedilmez, yalnızca uyarı
+loglanır: hedef yeni bir mod eklerse kayıt defteri onu olduğu gibi geçirir.
+
+**Doğrulama:** `python scripts/compare_curl.py request.txt` artık yalnız alan
+*adlarını* değil `modality` ve `mode` **değerlerini** de karşılaştırır ve
+tarayıcının modunu `models.yaml`'daki hangi kaydın karşıladığını söyler.
+Eski sürüm `modality` alanını her iki tarafta da gördüğü için "EŞLEŞTİ" diyordu;
+`chat` yerine `search` gönderilmesi gerektiği oradan görünmüyordu.
+
+> **Görsel modunun çıktısı henüz iletilmiyor.** Akışta istemciye yalnızca metin
+> delta'ları (`0:`) aktarılır (`_CLIENT_VISIBLE_EVENTS`); görsel verisi metin
+> olarak gelmiyorsa yanıt boş görünür. Görsel modunu uçtan uca kullanmadan önce
+> gerçek bir `create-evaluation` yanıt akışının görülmesi gerekir.
+
+---
+
 ## 404 / yanlış uç
 
 İki farklı 404 vardır; karıştırmayın:
@@ -231,7 +389,7 @@ for chunk in stream:
 | Kaynak | Belirti | Çözüm |
 |---|---|---|
 | Yerel API | `Unknown endpoint … /chat/completions` | `base_url` olarak `http://localhost:8000` veya `http://localhost:8000/v1` kullanın (ikisi de çalışır). Bilinmeyen model `model_not_found` döner. |
-| Upstream | `upstream_not_found` / logda `HTTP 404` | `UPSTREAM_STREAM_PATH` tarayıcıdaki gerçek yolla uyuşmuyor. `python scripts/curl_to_env.py request.txt --write` çalıştırın. Yeni uçlar genelde `/nextjs-api/stream/create-evaluation` kullanır ve `chat_id`'yi URL'ye koymaz. |
+| Upstream | `upstream_not_found` / logda `HTTP 404` | `UPSTREAM_STREAM_PATH` tarayıcıdaki gerçek yolla uyuşmuyor. Mobilde önce Telegram `/yenile` deneyin; bot `Akış yolu: yakalandı` derse yeni yol uygulanmıştır. Yakalanamazsa sohbet POST isteğinin tam cURL'ünü `/curl <cURL>` ile gönderin; bilgisayarda `python scripts/curl_to_env.py request.txt --write` kullanılabilir. Yeni uçlar genelde `/nextjs-api/stream/create-evaluation` kullanır ve `chat_id`'yi URL'ye koymaz. |
 
 `python scripts/compare_curl.py request.txt` artık **URL yolunu** da karşılaştırır; buradaki `FARKLI` satırı 404'ün doğrudan nedenidir.
 
@@ -263,8 +421,8 @@ header alanlarını doldurmak yerine aşağıdakini yapın:
    cURL ayrıştırılır.
 
 `UPSTREAM_CURL` doluysa ayrı upstream alanlarından önceliklidir. `modelAId` varsayılan
-`max` modelinin upstream kimliği olarak kullanılır; `RECAPTCHA_PROVIDER=browser` seçimi
-korunur ve cURL'deki kısa ömürlü CAPTCHA token'ı kaydedilmez. Telemetri isteği, eksik URL
+`max` modelinin upstream kimliği olarak kullanılır. `RECAPTCHA_PROVIDER=browser` veya
+`external` seçiliyse o seçim korunur ve cURL'deki CAPTCHA token'ı kaydedilmez; `static` seçiliyse cURL'deki `recaptchaV3Token` `RECAPTCHA_STATIC_TOKEN` olarak alınır. Telemetri isteği, eksik URL
 veya cookie/authorization içermeyen cURL başlangıçta güvenli bir hatayla reddedilir.
 Ham cURL loglanmaz; yalnızca uygulanan alan adları ve model bulunup bulunmadığı loglanır.
 Eski `_2`/`_3`/`_4` hesap secret'ları varsa bu tek-cURL kipinde kullanılmaması için silin;
@@ -350,11 +508,15 @@ curl -X POST -H "Authorization: Bearer $API_KEY" \
 ## reCAPTCHA sağlayıcıları
 
 ```bash
-RECAPTCHA_PROVIDER=static     # RECAPTCHA_STATIC_TOKEN (~2 dk ömürlü, hızlı başlangıç)
+RECAPTCHA_PROVIDER=static     # KALICI. RECAPTCHA_STATIC_TOKEN zorunlu (ölçüm: 2+ saat geçerli)
 RECAPTCHA_PROVIDER=noop       # upstream doğrulamıyorsa / testler
-RECAPTCHA_PROVIDER=browser    # Playwright: RECAPTCHA_SITE_KEY gerekir
+RECAPTCHA_PROVIDER=browser    # ⚠️ Bu hedefte ÇALIŞMIYOR: 403 recaptcha validation failed
 RECAPTCHA_PROVIDER=external   # Tek istekte doğrudan token döndüren özel HTTP çözücü
 ```
+
+> **`browser` neden çalışmıyor:** sunucudaki Chromium'un ürettiği token düşük skorlu
+> sayılıyor. Aynı çerez, gövde, site key ve action ile gerçek tarayıcıdan alınmış
+> statik token geçiyor. Ölçüm ve ayrıntı: [`docs/LESSONS_2026_11_14.md`](docs/LESSONS_2026_11_14.md).
 
 Yerel Python kurulumunda `browser` için: `pip install ".[browser]" && playwright install chromium`.
 Gözlenen hedef **reCAPTCHA Enterprise** kullandığından örnek yapılandırmada
@@ -372,19 +534,27 @@ Upstream token'ı reddederse (403) dinamik sağlayıcıda cache otomatik geçers
 
 ### Render / Docker
 
-- Depodaki `render.yaml` tek instance, sleep etmeyen `starter` Docker servisi tanımlar.
+- Depodaki `render.yaml` tek instance, ücretsiz `free` Docker servisi tanımlar;
+  ücretli disk veya paid plan gerektirmez.
 - `/healthz` yalnızca process liveness, `/readyz` statik dağıtım readiness kontrolüdür.
   Render blueprint'i `/readyz` kullanır; canlı upstream healthcheck içinde denenmez.
 - Başlatma komutu Render'ın `PORT` değişkenini, yoksa `8000` portunu kullanır.
-- Bellek içi hesap/sohbet durumu nedeniyle **tek instance ve tek worker** ile başlayın.
-- Sürekli proses gerekiyorsa sleep etmeyen bir plan seçin; bu upstream oturumunun
-  yenilenmesini tek başına çözmez.
+- Bellek içi hesap/sohbet durumu nedeniyle **tek instance ve tek worker** kullanılır.
+- Free planda kalıcı disk yoktur. Dönen refresh token/çerezlerin restart/deploy
+  sonrası korunması için `RENDER_API_KEY` secret'ını girin. `RENDER_SERVICE_ID`
+  Render tarafından otomatik sağlanır; token yenileme sonrası env senkronizasyonu
+  deploy tetiklemez. API key yoksa sistem çalışır ancak dönen kimlikler restart'ta
+  kaybolabilir ve `/cookie` ile tazeleme gerekebilir.
+- Free servis hareketsizlikte uyuyabilir; gelen HTTP isteğiyle uyanır. İlk istek
+  gecikebilir ve gömülü Telegram botu uyku sırasında mesajları işleyemez. Kod,
+  açılışta token'ı hemen denetleyerek uyku sonrası toparlanmayı hızlandırır.
 - Güçlü bir `API_KEYS` değeri ve tam sohbet cURL'ünü `UPSTREAM_CURL` secret'ına girin;
   domain, model ID ve upstream kimliği buradan çıkar. Kullanılan CAPTCHA kipinin ayarları
   ayrı environment alanlarında kalır.
-- `RECAPTCHA_PROVIDER=browser` için `RECAPTCHA_SITE_KEY` gerekir. Blueprint gözlenen
-  public site key'i, Enterprise modunu ve `chat_submit` action'unu hazır getirir.
-  Chromium ve sistem bağımlılıkları imajda hazırdır.
+- Blueprint `RECAPTCHA_PROVIDER=static` gelir (kalıcı). `RECAPTCHA_SITE_KEY`, Enterprise
+  modu ve `chat_submit` action'u hazır gelir. `static` kipinde `RECAPTCHA_STATIC_TOKEN`
+  gerekir; cURL yüklemesi onu otomatik doldurur.
+- `browser` seçilirse Chromium imajda hazır olsa da **token hedefte reddedilir**.
 
 Hareketsizlikte upstream oturumunun eskiyip eskimediğini sınamak için isteğe bağlı
 servis içi keepalive kullanılabilir. Varsayılan `0` kapalıdır; `10800` üç saatte bir
@@ -401,14 +571,59 @@ her probe farklı, kısa bir istem gönderir; böylece tam saatte atılan, birbi
 aynısı isteklerden oluşan robotik desen oluşmaz. Günde bir kez
 (`UPSTREAM_KEEPALIVE_STREAM_SMOKE_INTERVAL_SECONDS`, vars. 86400) aynı kontrol
 `stream: true` ile yapılır: non-stream probe akış yolundaki bir kırılmayı göremez.
-Render Free uyuduğunda task da durur. Sonuçlar timestamp'li
+Render Free uyuduğunda task da durur; servis içi loopback istekleri Free uyku
+süresini sıfırlamak için güvenilir bir always-on çözümü değildir. Sonuçlar timestamp'li
 `upstream_keepalive_completed`, `upstream_keepalive_failed` ve
 `upstream_keepalive_stream_smoke_*` loglarından izlenir.
 
+Oturum düştüğünde telefonda DevTools olmadan kurtarma: Telegram **`/yenile`** →
+servisteki Chromium hedef sayfayı açar, gerçek `create-evaluation` isteğinden
+cookie + `dpl_...` sürüm damgası + `cx` + referer yolunu yakalar ve çalışan
+ayarlara uygular (`POST /v1/admin/upstream/capture`). Oturum tamamen düşmüşse
+araç bunu açıkça söyler; o zaman elle cURL gerekir.
+
+Mobilde çerez/cURL üretmenin mümkün olup olmadığı ve adımları:
+**[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)**.
+
+Neden sürekli çerez taşındığı, hangi değerin ne zaman tazelendiği ve kalan yol
+haritası tek sayfada: **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)**.
+
+> **⚠️ Bu kurulumda otomatik yenileme KAPALI** (`UPSTREAM_REFRESH_ENABLED=false`,
+> kalıcı). Yenileme ucu Supabase `apikey` istiyor; o anahtar elde edilemiyor.
+> Ayrıca ölçümde token yaşının pratikte bağlayıcı olmadığı görüldü (aynı çerezle
+> 15+ saat). Aşağıdaki akış kod olarak durur, kullanılmaz.
+
+Erişim token'ı yenilendiğinde wrapper bunu **kendisi** yapar: oturum
+çerezindeki `refresh_token` ile `grant_type=refresh_token` isteği atılır (token'ın
+bitmesine 10 dk kalınca, 60 sn'de bir denetlenir), yeni token hem bellekteki
+ayarlara hem oturum çerezine yazılır. Elle tetik: Telegram **`/token`** veya
+`POST /v1/admin/upstream/refresh`. Ayrıntı ve ayarlar:
+[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md) §5.
+
+Elle uygulamak için: Telegram `/cookie <ad=değer; ...>` (Cookie-Editor'ün
+*Header String* **veya** JSON çıktısı) ya da `/curl <cURL>`; API karşılığı
+`POST /v1/admin/upstream/cookie {"cookie": "..."}` ·
+`POST /v1/admin/upstream/curl {"curl": "..."}`. Değişiklik çalışan servise hemen uygulanır; yeni istekler taze client/cookie
+jar'ına geçer, açık akışlar eski client üzerinde güvenle tamamlanır ve oturum
+önbelleği temizlenir. Kimlik durumu `UPSTREAM_STATE_FILE` altına, yapılandırıldıysa
+Render env'e de yazılır. En net dağıtım geçmişi için Render'daki `UPSTREAM_CURL`
+secret'ını da güncellemek önerilir.
+
+`/cookie` artık **önce inceler** (`POST /v1/admin/upstream/cookie?dry_run=true`):
+gelen çerez adları, `session_cookie_found`, `access_token_found/expired` ve
+`safe_to_apply` döner; hiçbir değer yanıta yazılmaz ve canlı ayar değişmez.
+Oturum çerezi içermeyen bir set bot tarafından **uygulanmaz** (çalışan oturumu
+ezmesin); bilinçli olarak zorlamak için `/cookie! <çerez>`.
+
+Telegram `/ping` yalnızca `/healthz` demez; **son upstream kontrolünün** ne zaman
+ve hangi sonuçla çalıştığını da yazar (`✓ ... başarılı (HTTP 200)` /
+`⚠ ... BAŞARISIZ (HTTP 409, upstream_refresh_required)`). Böylece `/healthz` 200
+dönerken upstream oturumu ölmüş olsa bile bu tek komutla görülür.
+
 `refresh_required`/`forced_update` (HTTP 409) artık çoğunlukla **kendiliğinden**
 geçer: wrapper sürüm damgasını (`x-deployment-id`, `x-arena-web-deployment`)
-upstream'in kendi sayfasından okuyup tazeler ve 409 alırsa isteği bir kez taze
-damgayla tekrar eder. Ayrıntılar ve kalan elle müdahale senaryosu:
+upstream'in kendi sayfasından okuyup tazeler, 409 alırsa isteği bir kez taze
+damgayla, olmadı eskimiş başlıkları **hiç göndermeden** tekrar eder. Ayrıntılar ve kalan elle müdahale senaryosu:
 [`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md).
 
 Dağıtım sırası, istek yaşam döngüsü, readiness hata kodları ve belirti→çözüm tablosu:
@@ -450,6 +665,8 @@ Telegram'da `/start` yazın; bot chat ID'nizi gösterir. Bu ID'yi
 `TELEGRAM_ALLOWED_CHAT_IDS=123456789` olarak ayarlayıp botu yeniden başlatın. Allowlist
 boşken hiçbir mesaj wrapper'a iletilmez; allowlist dışındaki sohbetler de yok sayılır.
 Sonra normal bir metin gönderin veya `/ping` ile wrapper health kontrolünü deneyin.
+`/web <soru>` aynı soruyu **web arama modunda** sorar (`model=web`, `modality=search`);
+düz metin sohbet modunda kalır. Model adı `TELEGRAM_WEB_MODEL` ile değiştirilir.
 `/help` komutları listeler. Konuşma geçmişi tutulmaz; her mesaj bağımsızdır ve yanıtlar
 Telegram sınırına göre parçalanır.
 
@@ -493,6 +710,23 @@ parametrelerin davranışını belirler:
 | `ignore` (varsayılan) | Sessizce yok sayılır |
 | `hint` | Prompt'a doğal dil ipucu olarak eklenir |
 | `error` | 400 ile reddedilir |
+
+---
+
+## Sık yapılan hatalar (bunları tekrar yapma)
+
+14-15 Kasım 2026 ölçümlerinden çıkan dersler. Ayrıntı:
+[`docs/LESSONS_2026_11_14.md`](docs/LESSONS_2026_11_14.md).
+
+| # | Hata | Doğrusu |
+|---|---|---|
+| 1 | Sunucudan reCAPTCHA token'ı üretmek (`RECAPTCHA_PROVIDER=browser`) | **Reddediliyor.** `static` kullan. Aynı çerez/gövde ile `browser` → `403`, `static` → ✅ |
+| 2 | Çerez "3 saatte ölüyor" sanıp sürekli cURL almak | Öldüren şey **tarayıcıya giriş yapmak**. Dokunmazsan **15+ saat** dayanır |
+| 3 | `401 User not found` görünce hemen yeni cURL aramak | Önce **tarayıcıya girmeden** bekle; kod çerezi silmez, genelde kendi döner |
+| 4 | cURL almak için tarayıcıda giriş yapıp **çıkış yapmamak** | Al, sonra **çıkış yap** (ya da ayrı hesap kullan). Yoksa sunucudaki çerez ölür |
+| 5 | 2-14 Kasım arası değişiklikleri suçlamak | 1 Kasım sürümü **de** aynı `recaptcha validation failed` hatasını veriyor. Sorun kodda değil |
+| 6 | Docker build'inde `playwright install --with-deps` | `libatomic.so.1` eksikliği → **`exit 127`**. Bugünkü Dockerfile kullanılır |
+| 7 | "Token 20 dakikada ölür" bilgisine güvenmek | **Eski/yanlış bilgi.** Ölçüm: reCAPTCHA token 2+ saat, çerez 15+ saat |
 
 ---
 
