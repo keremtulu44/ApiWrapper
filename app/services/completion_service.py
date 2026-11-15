@@ -336,6 +336,10 @@ class CompletionService:
             upstream_model_id=entry.upstream_id,
             chat_id=session.chat_id,
             recaptcha_token=token,
+            # Mod ve referer yolu model kaydından gelir: istemci `model` alanıyla
+            # modu seçer (chat/search/image), OpenAI şemasına yeni alan eklenmez.
+            modality=entry.modality,
+            referer_path=entry.referer_path,
         )
         return entry, built
 
@@ -429,6 +433,7 @@ class CompletionService:
                 "upstream_request",
                 model=entry.id,
                 upstream_model=entry.upstream_id,
+                modality=built.modality,
                 chat_id=built.chat_id,
                 account=account_label,
                 prompt_chars=len(built.prompt),
@@ -439,6 +444,7 @@ class CompletionService:
                     built.chat_id,
                     built.payload.to_wire(self.settings.upstream_recaptcha_field),
                     account=account,
+                    referer_path=built.referer_path,
                 ) as chunks:
                     idle = self.settings.stream_idle_timeout
                     iterator = parse_stream(chunks).__aiter__()

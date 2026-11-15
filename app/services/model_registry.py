@@ -14,6 +14,15 @@ from app.core.logging import get_logger
 
 logger = get_logger(__name__)
 
+#: Bilinen modality değerleri. Liste **kısıtlayıcı değil**: hedef yeni bir mod
+#: eklerse (`video`, `agent` …) kayıt defteri onu olduğu gibi geçirir, yalnızca
+#: yazım hatası ihtimaline karşı uyarı loglanır. Sert doğrulama yeni bir modu
+#: kullanılamaz hâle getirirdi.
+KNOWN_MODALITIES = frozenset({"chat", "search", "image"})
+
+#: Modality yazılmadığında kullanılan değer (eski davranışın birebir karşılığı).
+DEFAULT_MODALITY = "chat"
+
 
 @dataclass(slots=True)
 class ModelEntry:
@@ -25,6 +34,13 @@ class ModelEntry:
     aliases: list[str] = field(default_factory=list)
     description: str = ""
     created: int = field(default_factory=lambda: int(time.time()))
+    #: Gövdedeki `modality` alanı. Aynı `modelAId` üç modu da taşıyor; modu
+    #: seçen şey bu alan + referer yoludur (ölçüldü: chat/web/görsel cURL'lerinde
+    #: çerez, deployment damgası, `mode` ve `modelAId` birebir aynıydı).
+    modality: str = DEFAULT_MODALITY
+    #: Bu moda ait referer yolu (örn. `/search/direct`). Boşsa ayarlardaki
+    #: `UPSTREAM_REFERER_PATH` kullanılır.
+    referer_path: str = ""
 
 
 class ModelRegistry:
@@ -56,15 +72,29 @@ class ModelRegistry:
         models = raw.get("models") or []
         if not isinstance(models, list):
             raise ValueError("'models' key must be a list in the models file.")
+        # Belge düzeyindeki `upstream_id`, kayıtların miras aldığı ortak modelAId'dir.
+        # Chat/search/image modları aynı modelAId'i kullanır (ölçüldü); kimliği üç
+        # kayda birden yazmak, `curl_to_env.py` tek satırı güncellediğinde ikisinin
+        # bayat kalması demekti. Kayıt kendi `upstream_id`'sini taşıyorsa o önceliklidir.
+        shared_upstream_id = str(raw.get("upstream_id") or "").strip()
         for item in models:
             if not isinstance(item, dict):
                 continue
             model_id = str(item.get("id", "")).strip()
-            upstream_id = str(item.get("upstream_id", "")).strip()
+            upstream_id = str(item.get("upstream_id", "")).strip() or shared_upstream_id
             if not model_id or not upstream_id:
                 logger.warning("model_entry_skipped", entry=item)
                 continue
             aliases = item.get("aliases") or []
+            modality = str(item.get("modality") or DEFAULT_MODALITY).strip().lower()
+            if modality and modality not in KNOWN_MODALITIES:
+                # Reddedilmez: hedef yeni bir mod eklediyse çalışmaya devam etsin.
+                logger.warning(
+                    "model_modality_unknown",
+                    model=model_id,
+                    modality=modality,
+                    known=sorted(KNOWN_MODALITIES),
+                )
             registry.add(
                 ModelEntry(
                     id=model_id,
@@ -72,6 +102,8 @@ class ModelRegistry:
                     owned_by=str(item.get("owned_by", "apiwrapper")),
                     aliases=[str(a).strip() for a in aliases if str(a).strip()],
                     description=str(item.get("description", "")),
+                    modality=modality or DEFAULT_MODALITY,
+                    referer_path=str(item.get("referer_path") or "").strip(),
                 )
             )
         default = raw.get("default")

@@ -73,6 +73,7 @@ Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damg
 | Alan | Ayrıntı |
 |---|---|
 | Uç noktalar | `POST /v1/chat/completions` (stream + non-stream), `POST /v1/completions`, `GET /v1/models`, `GET /v1/models/{id}`, `GET /health`, `GET /metrics`, `/v1/admin/*` |
+| Modlar | Sohbet · **web arama** · **görsel**: istemci `model` adıyla seçer (`max` / `web` / `image`), gövdede `modality` + referer yolu birlikte değişir. Tek `UPSTREAM_CURL` üç modu da taşır |
 | Akış | Vercel AI SDK data-stream (`0:`, `f:`, `e:`, `d:`, `3:` …) → OpenAI SSE; UTF-8 sınır güvenli; `[DONE]` garantili |
 | Upstream auth | Cookie'den `access_token` ayıklama (JSON/base64/parçalı) → `Authorization: Bearer`; `/v1/admin/auth` teşhisi |
 | Güvenlik | Sabit zamanlı API key doğrulama, log maskeleme, gövde/mesaj/prompt limitleri, SSRF'e kapalı sabit hedef |
@@ -111,7 +112,7 @@ make run                  # http://localhost:8000/docs
 | `API_KEYS` | Yerel istemcilerin kullanacağı anahtarlar (virgülle ayrıştırılmış) |
 | `ADMIN_API_KEYS` | Oturum kimliğini değiştiren `/v1/admin` uçlarına izinli anahtarlar; **boşsa tüm `API_KEYS` admin sayılır** (eski davranış) |
 | `RECAPTCHA_PROVIDER=static` + `RECAPTCHA_STATIC_TOKEN` | **KALICI seçim.** Sunucudan token üretimi (`browser`) hedefte reddediliyor; gerçek tarayıcıdan alınmış statik token çalışıyor (`docs/LESSONS_2026_11_14.md`) |
-| `config/models.yaml` | `id` ↔ `upstream_id` (`modelAId`) eşlemesi |
+| `config/models.yaml` | `id` ↔ `upstream_id` (`modelAId`) eşlemesi + **mod** (`modality`, `referer_path`) |
 
 > Hedef domain ve model kimlikleri çalıştırma koduna gömülü değildir; `.env` ve
 > `config/models.yaml` üzerinden okunur. Örnek ayar son cURL'deki
@@ -318,6 +319,60 @@ for chunk in stream:
 
 **Uzantı:** `conversation_id` alanı ile (ve `SESSION_STATELESS=false` iken) aynı upstream
 `chat_id` yeniden kullanılır.
+
+---
+
+## Modlar: sohbet · web arama · görsel
+
+Hedef servis üç modu **aynı uçtan** (`create-evaluation`), aynı çerez, aynı
+`mode` (`direct-battle`) ve aynı `modelAId` ile sunuyor. Aradaki tek fark
+gövdedeki `modality` ve başlıktaki `referer` (15 Kasım ölçümü — iki ayrı
+yakalama karşılaştırıldı):
+
+| Mod | `model` | Gövde `modality` | `referer` |
+|---|---|---|---|
+| Sohbet | `max` | `chat` | `/text/direct` |
+| Web arama | `web` | `search` | `/search/direct` |
+| Görsel | `image` | `image` | `/image/direct` |
+
+Bu yüzden **üç ayrı cURL gerekmez**: tek `UPSTREAM_CURL` üç modu da taşır.
+Modu seçmek OpenAI şemasını bozmaz — istemci yalnızca `model` adını değiştirir,
+böylece Continue / Cursor / Open WebUI / OpenAI SDK olduğu gibi çalışır:
+
+```bash
+curl -s "$BASE/v1/chat/completions" -H "Authorization: Bearer $KEY" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"web","messages":[{"role":"user","content":"güncel haberler"}]}'
+```
+
+Takma adlar da geçerlidir: `search` / `web-search` / `ara` → `web`;
+`gorsel` / `görsel` / `img` → `image`.
+
+**Yeni mod eklemek** `config/models.yaml`'a kayıt eklemektir, kod değişikliği
+değildir:
+
+```yaml
+  - id: web
+    modality: search          # gövdeye birebir bu değer yazılır
+    referer_path: /search/direct   # modality ile tutarlı olmalı
+```
+
+`upstream_id` yazılmazsa belge düzeyindeki ortak `modelAId` miras alınır; böylece
+`scripts/curl_to_env.py` tek satırı güncellediğinde **üç mod birden** tazelenir.
+Bir mod farklı bir `modelAId` isterse o kayda kendi satırını yaz (kayıt düzeyi
+önceliklidir). Bilinmeyen bir `modality` değeri reddedilmez, yalnızca uyarı
+loglanır: hedef yeni bir mod eklerse kayıt defteri onu olduğu gibi geçirir.
+
+**Doğrulama:** `python scripts/compare_curl.py request.txt` artık yalnız alan
+*adlarını* değil `modality` ve `mode` **değerlerini** de karşılaştırır ve
+tarayıcının modunu `models.yaml`'daki hangi kaydın karşıladığını söyler.
+Eski sürüm `modality` alanını her iki tarafta da gördüğü için "EŞLEŞTİ" diyordu;
+`chat` yerine `search` gönderilmesi gerektiği oradan görünmüyordu.
+
+> **Görsel modunun çıktısı henüz iletilmiyor.** Akışta istemciye yalnızca metin
+> delta'ları (`0:`) aktarılır (`_CLIENT_VISIBLE_EVENTS`); görsel verisi metin
+> olarak gelmiyorsa yanıt boş görünür. Görsel modunu uçtan uca kullanmadan önce
+> gerçek bir `create-evaluation` yanıt akışının görülmesi gerekir.
 
 ---
 
@@ -604,6 +659,8 @@ Telegram'da `/start` yazın; bot chat ID'nizi gösterir. Bu ID'yi
 `TELEGRAM_ALLOWED_CHAT_IDS=123456789` olarak ayarlayıp botu yeniden başlatın. Allowlist
 boşken hiçbir mesaj wrapper'a iletilmez; allowlist dışındaki sohbetler de yok sayılır.
 Sonra normal bir metin gönderin veya `/ping` ile wrapper health kontrolünü deneyin.
+`/web <soru>` aynı soruyu **web arama modunda** sorar (`model=web`, `modality=search`);
+düz metin sohbet modunda kalır. Model adı `TELEGRAM_WEB_MODEL` ile değiştirilir.
 `/help` komutları listeler. Konuşma geçmişi tutulmaz; her mesaj bağımsızdır ve yanıtlar
 Telegram sınırına göre parçalanır.
 

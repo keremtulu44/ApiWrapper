@@ -503,8 +503,17 @@ class Settings(BaseSettings):
     def stream_url(self, chat_id: str) -> str:
         return self._join_url(self.base_url, self.upstream_stream_path, chat_id)
 
-    def referer_url(self, chat_id: str) -> str:
-        return self._join_url(self.base_url, self.upstream_referer_path, chat_id)
+    def referer_url(self, chat_id: str, path: str | None = None) -> str:
+        """Referer URL'si.
+
+        `path` verilirse model kaydının kendi yolu kullanılır: modality'ye göre
+        referer değişir (`/text/direct` · `/search/direct` · `/image/direct`) ve
+        hedef bu değeri parmak izinin parçası olarak görür. Verilmezse
+        `UPSTREAM_REFERER_PATH` (cURL'den içe aktarılan değer) geçerlidir.
+        """
+        return self._join_url(
+            self.base_url, (path or "").strip() or self.upstream_referer_path, chat_id
+        )
 
     def parsed_extra_headers(self) -> dict[str, str]:
         return parse_extra_headers(self.upstream_extra_headers)

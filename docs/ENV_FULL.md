@@ -100,6 +100,7 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `TELEGRAM_MODEL` | ↺ `max` — wrapper üzerinden çağrılacak model adı. | telegram |
 | `TELEGRAM_POLL_TIMEOUT` | ↺ `30` sn. | telegram |
 | `TELEGRAM_REQUEST_TIMEOUT` | ↺ `180` sn. | telegram |
+| `TELEGRAM_WEB_MODEL` | ↺ `web` — `/web <soru>` komutunun kullanacağı model (models.yaml'da `modality: search`). | telegram |
 | `TOTAL_REQUEST_TIMEOUT` | ↺ `600` sn. | dayanıklılık |
 | `UNSUPPORTED_PARAMS` | ↺ `ignore`; `error` yaparsan şema dışı alan 400 döner. | dayanıklılık |
 | `UPSTREAM_ACCEPT_LANGUAGE` | ✅ Yakalandığı cihazınkiyle birebir: `tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7`. | upstream |
@@ -169,5 +170,5 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `WRAPPER_BASE_URL` | ⬜ Aynı serviste çalışıyorsa **yazma**; varsayılan yerel adres kullanılır. | telegram |
 | `WRITE_TIMEOUT` | ↺ `30` sn. | dayanıklılık |
 
-Toplam **150** anahtar: 19 yazılacak, 43 boş, 88 varsayılan/yazma.
+Toplam **151** anahtar: 19 yazılacak, 43 boş, 89 varsayılan/yazma.
 Denetim için: `python -m scripts.env_audit .env`.
