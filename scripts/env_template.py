@@ -153,7 +153,12 @@ ENTRIES: dict[str, tuple[str, str]] = {
     "TOTAL_REQUEST_TIMEOUT": (DEFAULT, "`600` sn."),
     "STREAM_IDLE_TIMEOUT": (DEFAULT, "`120` sn — bu süre veri gelmezse akış düşer."),
     # --------------------------------------------------------------- refresh
-    "UPSTREAM_REFRESH_ENABLED": (DEFAULT, "`true` — erişim token'ı kendiliğinden yenilenir."),
+    "UPSTREAM_REFRESH_ENABLED": (
+        DEFAULT,
+        "`false` — **KALICI.** Yenileme ucu Supabase `apikey` istiyor; o anahtar "
+        "elde edilemiyor (backend'de ekleniyor, tarayıcı trafiğinde yok). "
+        "Açmak çalışmayan bir yol dener.",
+    ),
     "UPSTREAM_REFRESH_LEEWAY_SECONDS": (
         DEFAULT,
         "`600`. JWT ömrünün yarısından büyük olursa her istekte yenileme tetiklenir; `/v1/admin/auth` bunu uyarır.",
@@ -211,10 +216,16 @@ ENTRIES: dict[str, tuple[str, str]] = {
     "UNSUPPORTED_PARAMS": (DEFAULT, "`ignore`; `error` yaparsan şema dışı alan 400 döner."),
     # -------------------------------------------------------------- recaptcha
     "RECAPTCHA_PROVIDER": (
-        WRITE,
-        "`browser` — Enterprise token'ını gerçek tarayıcıda üretir. `static`/`noop` sabit token ister.",
+        DEFAULT,
+        "`static` — **KALICI.** Sunucudaki Chromium'un ürettiği token hedefte "
+        "`403 recaptcha validation failed` alıyor (14 Kasım ölçümü). Aynı çerez/"
+        "gövde ile gerçek tarayıcıdan alınmış statik token çalışıyor.",
     ),
-    "RECAPTCHA_STATIC_TOKEN": (NEVER, "Boş bırak. Tek kullanımlık ve saniyeler içinde ölür."),
+    "RECAPTCHA_STATIC_TOKEN": (
+        WRITE,
+        "cURL'deki `recaptchaV3Token`. `RECAPTCHA_PROVIDER=static` iken gereklidir; "
+        "ölçümde 2+ saat geçerli kaldı (hedef yaş denetimi yapmıyor).",
+    ),
     "RECAPTCHA_TOKEN_TTL": (DEFAULT, "`100` sn — üretilen token'ın kullanım ömrü."),
     "RECAPTCHA_EXTERNAL_URL": (EMPTY, "Yalnız `external` sağlayıcısı için."),
     "RECAPTCHA_EXTERNAL_API_KEY": (EMPTY, "Yalnız `external` sağlayıcısı için."),
@@ -399,7 +410,7 @@ _MOBILE_VALUES: dict[str, str] = {
     "UPSTREAM_STATE_FILE": ".cache/upstream_state.json",
     "UPSTREAM_STREAM_PATH": "/nextjs-api/stream/create-evaluation",
     "RECAPTCHA_ACTION": "chat_submit",
-    "RECAPTCHA_PROVIDER": "browser",
+    "RECAPTCHA_PROVIDER": "static",
     "RECAPTCHA_SITE_KEY": "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0",
     "RECAPTCHA_VERSION": "enterprise",
 }

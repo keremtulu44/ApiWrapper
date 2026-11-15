@@ -110,7 +110,7 @@ make run                  # http://localhost:8000/docs
 | `TARGET_DOMAIN` | `UPSTREAM_CURL` yoksa hedef servis domaini, **şemasız** (örn. `example-llm.com`) |
 | `API_KEYS` | Yerel istemcilerin kullanacağı anahtarlar (virgülle ayrıştırılmış) |
 | `ADMIN_API_KEYS` | Oturum kimliğini değiştiren `/v1/admin` uçlarına izinli anahtarlar; **boşsa tüm `API_KEYS` admin sayılır** (eski davranış) |
-| `RECAPTCHA_PROVIDER=browser` + `RECAPTCHA_SITE_KEY` | Enterprise token'ını dinamik üretir; public site key örnekte hazır |
+| `RECAPTCHA_PROVIDER=static` + `RECAPTCHA_STATIC_TOKEN` | **KALICI seçim.** Sunucudan token üretimi (`browser`) hedefte reddediliyor; gerçek tarayıcıdan alınmış statik token çalışıyor (`docs/LESSONS_2026_11_14.md`) |
 | `config/models.yaml` | `id` ↔ `upstream_id` (`modelAId`) eşlemesi |
 
 > Hedef domain ve model kimlikleri çalıştırma koduna gömülü değildir; `.env` ve
@@ -360,8 +360,8 @@ header alanlarını doldurmak yerine aşağıdakini yapın:
    cURL ayrıştırılır.
 
 `UPSTREAM_CURL` doluysa ayrı upstream alanlarından önceliklidir. `modelAId` varsayılan
-`max` modelinin upstream kimliği olarak kullanılır; `RECAPTCHA_PROVIDER=browser` seçimi
-korunur ve cURL'deki kısa ömürlü CAPTCHA token'ı kaydedilmez. Telemetri isteği, eksik URL
+`max` modelinin upstream kimliği olarak kullanılır. `RECAPTCHA_PROVIDER=browser` veya
+`external` seçiliyse o seçim korunur ve cURL'deki CAPTCHA token'ı kaydedilmez; `static` seçiliyse cURL'deki `recaptchaV3Token` `RECAPTCHA_STATIC_TOKEN` olarak alınır. Telemetri isteği, eksik URL
 veya cookie/authorization içermeyen cURL başlangıçta güvenli bir hatayla reddedilir.
 Ham cURL loglanmaz; yalnızca uygulanan alan adları ve model bulunup bulunmadığı loglanır.
 Eski `_2`/`_3`/`_4` hesap secret'ları varsa bu tek-cURL kipinde kullanılmaması için silin;
@@ -447,11 +447,15 @@ curl -X POST -H "Authorization: Bearer $API_KEY" \
 ## reCAPTCHA sağlayıcıları
 
 ```bash
-RECAPTCHA_PROVIDER=static     # RECAPTCHA_STATIC_TOKEN (~2 dk ömürlü, hızlı başlangıç)
+RECAPTCHA_PROVIDER=static     # KALICI. RECAPTCHA_STATIC_TOKEN zorunlu (ölçüm: 2+ saat geçerli)
 RECAPTCHA_PROVIDER=noop       # upstream doğrulamıyorsa / testler
-RECAPTCHA_PROVIDER=browser    # Playwright: RECAPTCHA_SITE_KEY gerekir
+RECAPTCHA_PROVIDER=browser    # ⚠️ Bu hedefte ÇALIŞMIYOR: 403 recaptcha validation failed
 RECAPTCHA_PROVIDER=external   # Tek istekte doğrudan token döndüren özel HTTP çözücü
 ```
+
+> **`browser` neden çalışmıyor:** sunucudaki Chromium'un ürettiği token düşük skorlu
+> sayılıyor. Aynı çerez, gövde, site key ve action ile gerçek tarayıcıdan alınmış
+> statik token geçiyor. Ölçüm ve ayrıntı: [`docs/LESSONS_2026_11_14.md`](docs/LESSONS_2026_11_14.md).
 
 Yerel Python kurulumunda `browser` için: `pip install ".[browser]" && playwright install chromium`.
 Gözlenen hedef **reCAPTCHA Enterprise** kullandığından örnek yapılandırmada
@@ -486,9 +490,10 @@ Upstream token'ı reddederse (403) dinamik sağlayıcıda cache otomatik geçers
 - Güçlü bir `API_KEYS` değeri ve tam sohbet cURL'ünü `UPSTREAM_CURL` secret'ına girin;
   domain, model ID ve upstream kimliği buradan çıkar. Kullanılan CAPTCHA kipinin ayarları
   ayrı environment alanlarında kalır.
-- `RECAPTCHA_PROVIDER=browser` için `RECAPTCHA_SITE_KEY` gerekir. Blueprint gözlenen
-  public site key'i, Enterprise modunu ve `chat_submit` action'unu hazır getirir.
-  Chromium ve sistem bağımlılıkları imajda hazırdır.
+- Blueprint `RECAPTCHA_PROVIDER=static` gelir (kalıcı). `RECAPTCHA_SITE_KEY`, Enterprise
+  modu ve `chat_submit` action'u hazır gelir. `static` kipinde `RECAPTCHA_STATIC_TOKEN`
+  gerekir; cURL yüklemesi onu otomatik doldurur.
+- `browser` seçilirse Chromium imajda hazır olsa da **token hedefte reddedilir**.
 
 Hareketsizlikte upstream oturumunun eskiyip eskimediğini sınamak için isteğe bağlı
 servis içi keepalive kullanılabilir. Varsayılan `0` kapalıdır; `10800` üç saatte bir
@@ -522,7 +527,12 @@ Mobilde çerez/cURL üretmenin mümkün olup olmadığı ve adımları:
 Neden sürekli çerez taşındığı, hangi değerin ne zaman tazelendiği ve kalan yol
 haritası tek sayfada: **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)**.
 
-Erişim token'ı ~1 saatte öldüğü için wrapper onu **kendisi yeniler**: oturum
+> **⚠️ Bu kurulumda otomatik yenileme KAPALI** (`UPSTREAM_REFRESH_ENABLED=false`,
+> kalıcı). Yenileme ucu Supabase `apikey` istiyor; o anahtar elde edilemiyor.
+> Ayrıca ölçümde token yaşının pratikte bağlayıcı olmadığı görüldü (aynı çerezle
+> 15+ saat). Aşağıdaki akış kod olarak durur, kullanılmaz.
+
+Erişim token'ı yenilendiğinde wrapper bunu **kendisi** yapar: oturum
 çerezindeki `refresh_token` ile `grant_type=refresh_token` isteği atılır (token'ın
 bitmesine 10 dk kalınca, 60 sn'de bir denetlenir), yeni token hem bellekteki
 ayarlara hem oturum çerezine yazılır. Elle tetik: Telegram **`/token`** veya

@@ -31,8 +31,12 @@ services:
         value: "true"
       - key: AUTH_DISABLED
         value: "false"
+      # KALICI değer `static`. Sunucudaki Chromium'un ürettiği token hedefte
+      # `403 recaptcha validation failed` alıyor (14 Kasım ölçümü); aynı
+      # çerez/gövde ile gerçek tarayıcıdan alınmış statik token çalışıyor.
+      # `browser` seçilirse token üretimi 20-30 sn sürer ve yine reddedilir.
       - key: RECAPTCHA_PROVIDER
-        value: browser
+        value: static
       # reCAPTCHA site key public'tir; cookie/token değildir.
       - key: RECAPTCHA_SITE_KEY
         value: 6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0
@@ -42,3 +46,7 @@ services:
         value: chat_submit
       - key: RECAPTCHA_BROWSER_TIMEOUT
         value: "45"
+      # KALICI değer `false`. Yenileme ucu Supabase `apikey` istiyor; o anahtar
+      # elde edilemiyor. `true` yapmak denenmeye değer bir yol değildir.
+      - key: UPSTREAM_REFRESH_ENABLED
+        value: "false"

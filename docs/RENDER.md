@@ -86,8 +86,10 @@ restart'ta sıfırlanır; bunlar upstream istek mantığını bozmaz.
    kopyalamayın. Eski ayrı `TARGET_DOMAIN`/`UPSTREAM_COOKIE`/token alanları bırakılırsa
    bile dolu `UPSTREAM_CURL` önceliklidir; tek hesap için eski `_2`/`_3`/`_4` değerlerini
    silmek en temiz seçenektir.
-5. `RECAPTCHA_PROVIDER=browser`, public site key, Enterprise sürümü ve action blueprint'te
-   hazırdır. cURL'deki kısa ömürlü CAPTCHA token'ı bu seçimi static'e çevirmez.
+5. Blueprint `RECAPTCHA_PROVIDER=static` getirir (**kalıcı**). Sunucudaki Chromium'un
+   ürettiği token hedefte `403 recaptcha validation failed` alıyor; gerçek tarayıcıdan
+   alınmış statik token çalışıyor. Public site key, Enterprise sürümü ve action hazırdır.
+   cURL yüklemesi `RECAPTCHA_STATIC_TOKEN` alanını otomatik doldurur.
 6. Deploy loglarında Chromium kurulumu ve application startup aşamalarını izleyin.
    `upstream_curl_loaded` yalnız uygulanan alan adlarını ve model bulunup bulunmadığını
    gösterir; ham cURL veya secret taşımaz. İlk başarılı yenilemeden sonra

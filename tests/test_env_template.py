@@ -63,8 +63,10 @@ def test_slot_fields_are_documented_as_optional() -> None:
 def test_per_request_values_are_never_marked_write() -> None:
     by_key = {row[0]: row for row in rows()}
 
-    for key in ("UPSTREAM_CX", "RECAPTCHA_STATIC_TOKEN"):
-        assert by_key[key][1] == NEVER
+    # RECAPTCHA_STATIC_TOKEN artık WRITE: `static` sağlayıcı kalıcı olduğu için
+    # token zorunlu (14 Kasım ölçümü: 2+ saat geçerli kalıyor).
+    assert by_key["UPSTREAM_CX"][1] == NEVER
+    assert by_key["RECAPTCHA_STATIC_TOKEN"][1] == WRITE
 
 
 def test_documented_file_is_up_to_date() -> None:
@@ -107,7 +109,8 @@ def test_env_skeleton_parses_clean(tmp_path: Path) -> None:
 def test_env_skeleton_writes_the_required_values() -> None:
     text = render_env()
 
-    for key in ("TARGET_DOMAIN=", "API_KEYS=", "RECAPTCHA_PROVIDER=browser"):
+    # `static` kalıcı: sunucudan üretilen (browser) token hedefte reddediliyor.
+    for key in ("TARGET_DOMAIN=", "API_KEYS=", "RECAPTCHA_PROVIDER=static"):
         assert re.search(rf"^{re.escape(key)}", text, re.M), key
     # Varsayılanlar iskelete yazılmaz; gürültü olur.
     assert "BREAKER_FAILURE_THRESHOLD=" not in text

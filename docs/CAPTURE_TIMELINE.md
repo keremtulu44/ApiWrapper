@@ -94,9 +94,17 @@ saatlerdir boşta" der.
 **En kritik bulgu:** erişim token'ının ömrü iki giriş arasında **3600 s → 1200 s**
 oldu. Kod ve belgeler "~1 saat" varsayıyordu. Wrapper'ın yenileme kararı `exp`
 alanına baktığı için (`needs_refresh`, leeway 600 s) bu değişiklik kırılma
-üretmez; ama "1 saat" yazan her yorum artık yanlış ve teşhisi yanlış yöne
-çekiyor: 20 dakikalık token'la 40 dakika bekleyen bir işletim, 401'i "oturum
-öldü" sanar.
+üretmez.
+
+> **Güncelleme (15 Kasım 2026):** yukarıdaki `exp` ölçümü doğrudur, ama
+> **pratik sonucu değildir**. Hedef, token yaşını **denetlemiyor**: `exp`
+> değeri 1200 s görünse de aynı çerez ve token'la **15+ saat** başarılı istek
+> atıldı. Yani "20 dakikalık token'la 40 dakika bekleyen işletim 401 alır"
+> beklentisi **gerçekleşmedi**. Çerezi öldüren şey yaş değil, **aynı hesapla
+> tarayıcıda oturum açmaktır**. Ayrıntı ve ölçüm tabloları:
+> [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md).
+>
+> Bu yüzden "20 dakikada bir cURL tazele" işletim kuralı **geçersizdir**.
 
 ### 2.4 Deployment (sürüm) başına değişenler
 

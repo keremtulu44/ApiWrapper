@@ -1,9 +1,21 @@
 # Büyük resim: neden sürekli cURL/çerez yeniliyorduk, şimdi nasıl çalışıyor
 
-> Tek sayfalık zihinsel model. Yeni bir oturuma başlarken önce burayı oku.
-> Ayrıntılar: [`COOKIE_LIFECYCLE.md`](COOKIE_LIFECYCLE.md),
-> [`MOBILE_CURL.md`](MOBILE_CURL.md), [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md),
-> [`MERGE_TARGET.md`](MERGE_TARGET.md).
+> Tek sayfalık zihinsel model. Ayrıntılar: [`COOKIE_LIFECYCLE.md`](COOKIE_LIFECYCLE.md),
+> [`MOBILE_CURL.md`](MOBILE_CURL.md), [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md).
+
+> ## ⚠️ Bu dosya ESKİ modeli anlatıyor
+>
+> Aşağıdaki "her şey kendiliğinden yenilenir" modeli **bu kurulumda geçerli
+> değildir** ve **zaten gerekmemiştir**:
+>
+> * **Otomatik yenileme kapalı** (`UPSTREAM_REFRESH_ENABLED=false`): yenileme
+>   ucu Supabase `apikey` istiyor, o anahtar elde edilemiyor.
+> * **Token yaşı sorun değil:** hedef `exp` alanını denetlemiyor. `exp` 1200 s
+>   görünse de aynı çerezle **15+ saat** çalıştı (ölçüldü).
+> * **Çerezi öldüren şey çakışma:** aynı hesapla tarayıcıda oturum açmak.
+>
+> **Güncel ve doğru model:** [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ·
+> kısa özet: [`INDEX.md`](INDEX.md) § "Önce bunu oku".
 
 ## 1. Sorun
 
