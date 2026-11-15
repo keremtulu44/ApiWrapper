@@ -270,6 +270,77 @@ def test_admin_endpoint_requires_api_key():
         assert response.status_code == 401
 
 
+# ------------------------------------------------- modelAId üç moda da işlenir
+NEW_MODEL_ID = "019b24bb-1111-2222-3333-444455556666"
+
+
+def _three_mode_models(tmp_path) -> str:
+    """Belge düzeyinde ortak kimlik taşıyan üç modlu geçici `models.yaml`."""
+    path = tmp_path / "models.yaml"
+    path.write_text(
+        "default: max\n"
+        "upstream_id: bayat-id\n"
+        "models:\n"
+        "  - id: max\n"
+        "    modality: chat\n"
+        "    referer_path: /text/direct\n"
+        "  - id: web\n"
+        "    modality: search\n"
+        "    referer_path: /search/direct\n"
+        "  - id: image\n"
+        "    modality: image\n"
+        "    referer_path: /image/direct\n",
+        encoding="utf-8",
+    )
+    return str(path)
+
+
+def test_admin_curl_binds_model_id_to_every_mode(tmp_path):
+    """Çalışma zamanı cURL'ü: yeni modelAId üç modun hepsine işlenir.
+
+    İstek gövdesindeki kimlik kayıt defterinden gelir (`entry.upstream_id`);
+    uç yalnız `settings`'i güncellerse sohbet yeni kimlikle çalışırken web ve
+    görsel dosyadaki bayat id'yi gönderir — istemci 200 görür, cevaplayan model
+    yanlış olur.
+    """
+    settings = make_settings(
+        upstream_cookie="old=1", models_file=_three_mode_models(tmp_path)
+    )
+    app = create_app(settings)
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/admin/upstream/curl",
+            json={"curl": fresh_curl(model_id=NEW_MODEL_ID)},
+            headers={"Authorization": f"Bearer {TEST_API_KEY}"},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json()["models_bound"] == ["image", "max", "web"]
+        assert SECRET_COOKIE not in response.text
+
+    registry = app.state.registry
+    for name in ("max", "web", "image"):
+        assert registry.resolve(name).upstream_id == NEW_MODEL_ID
+    # Kimlik değişimi mod eşleşmesini bozmaz.
+    assert registry.resolve("web").modality == "search"
+    assert registry.resolve("image").referer_path == "/image/direct"
+
+
+def test_startup_curl_seed_binds_model_id_to_every_mode(tmp_path):
+    """Render'da `UPSTREAM_CURL` secret'ı ile açılış: üç mod da taze kimlikle başlar."""
+    settings = make_settings(
+        models_file=_three_mode_models(tmp_path),
+        upstream_curl=fresh_curl(model_id=NEW_MODEL_ID),
+    )
+    app = create_app(settings)
+    with TestClient(app):
+        registry = app.state.registry
+        for name in ("max", "web", "image"):
+            assert registry.resolve(name).upstream_id == NEW_MODEL_ID
+    # Not: açılış yolu ham cURL'ü bellekte bırakır (zaten env'den geldi) ama
+    # durum dosyasına yazmaz — `PERSISTED_FIELDS` `upstream_curl`'ü içermez.
+    # Çalışma zamanı `/curl` ucu ise ham metni bellekten de siler.
+
+
 # --------------------------------------------------------------- telegram /curl
 @pytest.mark.asyncio
 async def test_telegram_curl_command_posts_to_admin_and_confirms():

@@ -53,7 +53,7 @@ from app.upstream.refresh import (
     cookie_refresh_token,
     refresh_upstream_token,
 )
-from app.upstream.stream_parser import parse_stream
+from app.upstream.stream_parser import PartShapeSummary, parse_stream
 from app.utils.ids import new_completion_id, now_ts
 from app.utils.sse import sse_done, sse_event
 from app.utils.tokens import count_tokens, tiktoken_available
@@ -336,6 +336,10 @@ class CompletionService:
             upstream_model_id=entry.upstream_id,
             chat_id=session.chat_id,
             recaptcha_token=token,
+            # Mod ve referer yolu model kaydından gelir: istemci `model` alanıyla
+            # modu seçer (chat/search/image), OpenAI şemasına yeni alan eklenmez.
+            modality=entry.modality,
+            referer_path=entry.referer_path,
         )
         return entry, built
 
@@ -414,6 +418,10 @@ class CompletionService:
             # korunursa birinci hesabın kota metni ikinci hesabın normal
             # cevabıyla birleşir ve sağlam hesap da kilitlenir.
             scanner = self._new_quota_scanner()
+            # Metin-dışı parçaların biçim özeti (deneme başına sıfırlanır):
+            # görsel/arama modlarında sonuç `0:` dışında bir kodda geliyorsa
+            # hangi kod ve alan adlarında geldiği buradan okunur. Değer loglanmaz.
+            shapes = PartShapeSummary()
             # Upstream isteği kabul ettiğinde pencereye BİR mesaj işlenir.
             # `emitted` ile kontrol edilmez: `emitted` yalnızca istemciye içerik
             # taşıyan TEXT olaylarında artar, `f:` (START) olayında artmaz —
@@ -429,6 +437,7 @@ class CompletionService:
                 "upstream_request",
                 model=entry.id,
                 upstream_model=entry.upstream_id,
+                modality=built.modality,
                 chat_id=built.chat_id,
                 account=account_label,
                 prompt_chars=len(built.prompt),
@@ -439,6 +448,7 @@ class CompletionService:
                     built.chat_id,
                     built.payload.to_wire(self.settings.upstream_recaptcha_field),
                     account=account,
+                    referer_path=built.referer_path,
                 ) as chunks:
                     idle = self.settings.stream_idle_timeout
                     iterator = parse_stream(chunks).__aiter__()
@@ -468,9 +478,19 @@ class CompletionService:
                             self._raise_for_quota(marker, event.text)
                         elif event.type is EventType.TEXT and event.text and scanner.active:
                             self._raise_for_quota(scanner.feed(event.text), event.text)
+                        shapes.add(event)
                         if event.type in _CLIENT_VISIBLE_EVENTS and event.text:
                             emitted += 1
                         yield event
+                if shapes:
+                    # Yalnız gerçekten metin-dışı parça geldiyse loglanır: düz
+                    # sohbet akışlarında satır üretmez (gürültü yok).
+                    logger.info(
+                        "stream_non_text_parts",
+                        modality=built.modality,
+                        counts=shapes.counts,
+                        shapes=shapes.shapes,
+                    )
                 return
             except UpstreamQuotaExceeded:
                 if account is not None:

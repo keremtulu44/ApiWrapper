@@ -25,6 +25,13 @@ services:
       # başlangıçta bundan çıkarılır; ham değer loglanmaz.
       - key: UPSTREAM_CURL
         sync: false
+      # Hedef gövdedeki `mode` alanını **zorunlu** tutuyor: boş/eksik gönderilince
+      # `400 ZodError · path ["mode"] · Required` dönüyor (15 Kasım canlı arızası).
+      # Değer normalde cURL tohumundan çıkarılır; tohumda `mode` yoksa boş kalırdı.
+      # Kod artık boş değerde direct-battle'a düşüyor, ama Free planda kalıcı disk
+      # olmadığı için blueprint'te açıkça tanımlamak en sağlam garantidir.
+      - key: UPSTREAM_MODE
+        value: direct-battle
       - key: LOG_LEVEL
         value: INFO
       - key: LOG_JSON

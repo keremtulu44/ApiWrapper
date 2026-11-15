@@ -141,13 +141,18 @@ def test_missing_optional_curl_fields_do_not_reuse_old_custom_values():
 
     updated, _ = apply_upstream_curl(settings)
 
-    assert updated.upstream_mode == ""
+    # `UPSTREAM_MODE` bilinçli istisnadır (15 Kasım canlı arızası): `mode`
+    # hedefin **zorunlu** alanı. Gövdesinde `mode` olmayan bir cURL uygulandığında
+    # buradaki sıfırlama ayarı "" yapıyor, `to_wire` boş değeri düşürüyor ve hedef
+    # her isteği `400 ZodError · mode Required` ile reddediyordu — sohbet tamamen
+    # kapandı. cURL'de görünmemesi, operatörün değerini silmek için gerekçe değil.
+    assert updated.upstream_mode == "old-mode"
     assert updated.upstream_referer_path == "/c/{chat_id}"
     assert updated.upstream_user_agent != "OldAgent/1.0"
     # `RECAPTCHA_STATIC_TOKEN` bilinçli istisnadır: gövdede captcha alanı yoksa
     # operatörün elle girdiği statik token korunur. Silinmesi, statik kipte her
-    # isteği `recaptcha_rejected` ile düşürüyordu (canlı arıza). Token yine de
-    # ~2 dk ömürlüdür; kalıcı çözüm browser/external sağlayıcıdır.
+    # isteği `recaptcha_rejected` ile düşürüyordu (canlı arıza). Ölçümde statik
+    # token 2+ saat geçerli; bu hedefte browser sağlayıcı çözüm değil (403 alıyor).
     assert updated.recaptcha_static_token == "old-captcha"
 
 
@@ -163,6 +168,12 @@ def test_app_lifespan_uses_curl_model_id_for_default_max_model():
     with TestClient(app):
         assert app.state.settings.target_domain == "upstream.test"
         assert app.state.registry.resolve(None).id == "max"
+        # cURL'deki modelAId üç modun hepsine işlenir: depoyla gelen
+        # models.yaml ortak kimliği belge düzeyinde taşır, kayıtlar miras alır.
+        # Yalnız varsayılan kayıt güncellenirse web/image bayat id gönderir.
+        registry = app.state.registry
+        for name in ("max", "web", "image"):
+            assert registry.resolve(name).upstream_id == MODEL_ID, name
         assert app.state.registry.resolve(None).upstream_id == MODEL_ID
 
 

@@ -52,15 +52,25 @@ _HINTS: dict[str, FailureHint] = {
         action=(
             "RECAPTCHA_PROVIDER=browser ise Chromium/Google erişimini, "
             "RECAPTCHA_SITE_KEY/ACTION/VERSION değerlerini kontrol edin. "
-            "static ise token ~2 dakikada ölür: yenileyin."
+            "static ise RECAPTCHA_STATIC_TOKEN boş ya da silinmiş demektir: "
+            "taze bir cURL yükleyin (/v1/admin/upstream/curl veya Telegram /curl)."
         ),
         severity="critical",
     ),
     "recaptcha_rejected": FailureHint(
         title="Upstream reCAPTCHA token'ını reddetti.",
         action=(
-            "Token üretimini yenileyin (/v1/admin/recaptcha/invalidate); "
-            "browser/external sağlayıcıya geçmek kalıcı çözümdür."
+            "Sırayla: (1) taze, maskesiz bir cURL yükleyin "
+            "(/v1/admin/upstream/curl veya Telegram /curl) — token gövdede yoksa "
+            "eski değer korunur ve o ölmüş olabilir; (2) alan adını eşleştirin: "
+            "tarayıcı recaptchaV2Token gönderiyorsa UPSTREAM_RECAPTCHA_FIELD'i "
+            "değiştirin (scripts/compare_curl.py farkı gösterir); (3) red yalnız "
+            "web/görsel modunda, sohbet çalışıyorsa token başka bir reCAPTCHA "
+            "action'ı için üretilmiş olabilir — o modun sayfasından ayrı cURL "
+            "gerekir; (4) UPSTREAM_CX_SEND=true ise cx sabitlenmiştir, ölçümde cx "
+            "her istekte değişiyor. NOT: bu hedefte RECAPTCHA_PROVIDER=browser "
+            "çözüm değildir; sunucuda üretilen token her zaman 403 aldı "
+            "(docs/LESSONS_2026_11_14.md §3-§4)."
         ),
         severity="critical",
     ),

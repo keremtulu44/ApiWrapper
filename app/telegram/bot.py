@@ -34,6 +34,7 @@ _HELP = (
     "Komutlar: /ping (wrapper + son upstream kontrolü), /tani (kimlik teşhisi), "
     "/yenile (sunucu "
     "tarayıcısıyla oturumu tazele), /cookie <çerez> ya da /curl <cURL>, /help.\n"
+    "/web <soru> = web arama modu (model=web, modality=search); düz metin = sohbet.\n"
     "/cookie! <çerez> = kontrolü atlayıp zorla uygula, /token = erişim token'ını "
     "yenile, /apikey [anahtar] = yenileme anon anahtarını keşfet/ayarla.\n"
     "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
@@ -73,6 +74,9 @@ class TelegramSettings(BaseSettings):
     #: Arıza bildirimlerinin gideceği sohbet. Boşsa ilk allowlist kaydı kullanılır.
     telegram_alert_chat_id: str = ""
     telegram_model: str = "max"
+    #: `/web <soru>` komutunun kullanacağı model adı (models.yaml'da
+    #: `modality: search` taşıyan kayıt). Düz metin mesajlar `telegram_model`'de kalır.
+    telegram_web_model: str = "web"
     telegram_poll_timeout: int = Field(default=30, ge=1, le=50)
     telegram_request_timeout: float = Field(default=180.0, gt=0)
     telegram_max_reply_chars: int = Field(default=12000, ge=1000, le=50000)
@@ -253,6 +257,23 @@ class TelegramBot:
             return
         if command in {"/invalidate", "/sifirla", "/reset-captcha", "/captcha-reset"}:
             await self.invalidate_captcha(chat_id)
+            return
+        if command in {"/web", "/arama", "/search"}:
+            # Web arama modu: wrapper'da modu seçen şey `model` adı olduğu için
+            # burada yalnızca model değiştirilir, ayrı bir uç nokta gerekmez.
+            parts = text.split(maxsplit=1)
+            question = parts[1].strip() if len(parts) > 1 else ""
+            if not question:
+                await self.send_text(
+                    chat_id,
+                    "Kullanım: /web <soru>\n"
+                    "Web arama modunda (modality=search) yanıt üretir. Düz metin "
+                    "gönderirsen sohbet modu (chat) kullanılır.",
+                )
+                return
+            await self.ask_wrapper(
+                chat_id, question, model=self.settings.telegram_web_model
+            )
             return
         if command in {"/curl", "/setcurl"}:
             # Parça sınırlarındaki boşlukları da korumak için komuta normalize
@@ -999,9 +1020,17 @@ class TelegramBot:
         lines.append("Şimdi bir mesaj atarak test edin.")
         await self.send_text(chat_id, "\n".join(lines))
 
-    async def ask_wrapper(self, chat_id: int, prompt: str) -> None:
+    async def ask_wrapper(
+        self, chat_id: int, prompt: str, model: str | None = None
+    ) -> None:
+        """Mesajı wrapper'a non-stream completion olarak sorar.
+
+        `model` verilirse o mod kullanılır (`/web` → `telegram_web_model`);
+        verilmezse `telegram_model` (chat) geçerlidir. Mod seçimi buradan
+        yapılır çünkü wrapper tarafında modu belirleyen tek şey `model` adıdır.
+        """
         payload = {
-            "model": self.settings.telegram_model,
+            "model": (model or self.settings.telegram_model),
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
         }

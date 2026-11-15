@@ -277,7 +277,8 @@ class Settings(BaseSettings):
     #: Upstream `apikey` istiyorsa (ör. Supabase anon anahtarı) buraya.
     upstream_refresh_api_key: str = ""
     #: Refresh token (çerezden okunamıyorsa). Yenilemede dönen yeni değer
-    #: bellekte buraya yazılır.
+    #: bellekte buraya yazılır; kalıcı tarayıcı girişi (`SessionKeeper`) de
+    #: çerezden okuduğu yenileme anahtarını bu alana bırakır.
     upstream_refresh_token: str = ""
     #: Dönen refresh/access token ve türev değerlerin atomik yazılacağı yerel
     #: durum dosyası (örn. ".cache/upstream_state.json"). Kalıcılığı dosya
@@ -503,8 +504,41 @@ class Settings(BaseSettings):
     def stream_url(self, chat_id: str) -> str:
         return self._join_url(self.base_url, self.upstream_stream_path, chat_id)
 
-    def referer_url(self, chat_id: str) -> str:
-        return self._join_url(self.base_url, self.upstream_referer_path, chat_id)
+    def referer_url(self, chat_id: str, path: str | None = None) -> str:
+        """Referer URL'si.
+
+        `path` verilirse model kaydının kendi yolu kullanılır: modality'ye göre
+        referer değişir (`/text/direct` · `/search/direct` · `/image/direct`) ve
+        hedef bu değeri parmak izinin parçası olarak görür. Verilmezse
+        `UPSTREAM_REFERER_PATH` (cURL'den içe aktarılan değer) geçerlidir.
+        """
+        return self._join_url(
+            self.base_url, (path or "").strip() or self.upstream_referer_path, chat_id
+        )
+
+    # ------------------------------------------- kalıcı tarayıcı girişi
+    #: Sunucudaki Chromium siteye mail+şifre ile girip çerezi tazelesin mi?
+    #: Platform oturumu ~3 saatte düşürdüğü için bunu açmak elle cURL
+    #: kopyalama ihtiyacını kaldırır. Varsayılan kapalı: RAM ve giriş
+    #: bilgisi gerektirir.
+    upstream_login_enabled: bool = False
+    #: Siteye giriş e-postası (secret değil).
+    upstream_login_email: str = ""
+    #: Site giriş şifresi. Yalnız env'den okunur, loglanmaz.
+    upstream_login_password: str = ""
+    #: Giriş ekranının yolu (ör. `/login`). Boşsa hedef kökü kullanılır.
+    upstream_login_path: str = ""
+    #: Çerez kontrol/tazeleme aralığı (saniye).
+    upstream_login_interval_seconds: float = 600.0
+    #: Kalıcı Chromium profil dizini (Render'da disk kalıcı değil, boş bırakın).
+    upstream_browser_profile_dir: str = ""
+
+    def login_url(self) -> str:
+        """Giriş ekranının tam adresi (``UPSTREAM_LOGIN_PATH`` boşsa kök)."""
+        path = (self.upstream_login_path or "").strip()
+        if not path:
+            return self.base_url
+        return self._join_url(self.base_url, path, "")
 
     def parsed_extra_headers(self) -> dict[str, str]:
         return parse_extra_headers(self.upstream_extra_headers)

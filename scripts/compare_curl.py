@@ -17,6 +17,7 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.config import Settings  # noqa: E402
+from app.services.model_registry import ModelEntry, ModelRegistry  # noqa: E402
 from app.upstream.curl_import import (  # noqa: E402
     load_body,
     normalize_curl,
@@ -38,6 +39,28 @@ GREEN, RED, YELLOW, DIM, RESET = (
 IGNORED_HEADERS = {"content-length", "host", "connection", "accept-encoding"}
 
 
+def entry_for_modality(settings: Settings, modality: str) -> ModelEntry | None:
+    """Tarayıcının `modality` değerini karşılayan models.yaml kaydını bulur.
+
+    Modality artık model kaydından geliyor; bu yüzden karşılaştırma "bizim
+    gövdemizde modality alanı var mı"dan ibaret olamaz. Alan adı her üç modda da
+    aynı (`modality`), farkı **değeri** belirliyor: chat/search/image. Değere
+    bakmayan bir karşılaştırma, yanlış modla giden isteği yeşil diye geçirir.
+    Kayıt bulunamazsa `None` döner (dosya yoksa da `None`).
+    """
+    wanted = (modality or "").strip().lower()
+    if not wanted:
+        return None
+    try:
+        registry = ModelRegistry.from_file(Path(settings.models_file))
+    except (FileNotFoundError, ValueError):
+        return None
+    for entry in registry.list_models():
+        if entry.modality == wanted:
+            return entry
+    return None
+
+
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
@@ -49,7 +72,14 @@ def main() -> int:
 
     settings = Settings()
     chat_id = str(ref_body.get("id") or "CHAT_ID")
-    ours = build_stream_headers(settings, chat_id)
+    ref_modality = str(ref_body.get("modality") or "").strip()
+    entry = entry_for_modality(settings, ref_modality)
+    # Referer modality'ye bağlıdır (chat → /text/direct, search → /search/direct,
+    # image → /image/direct). Kayıt bulunursa onun yolu kullanılır; bulunamazsa
+    # ayarlardaki UPSTREAM_REFERER_PATH geçerli kalır.
+    ours = build_stream_headers(
+        settings, chat_id, referer_path=entry.referer_path if entry else None
+    )
     ours = {k.lower(): v for k, v in ours.items()}
     problems = 0
 
@@ -119,6 +149,37 @@ def main() -> int:
             else:
                 print(f"{YELLOW}  FAZLA   {RESET}{field}  <-- tarayıcı göndermiyor")
                 problems += 1
+
+        # --- DEĞER karşılaştırması (yalnız alan adı değil) ---
+        # `modality` ve `mode` üç modda da aynı ADLA gider; yanlış modu ele veren
+        # şey değerleridir. Yalnız ada bakmak chat/search/image farkını "EŞLEŞTİ"
+        # diye yeşil geçiyordu (15 Kasım: görsel isteği chat modunda gidiyordu).
+        if ref_modality:
+            if entry is None:
+                print(
+                    f"{RED}  FARKLI  modality={ref_modality} — models.yaml'da bu modu "
+                    f"taşıyan kayıt yok (veya dosya okunamadı){RESET}"
+                )
+                print(
+                    f"     Bir kayda `modality: {ref_modality}` ve kendi "
+                    "`referer_path` değerini ekle; istemci modu `model` adıyla seçer."
+                )
+                problems += 1
+            else:
+                print(
+                    f"{GREEN}  EŞLEŞTİ modality={ref_modality} → models.yaml kaydı "
+                    f"'{entry.id}' (referer: {entry.referer_path or 'ayarlardan'}){RESET}"
+                )
+        ref_mode = str(ref_body.get("mode") or "").strip()
+        our_mode = settings.upstream_mode.strip()
+        if ref_mode and ref_mode != our_mode:
+            print(f"{RED}  FARKLI  mode{RESET}")
+            print(f"{DIM}      tarayıcı: {ref_mode}{RESET}")
+            print(f"{DIM}      bizim   : {our_mode or '(gönderilmiyor)'}{RESET}")
+            print(f"     .env içine yazın: UPSTREAM_MODE={ref_mode}")
+            problems += 1
+        elif ref_mode:
+            print(f"{GREEN}  EŞLEŞTİ mode={ref_mode}{RESET}")
 
         captcha_fields = [f for f in expected_fields if "recaptcha" in f.lower()]
         if captcha_fields and captcha_fields[0] != settings.upstream_recaptcha_field:

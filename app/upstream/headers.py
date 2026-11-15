@@ -219,6 +219,7 @@ def build_stream_headers(
     *,
     include_cookie: bool = True,
     deployment_id: str | None = None,
+    referer_path: str | None = None,
 ) -> dict[str, str]:
     """Stream uç noktası için tam başlık kümesi.
 
@@ -226,6 +227,11 @@ def build_stream_headers(
     başlıkları (varsa) bu taze değerle değiştirilir. Böylece tanımadığımız
     upstream'lere yeni başlık uydurmayız; yalnızca eskimesi bilinen damgayı
     tazeleriz.
+
+    `referer_path` verilirse referer bu yoldan üretilir. Modality'ye göre referer
+    değişir (canlı ölçüm: `search` → `/search/direct`, `image` → `/image/direct`)
+    ve gövdedeki `modality` alanıyla **tutarlı** olmalıdır; ikisi ayrı kaynaklardan
+    gelirse istek kendi kendisiyle çelişir.
     """
     ua = settings.upstream_user_agent
     trace_id = secrets.token_hex(16)
@@ -235,7 +241,7 @@ def build_stream_headers(
         "accept-language": settings.upstream_accept_language,
         "content-type": "text/plain;charset=UTF-8",
         "origin": settings.origin,
-        "referer": settings.referer_url(chat_id),
+        "referer": settings.referer_url(chat_id, referer_path),
         "user-agent": ua,
         "sec-fetch-dest": "empty",
         "sec-fetch-mode": "cors",
