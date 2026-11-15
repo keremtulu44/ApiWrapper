@@ -9,7 +9,7 @@ from app.adapters.prompt_builder import build_prompt, collect_attachments
 from app.core.config import Settings
 from app.core.errors import InvalidRequestError, PayloadTooLargeError
 from app.schemas.openai import ChatCompletionRequest
-from app.schemas.upstream import UpstreamPayload, UserMessage
+from app.schemas.upstream import DEFAULT_UPSTREAM_MODE, UpstreamPayload, UserMessage
 from app.utils.ids import new_message_id
 
 #: Upstream'in desteklemediği ve politikaya tabi parametreler.
@@ -147,7 +147,10 @@ def build_upstream_request(
         ),
         modality=resolved_modality,
         recaptchaV3Token=recaptcha_token,
-        mode=settings.upstream_mode.strip() or None,
+        # `mode` hedefin **zorunlu** alanı: boş ayarla alanı düşürmek isteği
+        # `400 ZodError · mode Required` ile öldürüyor (15 Kasım canlı arızası).
+        # Bu yüzden boş değer varsayılana düşer, `None` olarak alanı düşürmez.
+        mode=settings.upstream_mode.strip() or DEFAULT_UPSTREAM_MODE,
         # `cx` yalnızca açıkça istendiğinde gönderilir; varsayılan davranış
         # (alan yok) canlıda çalıştığı gözlendi, gereksiz risk alınmaz.
         cx=(settings.upstream_cx.strip() or None) if settings.upstream_cx_send else None,
