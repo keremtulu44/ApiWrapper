@@ -280,6 +280,24 @@ Hesap geçici olarak kilitli; upstream bunu metinle bildiriyor
 * Kilit erken açıldıysa: `POST /v1/admin/accounts/{slot}/reset`.
 * Bu hata **devre kesiciyi açmaz** (erişilebilirlik arızası değildir).
 
+### 3b. `429 {"error":"prompt failed"}` — yalnız görsel modunda (ikincil mod)
+
+Belirti: `model=image` isteğinde üç kez
+`upstream_http_error status=429 body={"error":"prompt failed"}`, ardından
+`stream_failed error_code=upstream_rate_limited content_chars=0`. Aynı dakikada
+`max`/`web` çalışıyorsa kimlik (çerez/token/`mode`/`modelAId`) sağlıklıdır; red
+**moda özgüdür** — upstream tarafında görsel üretimi bu hesap/izinle kapalı
+görünüyor. Bu bir kota değildir: `/v1/admin/accounts` pencereleri normaldir ve
+yanıtta `Retry-After` gelmez; beklemek sonucu değiştirmez.
+
+Karar (15 Kasım ölçümü): mod **silinmedi, vitrinden indirildi** —
+`config/models.yaml`'da `listed: false`. `GET /v1/models` onu listelemez (istemci
+açılır listesi çalışmayan modu önermez), `resolve()` çalışmaya devam eder.
+Görsel modunu ana akışa almadan önce upstream'in kabul ettiğini ölç: tarayıcıda
+gerçek bir görsel üret, `create-evaluation` isteğinin 200 döndüğünü ve akışta
+`a2:[{"type":"image",…}]` parçasının geldiğini gör, sonra `listed: true` yap.
+Ayrıntı: `LESSONS_2026_11_14.md §10`.
+
 ---
 
 ## 4. CAPTCHA — `recaptcha_unavailable` / `recaptcha_rejected`

@@ -73,7 +73,7 @@ Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damg
 | Alan | Ayrıntı |
 |---|---|
 | Uç noktalar | `POST /v1/chat/completions` (stream + non-stream), `POST /v1/completions`, `GET /v1/models`, `GET /v1/models/{id}`, `GET /health`, `GET /metrics`, `/v1/admin/*` |
-| Modlar | Sohbet · **web arama** · **görsel**: istemci `model` adıyla seçer (`max` / `web` / `image`), gövdede `modality` + referer yolu birlikte değişir. Tek `UPSTREAM_CURL` üç modu da taşır |
+| Modlar | Sohbet · **web arama**: istemci `model` adıyla seçer (`max` / `web`), gövdede `modality` + referer yolu birlikte değişir. Tek `UPSTREAM_CURL` iki modu da taşır. Görsel modu (`image`) **ikincil/deneysel**: `listed: false`, vitrin dışında |
 | Akış | Vercel AI SDK data-stream (`0:`, `f:`, `e:`, `d:`, `3:` …) → OpenAI SSE; UTF-8 sınır güvenli; `[DONE]` garantili |
 | Upstream auth | Cookie'den `access_token` ayıklama (JSON/base64/parçalı) → `Authorization: Bearer`; `/v1/admin/auth` teşhisi |
 | Güvenlik | Sabit zamanlı API key doğrulama, log maskeleme, gövde/mesaj/prompt limitleri, SSRF'e kapalı sabit hedef |
@@ -333,7 +333,7 @@ yakalama karşılaştırıldı):
 |---|---|---|---|
 | Sohbet | `max` | `chat` | cURL'den gelen (`UPSTREAM_REFERER_PATH`) |
 | Web arama | `web` | `search` | `/search/direct` |
-| Görsel | `image` | `image` | `/image/direct` |
+| Görsel *(ikincil, vitrin dışında)* | `image` | `image` | `/image/direct` |
 
 Bu yüzden **üç ayrı cURL gerekmez**: tek `UPSTREAM_CURL` üç modu da taşır.
 Modu seçmek OpenAI şemasını bozmaz — istemci yalnızca `model` adını değiştirir,
@@ -348,14 +348,24 @@ curl -s "$BASE/v1/chat/completions" -H "Authorization: Bearer $KEY" \
 Takma adlar da geçerlidir: `search` / `web-search` / `ara` → `web`;
 `gorsel` / `görsel` / `img` → `image`.
 
-**Görsel çıktısı** metin delta'sı olarak gelmez: hedef görseli akışın `a2`
-kanalında `[{"type":"image","image":"<imzalı R2 adresi>","mimeType":"image/jpeg"}]`
-biçiminde gönderir (öncesinde `[{"type":"heartbeat"}]` parçaları gelir). Wrapper
-bu parçayı içeriğe `![görsel](<adres>)` markdown'ı olarak ekler — OpenAI şeması
-ve uç noktaları değişmez, istemciler (Open WebUI, Continue, Cursor) görseli
-çizer. Adres **imzalı ve ~1 saat ömürlü** (`X-Amz-Expires=3600`): saklanmaz,
-loglanmaz, geldiği anda iletilir. Telegram botu `/gorsel` ile bu adresi
-`sendPhoto` üzerinden gerçek fotoğrafa çevirir.
+### İkincil mod: görsel (deneysel — vitrin dışında)
+
+Görsel modu **silinmedi, ana akışın dışına alındı**: `config/models.yaml`'da
+`listed: false` taşıdığı için `GET /v1/models` listesinde görünmez (Open WebUI /
+Cursor açılır listesi çalışmayan bir modu önermez), ama `model=image` açıkça
+istendiğinde çözülür ve çalışır. Sebep 15 Kasım canlı ölçümü: görsel akışı
+düzeltildikten sonra upstream bu modu üç denemede de `429 {"error":"prompt
+failed"}` ile reddetti; sohbet ve web arama aynı kimlikle sorunsuz çalıştı.
+Durum değişirse tek satır yeterli: `listed: true`.
+
+İletim yolu hazır duruyor: hedef görseli metin delta'sı olarak değil
+`a2:[{"type":"image","image":"<imzalı R2 adresi>","mimeType":"image/jpeg"}]`
+parçasıyla gönderiyor (öncesinde `[{"type":"heartbeat"}]` geliyor); wrapper bunu
+içeriğe `![görsel](<adres>)` markdown'ı olarak ekliyor — şema ve uç noktalar
+değişmiyor. Telegram `/gorsel` adresi `sendPhoto` ile gerçek fotoğrafa çeviriyor,
+`scripts\windows\chat.ps1 -OpenImage` tarayıcıda açıyor. Adres **imzalı ve ~1 saat
+ömürlü** (`X-Amz-Expires=3600`): saklanmaz, loglanmaz. Kök neden ve kurallar:
+`docs/LESSONS_2026_11_14.md §10`.
 
 **Yeni mod eklemek** `config/models.yaml`'a kayıt eklemektir, kod değişikliği
 değildir:
@@ -676,12 +686,12 @@ boşken hiçbir mesaj wrapper'a iletilmez; allowlist dışındaki sohbetler de y
 Sonra normal bir metin gönderin veya `/ping` ile wrapper health kontrolünü deneyin.
 `/web <soru>` aynı soruyu **web arama modunda** sorar (`model=web`, `modality=search`);
 düz metin sohbet modunda kalır. Model adı `TELEGRAM_WEB_MODEL` ile değiştirilir.
-`/gorsel <istem>` görsel üretir (`model=image`, `modality=image`) ve sonucu
-`sendPhoto` ile **fotoğraf** olarak gönderir; model adı `TELEGRAM_IMAGE_MODEL`.
-Görsel modunu görmek için en pratik yol budur — PowerShell/OpenAI istemcileri
-yanıtı markdown görsel adresi olarak döker, çizmez.
 `/help` komutları listeler. Konuşma geçmişi tutulmaz; her mesaj bağımsızdır ve yanıtlar
 Telegram sınırına göre parçalanır.
+
+*Deneysel (ana akışın dışında):* `/gorsel <istem>` görsel üretmeyi dener ve gelirse
+`sendPhoto` ile **fotoğraf** olarak gönderir (`TELEGRAM_IMAGE_MODEL`). Upstream bu modu
+`429 {"error":"prompt failed"}` ile reddedebiliyor — bkz. "İkincil mod: görsel".
 
 Bot normal (non-streaming) yolu test eder; SSE/stream regresyonu için ayrıca
 `scripts/test_client.py --model max` çalıştırın. 429 yanıtı upstream rate limit olarak

@@ -5,6 +5,8 @@
 # aliases        → aynı modele işaret eden alternatif adlar (opsiyonel)
 # modality       → gövdedeki `modality` alanı: chat | search | image
 # referer_path   → o modun tarayıcı referer yolu (gövdeyle tutarlı olmalı)
+# listed         → false ise mod `/v1/models` listesinde GÖRÜNMEZ ama çalışmaya
+#                  devam eder (ikincil/deneysel modlar için; bkz. `image` kaydı)
 #
 # MOD MANTIĞI (15 Kasım ölçümü): chat, web arama ve görsel istekleri AYNI uca
 # (`create-evaluation`), AYNI çerez, AYNI `mode` (`direct-battle`) ve AYNI
@@ -63,11 +65,19 @@ models:
       - web-search
       - ara
 
+  # İKİNCİL MOD — vitrin dışında ama silinmedi.
+  # `listed: false` yalnız `GET /v1/models` listesinden düşürür; `model=image`
+  # açıkça istendiğinde mod çözülür ve çalışır (Telegram `/gorsel` de öyle).
+  # Sebep (15 Kasım canlı ölçümü): görsel akışı düzeltildikten sonra upstream bu
+  # modu üç denemede de `429 {"error":"prompt failed"}` ile reddetti — tek
+  # kimlikle görsel üretimi kota/izin tarafında kapalı görünüyor. Sohbet ve web
+  # arama aynı kimlikle çalışmaya devam etti. Durum değişirse `listed: true` yap.
   - id: image
     owned_by: arena
     modality: image
     referer_path: /image/direct
-    description: Görsel üretim modu — gövdede modality=image ile çağrılır.
+    listed: false
+    description: Görsel üretim modu (deneysel) — gövdede modality=image ile çağrılır.
     aliases:
       - gorsel
       - görsel

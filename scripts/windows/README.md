@@ -149,21 +149,29 @@ Yanıt canlı (token token) akar.
 
 # Farklı adres/anahtar
 .\scripts\windows\chat.ps1 "test" -BaseUrl http://127.0.0.1:8080 -ApiKey sk-baska
+```
 
-# Görsel üretimi (mod = image); adresi tarayıcıda açmak için -OpenImage
+### İkincil mod: görsel (deneysel)
+
+Ana akış **sohbet (`max`) ve web arama (`web`)**. Görsel modu silinmedi ama
+vitrinden indi: `config/models.yaml`'da `listed: false`, bu yüzden `/v1/models`
+listesinde görünmez; `-Model image` açıkça yazılırsa yine çözülür. 15 Kasım canlı
+ölçümünde upstream bu modu `429 {"error":"prompt failed"}` ile reddetti, sohbet ve
+web arama aynı kimlikle çalıştı.
+
+```powershell
+# Deneysel: görsel modu (upstream 429 verebilir)
 .\scripts\windows\chat.ps1 "bir manzara çiz" -Model image -BaseUrl $B -ApiKey $K
 .\scripts\windows\chat.ps1 "bir manzara çiz" -Model image -OpenImage
 ```
 
-### Görsel modu notu
-
-Hedef görseli metin olarak değil, akışın `a2` kanalında **imzalı bir R2 adresi**
-olarak gönderir; wrapper bunu içeriğe `![görsel](<adres>)` markdown'ı olarak
-ekler. PowerShell markdown çizmediği için betik adresi ayrıca `Gorsel 1 …`
-satırında gösterir, `-OpenImage` verilirse varsayılan tarayıcıda açar. Adres
-**~1 saat geçerlidir** (`X-Amz-Expires=3600`) ve imza taşır: dosyaya kaydetmeyin,
-paylaşmayın. Görseli sohbet penceresinde gerçek fotoğraf olarak görmek için
-Telegram `/gorsel <istem>` komutunu kullanın (bot `sendPhoto` ile gönderir).
+Görsel gelirse hedef onu metin olarak değil, akışın `a2` kanalında **imzalı bir R2
+adresi** olarak gönderir; wrapper içeriğe `![görsel](<adres>)` markdown'ı ekler.
+PowerShell markdown çizmediği için betik adresi ayrıca `Gorsel 1 …` satırında
+gösterir, `-OpenImage` verilirse varsayılan tarayıcıda açar. Adres **~1 saat
+geçerlidir** (`X-Amz-Expires=3600`) ve imza taşır: dosyaya kaydetmeyin,
+paylaşmayın. Gerçek fotoğraf olarak görmek için Telegram `/gorsel <istem>` (bot
+`sendPhoto` ile gönderir).
 
 ### Sorun teşhisi
 

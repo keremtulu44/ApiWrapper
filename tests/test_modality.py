@@ -17,6 +17,7 @@ import pytest
 import respx
 
 from app.adapters.openai_to_upstream import build_upstream_request
+from app.api.v1.models import list_models as list_models_endpoint
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
 from app.schemas.upstream import StreamEvent
 from app.services.model_registry import ModelRegistry
@@ -175,6 +176,53 @@ def test_shipped_models_file_covers_three_modes():
     # İstemci Türkçe/İngilizce takma adlarla da modu seçebilsin.
     assert registry.resolve("search").id == "web"
     assert registry.resolve("gorsel").id == "image"
+
+
+def test_unlisted_mode_leaves_the_showcase_but_keeps_working():
+    """`listed: false` vitrinden indirir, modu **silmez** (15 Kasım kararı).
+
+    Upstream görsel modunu `429 {"error":"prompt failed"}` ile reddetti; sohbet ve
+    web arama aynı kimlikle çalıştı. Mod ikincile alındı: istemcinin model
+    listesinde görünmesin, ama ölçüm değeri ve hazır iletim yolu korunsun.
+    """
+    registry = ModelRegistry.from_file("config/models.yaml")
+
+    showcase = {entry.id for entry in registry.list_models(listed_only=True)}
+    assert showcase == {"max", "web"}
+
+    # Silinmedi: varsayılan liste (teşhis + sözleşme testleri) tümünü görür.
+    assert {entry.id for entry in registry.list_models()} == {"image", "max", "web"}
+    entry = registry.resolve("image")
+    assert (entry.modality, entry.listed) == ("image", False)
+    # Takma ad da vitrinde yok ama çözülmeye devam ediyor.
+    assert registry.resolve("gorsel").id == "image"
+
+
+@pytest.mark.asyncio
+async def test_models_endpoint_lists_only_the_showcase_entries():
+    """/v1/models ikincil modu önermez; /v1/models/{id} onu döndürmeye devam eder."""
+    registry = ModelRegistry.from_file("config/models.yaml")
+    payload = await list_models_endpoint(registry)
+    assert {card.id for card in payload.data} == {"max", "web"}
+
+
+def test_listed_flag_tolerates_text_values():
+    """YAML'da bayrak metin yazılsa da doğru çözülsün (`"false"` → False).
+
+    `bool("false")` Python'da True'dur; sessizce ters davranmasın diye açık liste.
+    """
+    def listed_of(value: Any) -> bool:
+        loaded = ModelRegistry.from_dict(
+            {"models": [{"id": "m", "upstream_id": "u", "listed": value}]}
+        )
+        return loaded.resolve("m").listed
+
+    assert listed_of(False) is False
+    assert listed_of("false") is False
+    assert listed_of("hayır") is False
+    assert listed_of(True) is True
+    assert listed_of("true") is True
+    assert listed_of(None) is True  # alan hiç yazılmamış → varsayılan görünür
 
 
 def test_shipped_chat_entry_takes_referer_from_the_operators_curl():

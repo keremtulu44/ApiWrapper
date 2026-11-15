@@ -36,11 +36,11 @@ _HELP = (
     "/yenile (sunucu "
     "tarayıcısıyla oturumu tazele), /cookie <çerez> ya da /curl <cURL>, /help.\n"
     "/web <soru> = web arama modu (model=web, modality=search); düz metin = sohbet.\n"
-    "/gorsel <istem> = görsel üretim modu (model=image, modality=image); sonuç "
-    "fotoğraf olarak gönderilir.\n"
     "/cookie! <çerez> = kontrolü atlayıp zorla uygula, /token = erişim token'ını "
     "yenile, /apikey [anahtar] = yenileme anon anahtarını keşfet/ayarla.\n"
-    "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
+    "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz.\n"
+    "Deneysel (ana akışın dışında): /gorsel <istem> görsel üretmeyi dener ve "
+    "sonucu fotoğraf olarak gönderir — upstream bu modu 429 ile reddedebiliyor."
 )
 
 

@@ -23,6 +23,20 @@ KNOWN_MODALITIES = frozenset({"chat", "search", "image"})
 #: Modality yazılmadığında kullanılan değer (eski davranışın birebir karşılığı).
 DEFAULT_MODALITY = "chat"
 
+#: YAML'da bayrak yanlışlıkla metin yazıldığında ("false" metni Python'da doğru
+#: sayılır) da doğru çözülsün diye açık liste.
+_FALSEY = frozenset({"false", "0", "no", "hayir", "hayır", "kapali", "kapalı"})
+
+
+def _as_flag(value: Any, default: bool = True) -> bool:
+    """YAML değerini bool'a çevirir; boş/eksik değer `default` olur."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    return default if not text else text not in _FALSEY
+
 
 @dataclass(slots=True)
 class ModelEntry:
@@ -41,6 +55,10 @@ class ModelEntry:
     #: Bu moda ait referer yolu (örn. `/search/direct`). Boşsa ayarlardaki
     #: `UPSTREAM_REFERER_PATH` kullanılır.
     referer_path: str = ""
+    #: `False` ise kayıt **vitrinde görünmez** (`/v1/models` listesi) ama
+    #: çalışmaya devam eder: `model=<ad>` açıkça istendiğinde çözülür. İkincil/
+    #: deneysel modları istemcinin model listesinden düşürmek için kullanılır.
+    listed: bool = True
 
 
 class ModelRegistry:
@@ -109,6 +127,7 @@ class ModelRegistry:
                     description=str(item.get("description", "")),
                     modality=modality or DEFAULT_MODALITY,
                     referer_path=str(item.get("referer_path") or "").strip(),
+                    listed=_as_flag(item.get("listed"), default=True),
                 )
             )
             if not own_upstream_id:
@@ -189,8 +208,18 @@ class ModelRegistry:
             )
         return entry
 
-    def list_models(self) -> list[ModelEntry]:
-        return sorted(self._entries.values(), key=lambda e: e.id)
+    def list_models(self, listed_only: bool = False) -> list[ModelEntry]:
+        """Kayıtları ada göre sıralı döndürür.
+
+        `listed_only=True` yalnız vitrine çıkacak kayıtları verir (`/v1/models`).
+        `listed: false` işaretli mod silinmez: `resolve()` onu çözmeye devam
+        eder, yani istemci adı açıkça yazdığında mod çalışır. Teşhis
+        (`scripts/compare_curl.py`) ve sözleşme testleri varsayılanla — tüm
+        kayıtlar — çalıştığı için ikincil modlar orada görünür kalır.
+        """
+        entries = (entry for entry in self._entries.values()
+                   if entry.listed or not listed_only)
+        return sorted(entries, key=lambda e: e.id)
 
     def __len__(self) -> int:
         return len(self._entries)
