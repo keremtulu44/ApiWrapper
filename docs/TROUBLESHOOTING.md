@@ -222,6 +222,45 @@ başlığıdır:
   yolunu korur** ve yanıtta `⚠` uyarı döner (`allow_path_change: true` ile
   bilinçli olarak değiştirilebilir). Yani yanlış isteğin cURL'ü servisi bozmaz.
 
+## 1d. `HTTP 400` — gövde şeması (`upstream_error_unclassified`)
+
+Oturum sağlamken (401/403 yok, 409 yok) hedef **400** dönüyorsa sorun kimlikte
+değil, gönderilen gövdededir.
+
+Log'da `upstream_error_unclassified` satırını arayın. Gövdenin kendisi
+(token/kimlik taşıyabilir) loglanmaz; yalnız uzunluğu ve dört işaret ailesi
+(`captcha_like`, `bot_like`, `verify_like`, `forbidden_like`) yazılır. Bunların
+dördü de `false` ise gövde bir **şema/parametre** hatasıdır.
+
+**Bu depoda ölçülmüş tek 400 nedeni `mode` alanının gövdeden düşmesiydi**
+(2026-11 canlı arızası). Zincir şöyle işliyordu:
+
+1. Render panosu boş env değeri saklayamaz → `UPSTREAM_MODE` yer tutucuya döner.
+2. `Settings` yer tutucuyu boşa çevirir (`app/core/config.py`).
+3. Adapter `mode=None` geçer, `to_wire(exclude_none=True)` alanı **siler**.
+
+Tarayıcı cURL'ünün gövdesinde `mode` her zaman vardır; eksikliği hedefte 400
+üretir. Üç ayrı yol aynı sonuca çıkıyordu ve üçü de kapatıldı:
+
+| Yol | Düzeltme |
+|---|---|
+| Env boş / yer tutucu | `UpstreamPayload.mode` artık `None`/boş kabul etmez, varsayılana düşer (`app/schemas/upstream.py`) |
+| `.cache` durum dosyası | `upstream_mode` **env'de doluysa** diskteki eski kayda ezdirilmez (`ENV_AUTHORITATIVE_FIELDS`, `app/upstream/state_store.py`) |
+| `UPSTREAM_CURL` gövdesinde `mode` yok | İçe aktarıcı artık env değerini silmez (`app/upstream/curl_import.py` alan listesi `app/upstream/curl_runtime.py`) |
+
+Doğrulama:
+
+* `GET /v1/admin/auth` çıktısında `upstream_mode` kontrolü **her zaman** hangi
+  değerin gövdeye gideceğini ve kaynağını (`UPSTREAM_MODE` / `varsayılan`) yazar.
+* Gövdenin tamamını görmek için `UPSTREAM_MODE` değerini Render panosunda
+  `direct-battle` yapın; alan artık düşmediği için panoda boş bırakılsa bile
+  istek `mode: "direct-battle"` ile gider.
+
+400 hâlâ sürüyorsa gövde şeması gerçekten değişmiş demektir: tarayıcıdan taze
+`create-evaluation` cURL'ü alın ve gövde anahtarlarını
+`--data-raw` içinden bu depodaki `app/schemas/upstream.py` alanlarıyla
+karşılaştırın (`scripts/compare_curl.py` bunu alan alan yapar).
+
 ## 2. `HTTP 401` — `upstream_unauthorized`
 
 Oturum cookie'si/token'ı ölmüş. `/v1/admin/auth?slot=N` ile hangi hesabın

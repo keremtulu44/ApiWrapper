@@ -6,7 +6,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
+
+#: Hedefin şemasının beklediği `mode` değeri (tarayıcı cURL'ünden). `UPSTREAM_MODE`
+#: boş kaldığında gövdeye bu değer yazılır; alan hiçbir zaman düşürülmez.
+DEFAULT_UPSTREAM_MODE = "direct-battle"
 
 
 class UserMessage(BaseModel):
@@ -35,10 +39,25 @@ class UpstreamPayload(BaseModel):
     recaptcha_v3_token: str = Field(default="", alias="recaptchaV3Token")
     #: Hedef servisin beklediği `mode`. Tarayıcı cURL'ündeki gerçek değer
     #: `UPSTREAM_MODE` ile ezilir; boş bırakılırsa bu varsayılan gönderilir.
-    mode: str | None = "direct-battle"
+    #:
+    #: Alan **hiçbir zaman wire'dan düşmez** (2026-11 canlı 400 arızası): Render
+    #: panosunda boş env değeri saklanamadığı için `UPSTREAM_MODE` yer tutucuya
+    #: dönüşüyor, `Settings` onu boşa çeviriyor ve adapter `None` geçiyordu;
+    #: `to_wire(exclude_none=True)` de alanı gövdeden tamamen siliyordu. Tarayıcı
+    #: cURL'ünün gövdesinde bu alan her zaman var; eksikliği hedefte 400 (şema
+    #: doğrulaması) üretir. Boş/`None` değer bu varsayılana düşer.
+    mode: str = DEFAULT_UPSTREAM_MODE
     #: Hedef istemci bağlamı. Tarayıcı cURL'ünde gövdede gelir; boşsa alan
     #: hiç gönderilmez (uydurulmuş bir değer göndermek isteği bozar).
     cx: str | None = None
+
+    @field_validator("mode", mode="before")
+    @classmethod
+    def _default_mode(cls, v: object) -> object:
+        """Boş/eksik `mode` değerini hedefin beklediği varsayılana çevirir."""
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return DEFAULT_UPSTREAM_MODE
+        return v.strip() if isinstance(v, str) else v
 
     def to_wire(self, recaptcha_field: str = "recaptchaV3Token") -> dict[str, Any]:
         """Upstream'in beklediği alan adlarıyla (camelCase) sözlük döndürür.

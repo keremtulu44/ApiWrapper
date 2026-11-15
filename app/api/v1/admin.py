@@ -407,6 +407,67 @@ async def update_upstream_curl(
 
 
 @router.post(
+    "/upstream/login",
+    summary="Refresh the cookie from the persistent browser session",
+    dependencies=[Depends(require_admin)],
+)
+async def refresh_browser_login(request: Request) -> dict[str, Any]:
+    """Kalıcı giriş yapmış tarayıcıdan taze çerezi üretir.
+
+    `/upstream/capture` tek seferlik yakalama dener; bu uç ise **kalıcı giriş
+    yapmış tarayıcıyı** (bkz. `app/upstream/browser_login.py`) kullanır.
+    `UPSTREAM_LOGIN_ENABLED=true` değilse hiçbir tarayıcı açılmaz ve açıklayıcı
+    hata döner — sessizce başarısız olmaz.
+    """
+    from app.core.logging import get_logger
+    from app.upstream.browser_login import login_configured, missing_login_config
+
+    logger = get_logger(__name__)
+    settings = request.app.state.settings
+    if not settings.upstream_login_enabled:
+        raise InvalidRequestError(
+            "UPSTREAM_LOGIN_ENABLED=false. Kalıcı tarayıcı oturumu kapalı; "
+            "açmak için UPSTREAM_LOGIN_ENABLED=true, UPSTREAM_LOGIN_EMAIL ve "
+            "UPSTREAM_LOGIN_PASSWORD ayarlayın.",
+            param="upstream_login_enabled",
+        )
+    if not login_configured(settings):
+        missing = missing_login_config(settings)
+        raise InvalidRequestError(
+            "Giriş yapılandırması eksik: " + ", ".join(missing),
+            param="upstream_login",
+        )
+
+    keeper = getattr(request.app.state, "session_keeper", None)
+    if keeper is None:
+        # Süreç `UPSTREAM_LOGIN_ENABLED=false` ile açılmış olabilir; o zaman
+        # uç noktadan tarayıcı açmak yerine açıkça söylenir.
+        raise InvalidRequestError(
+            "Tarayıcı oturumu bu süreçte başlatılmamış. Servisi "
+            "UPSTREAM_LOGIN_ENABLED=true ile yeniden başlatın.",
+            param="upstream_login",
+        )
+
+    status = await keeper.refresh(reason="manual")
+    logger.info(
+        "upstream_login_manual_refresh",
+        ok=status.ok,
+        changed=status.changed,
+        notes=len(status.notes),
+    )
+    return {
+        "status": "refreshed" if status.ok else "not_refreshed",
+        **status.as_dict(),
+        "stats": dict(keeper.stats),
+        "next": (
+            "Bir mesaj atarak test edin."
+            if status.ok
+            else "Neden alanına bakın; giriş akışı değişmiş olabilir."
+        ),
+    }
+
+
+@router.post(
     "/upstream/capture",
     summary="Capture a fresh session with the server browser",
     dependencies=[Depends(require_admin)],

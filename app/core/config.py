@@ -123,8 +123,29 @@ class Settings(BaseSettings):
     #: Gönderimi `UPSTREAM_CX_SEND=true` ile açılır.
     upstream_cx: str = ""
     upstream_cx_send: bool = False
-    #: Gövdeye yazılacak `mode` alanı (örn. "direct"). Boşsa alan gönderilmez.
+    #: Gövdeye yazılacak `mode` alanı (örn. "direct"). **Boşsa alan gövdeden
+    #: düşmez**: hedefin şeması bu alanı istiyor (eksikliği canlıda 400 üretti),
+    #: bu yüzden boş değer `app/schemas/upstream.py` içindeki varsayılana düşer.
     upstream_mode: str = ""
+    # ------------------------------------------------- kalıcı tarayıcı girişi
+    #: Siteye mail+şifre ile giriş yapmış **kalıcı bir tarayıcı** tutulsun mu?
+    #: Açıkken ``app/upstream/browser_login.py`` periyodik olarak taze çerezi
+    #: üretip `upstream_cookie` alanına yazar; sunucu böylece 20 dakikada bir
+    #: ölen token'la uğraşmaz. Varsayılan kapalı: tarayıcı RAM yer.
+    upstream_login_enabled: bool = False
+    #: Giriş e-postası. Şifreyle birlikte verilmezse modül hiç başlamaz.
+    upstream_login_email: str = ""
+    #: Giriş şifresi. **Yalnız env'den** okunur, loglanmaz, diske yazılmaz.
+    upstream_login_password: str = ""
+    #: Giriş ekranının yolu (hedef köküne göre). Boşsa tekil giriş sayfası
+    #: varsayılan olarak kök URL kullanılır.
+    upstream_login_path: str = ""
+    #: Tazeleme aralığı (saniye). Varsayılan 600 = 10 dk; token ~1200 s ömürlü
+    #: olduğu için yarısından önce tazelenir.
+    upstream_login_interval_seconds: float = 600.0
+    #: Kalıcı Chromium profili için dizin. Boşsa profil saklanmaz (Render'da
+    #: disk kalıcı olmadığı için varsayılan boştur; yerelde işe yarar).
+    upstream_browser_profile_dir: str = ""
     #: Gövdedeki reCAPTCHA alanının adı. Hedefe göre "recaptchaV3Token" veya
     #: "recaptchaV2Token" olabilir; tarayıcı isteğinden birebir kopyalayın.
     upstream_recaptcha_field: str = "recaptchaV3Token"
@@ -525,6 +546,13 @@ class Settings(BaseSettings):
 
     def referer_url(self, chat_id: str) -> str:
         return self._join_url(self.base_url, self.upstream_referer_path, chat_id)
+
+    def login_url(self) -> str:
+        """Giriş ekranının tam adresi (``UPSTREAM_LOGIN_PATH`` boşsa kök)."""
+        path = (self.upstream_login_path or "").strip()
+        if not path:
+            return self.base_url
+        return self._join_url(self.base_url, path, "")
 
     def parsed_extra_headers(self) -> dict[str, str]:
         return parse_extra_headers(self.upstream_extra_headers)

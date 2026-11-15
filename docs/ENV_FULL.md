@@ -123,6 +123,7 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `UPSTREAM_AUTH_SCHEME_2` | ↺ 2. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. Varsayılan `Bearer`. | kimlik |
 | `UPSTREAM_AUTH_SCHEME_3` | ↺ 3. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. Varsayılan `Bearer`. | kimlik |
 | `UPSTREAM_AUTH_SCHEME_4` | ↺ 4. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. Varsayılan `Bearer`. | kimlik |
+| `UPSTREAM_BROWSER_PROFILE_DIR` | ⬜ Kalıcı Chromium profil dizini. Render'da disk kalıcı olmadığı için boş bırakın. | upstream |
 | `UPSTREAM_CAPTURED_MODEL_ID` | ⬜ cURL içe aktarılınca kendisi dolar (`modelAId` UUID). Elle yazma. | upstream |
 | `UPSTREAM_COOKIE` | ⬜ `UPSTREAM_CURL` kullanıyorsan boş. Yalnız çerezle gideceksen **tam** `Cookie` başlığı, parçalı `.0/.1` dahil. | kimlik |
 | `UPSTREAM_COOKIE_2` | ⬜ 2. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. | kimlik |
@@ -139,7 +140,12 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `UPSTREAM_KEEPALIVE_MODEL` | ↺ `max` — probe'un kullanacağı model. | keepalive |
 | `UPSTREAM_KEEPALIVE_STREAM_SMOKE_INTERVAL_SECONDS` | ↺ `86400` — günde bir gerçek akış yolu denemesi; `0` = kapalı. | keepalive |
 | `UPSTREAM_LIMIT_MARKERS` | ↺ Örnekteki virgüllü liste. Ayırt edici ibare seç; `rate limit` gibi genel söz yanlış alarm üretir. | upstream |
-| `UPSTREAM_MODE` | ✅ `direct-battle` — gövdedeki `mode` alanı; cURL'den birebir. | upstream |
+| `UPSTREAM_LOGIN_EMAIL` | ⬜ Siteye giriş e-postası (secret değil). | upstream |
+| `UPSTREAM_LOGIN_ENABLED` | ✅ `false` — **kalıcı tarayıcı girişi**. `true` yaparsanız sunucudaki Chromium siteye mail+şifre ile girer ve taze çerezi kendisi üretir; 20 dakikalık token sorunu biter. RAM yer (512 MB planda risk). | upstream |
+| `UPSTREAM_LOGIN_INTERVAL_SECONDS` | ↺ `600` — tazeleme aralığı. Token ~1200 s ömürlü; yarısından önce tazelenir. | upstream |
+| `UPSTREAM_LOGIN_PASSWORD` | ⬜ Site giriş şifresi. **Yalnız env'de** durur; loglanmaz, diske yazılmaz. | upstream |
+| `UPSTREAM_LOGIN_PATH` | ⬜ Giriş ekranının yolu (ör. `/login`). Boşsa hedef kökü kullanılır. | upstream |
+| `UPSTREAM_MODE` | ✅ `direct-battle` — gövdedeki `mode` alanı; cURL'den birebir. Boş bırakılsa bile alan gövdeye yazılır (varsayılan `direct-battle`); `.cache` ve `UPSTREAM_CURL` bu değeri ezmez. | upstream |
 | `UPSTREAM_PROXY` | ⬜ Proxy yoksa boş; varsa `http://kullanici:sifre@host:port`. | upstream |
 | `UPSTREAM_RECAPTCHA_FIELD` | ✅ `recaptchaV3Token` (v2 görürsen `recaptchaV2Token`) — gövdedeki captcha alan adı. | upstream |
 | `UPSTREAM_REFERER_PATH` | ✅ `/text/direct` — cURL'ün `referer` yolundan birebir. | upstream |
@@ -148,7 +154,7 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `UPSTREAM_REFERER_PATH_4` | ⬜ 4. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. | upstream |
 | `UPSTREAM_REFRESH_API_KEY` | ⬜ Upstream `apikey` istiyorsa; boşsa siteden otomatik keşfedilir. | yenileme |
 | `UPSTREAM_REFRESH_CHECK_INTERVAL_SECONDS` | ↺ `60` sn. | yenileme |
-| `UPSTREAM_REFRESH_ENABLED` | ↺ `true` — erişim token'ı kendiliğinden yenilenir. | yenileme |
+| `UPSTREAM_REFRESH_ENABLED` | ✅ `false` — **bu kurulumda kalıcı olarak kapalı**. Yenileme ucu Supabase anon `apikey` istiyor ve o anahtar elde edilemiyor; çerez elle tazelenir (~20 dk'da bir, `/curl` veya `/cookie`). Gerekçe: README § İşletim Modeli. | yenileme |
 | `UPSTREAM_REFRESH_LEEWAY_SECONDS` | ↺ `600`. JWT ömrünün yarısından büyük olursa her istekte yenileme tetiklenir; `/v1/admin/auth` bunu uyarır. | yenileme |
 | `UPSTREAM_REFRESH_TOKEN` | ⬜ Çerezde refresh token varsa boş bırak. Yenilemede dönen yeni değer bellekte tutulur. | yenileme |
 | `UPSTREAM_REFRESH_URL` | ⬜ Boş → çerezdeki JWT'nin `iss` alanından türetilir. Yenileme 401 verirse doldur. | yenileme |
@@ -170,5 +176,5 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `WRAPPER_BASE_URL` | ⬜ Aynı serviste çalışıyorsa **yazma**; varsayılan yerel adres kullanılır. | telegram |
 | `WRITE_TIMEOUT` | ↺ `30` sn. | dayanıklılık |
 
-Toplam **151** anahtar: 19 yazılacak, 43 boş, 89 varsayılan/yazma.
+Toplam **157** anahtar: 21 yazılacak, 47 boş, 89 varsayılan/yazma.
 Denetim için: `python -m scripts.env_audit .env`.

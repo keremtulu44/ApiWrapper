@@ -27,12 +27,18 @@ oturum devir dosyası (dosya/satır konumları): **[`docs/HANDOFF.md`](docs/HAND
 
 ## Hızlı Belge ve Operasyon Rehberi
 
-Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damgası**, **Geçici reCAPTCHA/Anti-bot**) birbirinden ayırarak kendi kendini idame ettirir (`self-healing`):
+> **Bu sistemin işletim modeli kalıcı olarak "1 Kasım mantığı"dır** — otomatik
+> token yenileme **kapalıdır**, çerez elle tazelenir. Gerekçesi ve tam
+> sonuçları: [**§ İşletim Modeli**](#i̇şletim-modeli-kalıcı-karar). Aşağıdaki
+> tabloda adı geçen otomatik yenileme belgeleri bu kurulumda **kullanılmaz**.
+
+Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damgası**, **Geçici reCAPTCHA/Anti-bot**) birbirinden ayırır. Otomatik yenileme bu kurulumda kapalı olduğu için kimlik katmanı elle beslenir:
 
 | Konu | Belge | Kısa Özet |
 |---|---|---|
-| **Büyük Resim & 3 Katman** | **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)** | Neden saat başı cURL gerekmez? Hangi değer sabit, hangisi döner, sistem nasıl kendi kendine yeniler? |
-| **Çerez Ömrü & Otomatik Refresh** | **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)** | `refresh_token` rotasyonu, `apikey` otomatik keşfi, parçalı çerez (`.0`/`.1`) yeniden yazımı ve 401 kurtarma |
+| **İşletim Modeli (kalıcı karar)** | **[`README.md#i̇şletim-modeli-kalıcı-karar`](#i̇şletim-modeli-kalıcı-karar)** | Neden otomatik yenileme kapalı, neyi elle tazeleyeceksin, ne kadar sürede bir |
+| **Büyük Resim & 3 Katman** | **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)** | Hangi değer sabit, hangisi döner. **Not:** §3'teki otomatik yenileme bu kurulumda kapalı |
+| **Çerez Ömrü** | **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)** | Oturum çerezinin biçimi, parçalı çerez (`.0`/`.1`), JWT `exp` okuma. Otomatik refresh bölümü kullanılmıyor |
 | **Yakalama Zaman Çizelgesi (ölçüm)** | **[`docs/CAPTURE_TIMELINE.md`](docs/CAPTURE_TIMELINE.md)** | Üç cURL'ün zaman sırasına göre farkı: hangi değer istek / sayfa / giriş / deploy başına döner; ölçülen `expires_in` (3600 → 1200 s) |
 | **Free Render Kurulumu** | **[`docs/RENDER.md`](docs/RENDER.md)** | `UPSTREAM_CURL`, `RENDER_API_KEY` ile restart sonrası kalıcılık, uyku davranışı ve gömülü Telegram botu |
 | **Telefondan Yönetim** | **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** | Bilgisayar yokken `/tani`, `/token`, `/apikey`, `/yenile`, `/cookie` ve `/curl` komutları |
@@ -620,6 +626,153 @@ parametrelerin davranışını belirler:
 | `ignore` (varsayılan) | Sessizce yok sayılır |
 | `hint` | Prompt'a doğal dil ipucu olarak eklenir |
 | `error` | 400 ile reddedilir |
+
+---
+
+## İşletim Modeli (kalıcı karar)
+
+> **Özet:** Bu servis **1 Kasım mantığıyla** çalışır. Otomatik token yenileme
+> kalıcı olarak **kapalıdır**; oturum çerezi **elle** tazelenir. Bu bir eksik
+> değil, bilinçli ve kalıcı bir karardır.
+
+### Neden
+
+Otomatik yenileme (`UPSTREAM_REFRESH_ENABLED=true`) hedefin yenileme ucunu
+kullanır; o uç **Supabase `apikey`** (anon/public anahtar) ister. Bu anahtar:
+
+* hedefin HTML/JS'inden otomatik keşfedilemiyor (anti-bot duvarı),
+* tarayıcı yakalamasından güvenilir biçimde alınamıyor,
+* elde yok ve **elde edilemiyor**.
+
+Dolayısıyla `refresh_token` mevcut olsa bile yenileme isteği atılamaz.
+Bu yüzden `UPSTREAM_REFRESH_ENABLED=false` **doğru ve kalıcı** değerdir.
+Bu konu tartışmaya kapalıdır; "anahtarı bulup yenilemeyi açma" bir çözüm yolu
+değildir.
+
+### Bu ne demek — pratik sonuçları (14-15 Kasım ölçümleri)
+
+> **Aşağıdaki sayılar tahmin değil, 14-15 Kasım 2026'da yapılan canlı
+> ölçümlerdir.** Eski belgelerdeki "token 20 dakikada ölür, 15-20 dakikada bir
+> cURL gerekir" bilgisi **yanlıştı**; düzeltilmiştir.
+
+| Konu | Ölçülen gerçek |
+|---|---|
+| Erişim token'ı | Yapılandırılmış değer ~1200 s görünse de hedef **yaşını sıkı denetlemiyor**; **77 dakika** ve sonrasında çalışmaya devam etti |
+| reCAPTCHA token'ı | `static` modda **2+ saat** geçerli kaldı (normal reCAPTCHA ömrü ~2 dk; hedef yaş kontrolü yapmıyor) |
+| Çerez | **15+ saat** kesintisiz çalıştı |
+| Tazeleme sıklığı | **Günde bir kezden az.** Günde 8 kez değil |
+| Yeniden deploy | **Gerekmez.** `/curl` çalışan süreci yerinde günceller |
+
+### Çerezi asıl öldüren şey: aynı hesapla tarayıcıya girmek
+
+Ölçümün en önemli bulgusu bu. Çerez kendiliğinden ölmüyor; **çakışma** öldürüyor.
+
+| Ne yaptın | Sunucudaki çerez | Sonraki istek |
+|---|---|---|
+| Tarayıcıda **giriş yaptın** | Geçersiz olur (platform yeni oturumu tek geçerli sayar) | ❌ `401 User not found` |
+| Sadece **"session rejected" bildirimi gördün**, giriş yapmadın | Canlı kalır | ✅ Çalışır |
+| Tarayıcıyı kapattın / çıkış yaptın | Genelde geri geçerli olur | ⚠️ Değişken |
+| **Hiç dokunmadın** | Her yanıtta kendini tazeler | ✅ 15+ saat |
+
+**Kural:**
+
+> **Sunucu tek sahip olsun.** Çerez sunucuda; tarayıcıda aynı hesapla oturum
+> açmak çerezi iptal eder. `401` aldığında panik yapma — **tarayıcıya girmeden
+> bekle**, genelde kendi kendine döner.
+
+**401 sonrası davranış (kod):** 401/403 kimlik hatası **devre kesiciyi açmaz**
+ve çerez **silinmez**. Sonraki istek aynı çerezle tekrar denenir. Bu yüzden
+kısa süreli oturum düşmeleri elle müdahale gerektirmez.
+
+### Ne zaman gerçekten cURL gerekir
+
+1. Tarayıcıda giriş yaptın → çerez iptal oldu → **yeni cURL**
+2. `401` sürüyor ve **dakikalarca** geçmiyor (kendi kendine dönmüyor)
+3. `403 recaptcha validation failed` → reCAPTCHA token'ı tazele
+
+### Mevcut kurulum
+
+```env
+RECAPTCHA_PROVIDER=static        # KALICI: sunucudan token üretme reddediliyor
+UPSTREAM_LOGIN_ENABLED=false     # Chromium bekleme modunda (aşağıya bak)
+UPSTREAM_REFRESH_ENABLED=false   # KALICI: apikey yok
+```
+
+---
+
+## Otomatik tarayıcı girişi (bekleme modunda)
+
+Kod **hazır ama kapalı**. Hiçbir kaynak tüketmez; tek env ile açılır.
+
+| Durum | Davranış |
+|---|---|
+| `UPSTREAM_LOGIN_ENABLED` boş/`false` | Chromium **hiç açılmaz**. Sıfır RAM, sıfır CPU |
+| `true` + e-posta + şifre | Chromium açılır, çerezi kendisi tazeler |
+| `true` ama e-posta/şifre eksik | Chromium açılmaz; log'a `upstream_login_not_configured` düşer |
+
+**Ne zaman açılır:** yalnızca çerez **sürekli** ölüyorsa ve tarayıcıya hiç
+girmemene rağmen düzelmiyorsa.
+
+**Ne zaman açılmaz (şu anki durum):** çerez 15+ saat yaşıyorsa gereksizdir.
+Ayrıca otomatik giriş **senin tarayıcı oturumunla çakışabilir** — iki taraf
+birbirinin oturumunu iptal edebilir.
+
+Açmak için:
+
+```env
+UPSTREAM_LOGIN_ENABLED=true
+UPSTREAM_LOGIN_EMAIL=<hedef site e-postası>
+UPSTREAM_LOGIN_PASSWORD=<şifre>
+UPSTREAM_LOGIN_INTERVAL_SECONDS=600   # varsayılan
+```
+
+Manuel tetik: `POST /v1/admin/upstream/login` (admin anahtarı ister).
+
+> **CAPTCHA'ya dokunmaz.** Yalnızca `upstream_cookie`,
+> `upstream_access_token`, `upstream_refresh_token` alanlarını yazar.
+> `recaptcha_provider` / `recaptcha_static_token` değişmez — uçtan uca
+> doğrulandı.
+
+---
+
+## Sık yapılan hatalar (bunları tekrar yapma)
+
+| # | Hata | Doğrusu |
+|---|---|---|
+| 1 | Sunucudan reCAPTCHA token'ı üretmek (`RECAPTCHA_PROVIDER=browser`) | **Reddediliyor.** `static` kullan. Ölçüm: aynı çerez/gövde ile `browser` → `403`, `static` → ✅ |
+| 2 | Çerez "3 saatte ölüyor" sanıp her 3 saatte cURL almak | Öldüren şey **tarayıcıya giriş yapmak**. Dokunmazsan 15+ saat dayanır |
+| 3 | `401 User not found` görünce hemen yeni cURL aramak | Önce **tarayıcıya girmeden** 5-10 dk bekle; genelde kendi döner |
+| 4 | cURL almak için tarayıcıda giriş yapıp **çıkış yapmamak** | Al, sonra **çıkış yap** (ya da ayrı hesap kullan). Yoksa sunucudaki çerez ölür |
+| 5 | 2-14 Kasım arası değişiklikleri suçlamak | 1 Kasım sürümü **de** aynı `recaptcha validation failed` hatasını veriyor. Sorun kodda değil, hedefin skor eşiğinde |
+| 6 | Docker build'inde `playwright install --with-deps` | `libatomic.so.1` eksikliği → **exit 127**. Bugünkü Dockerfile kullanılır |
+| 7 | "Token 20 dakikada ölür" bilgisine güvenmek | Eski/yanlış bilgi. Ölçüm: 77+ dk, çerez 15+ saat |
+
+---
+
+### Kapalı konular (yeniden açma)
+
+Aşağıdakiler denendi veya değerlendirildi; **çözüm değiller**:
+
+* **Supabase anon anahtarını bulmak** — ulaşılamıyor, gerekmiyor da: uygulama
+  Supabase'i **sunucu tarafında** çağırıyor, tarayıcı hiç GoTrue'ya gitmiyor.
+* **Cloudflare "Just a moment" sayfasından anahtar kazımak** — captcha
+  aşma/token çıkarma işi; yapılmayacak.
+* **Agent mode (`/nextjs-api/stream/create-chat`)** — aynı `recaptchaV3Token`,
+  farklı şema (`message.parts`/`clientPlatform`/`timezone`), model seçimi yok;
+  sıfır kazanç, kod değişikliği gerektirir.
+
+### İlgili ayarların bu kurulumdaki değerleri
+
+```env
+UPSTREAM_REFRESH_ENABLED=false   # KALICI: değiştirme
+UPSTREAM_REFRESH_LEEWAY_SECONDS=600
+UPSTREAM_REFRESH_CHECK_INTERVAL_SECONDS=60
+```
+
+`docs/COOKIE_LIFECYCLE.md` §5'teki otomatik yenileme akışı bu kurulumda
+**çalışmaz** (kod olarak durur, kullanılmaz). Aynı şekilde
+`docs/BIG_PICTURE.md` §3 "ölmesine izin verme" modeli bu kurulum için geçerli
+değildir; geçerli model yukarıdaki tablodur.
 
 ---
 

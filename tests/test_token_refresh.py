@@ -1025,3 +1025,59 @@ def test_rewrite_undecodable_session_leaves_entire_header_untouched():
     rewritten, changed = rewrite_session_cookie(cookie, access_token="not-a-jwt")
     assert not changed
     assert rewritten == cookie
+
+
+def test_state_store_does_not_overwrite_operator_configured_mode(tmp_path):
+    """Env'de açıkça verilen `UPSTREAM_MODE` diskteki eski kayda ezdirilmemeli.
+
+    Canlı arıza (2026-11): eski süreç `upstream_mode=""` değerini durum
+    dosyasına yazmıştı. Operatör Render'da `UPSTREAM_MODE=direct-battle` yapıp
+    servisi yeniden başlattığında `restore_runtime_state` diskteki boş değeri
+    uygulayıp env değerini siliyordu; gövdeden `mode` düşüyor ve hedef 400
+    dönüyordu. `mode` bir kimlik değil istemci parametresidir: env kazanır.
+    """
+    from app.upstream.state_store import remember_seed, restore_runtime_state, save_runtime_state
+
+    state_file = tmp_path / "mode_override_state.json"
+    cookie = session_cookie()
+    seed = _settings(
+        upstream_cookie=cookie,
+        upstream_mode="",
+        upstream_state_file=str(state_file),
+    )
+    remember_seed(seed)
+    assert save_runtime_state(seed, source="test") is True
+
+    restarted = _settings(
+        upstream_cookie=cookie,
+        upstream_mode="direct-battle",
+        upstream_state_file=str(state_file),
+    )
+    changed = restore_runtime_state(restarted)
+
+    assert restarted.upstream_mode == "direct-battle"
+    assert "upstream_mode" not in changed
+
+
+def test_state_store_still_restores_mode_when_env_is_empty(tmp_path):
+    """Env boşsa cURL'den öğrenilen `mode` yine de geri yüklenir (davranış korunur)."""
+    from app.upstream.state_store import remember_seed, restore_runtime_state, save_runtime_state
+
+    state_file = tmp_path / "mode_restore_state.json"
+    cookie = session_cookie()
+    seed = _settings(
+        upstream_cookie=cookie,
+        upstream_mode="side-by-side",
+        upstream_state_file=str(state_file),
+    )
+    remember_seed(seed)
+    assert save_runtime_state(seed, source="test") is True
+
+    restarted = _settings(
+        upstream_cookie=cookie,
+        upstream_state_file=str(state_file),
+    )
+    changed = restore_runtime_state(restarted)
+
+    assert restarted.upstream_mode == "side-by-side"
+    assert "upstream_mode" in changed

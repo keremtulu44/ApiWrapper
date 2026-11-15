@@ -32,6 +32,11 @@ from app.services.recaptcha import create_recaptcha_provider
 from app.services.session_manager import SessionManager
 from app.services.token_refresh import run_token_refresher
 from app.telegram.bot import TelegramSettings, run_from_settings
+from app.upstream.browser_login import (
+    SessionKeeper,
+    login_configured,
+    run_session_keeper,
+)
 from app.upstream.client import UpstreamClient
 from app.upstream.curl_runtime import apply_upstream_curl
 from app.upstream.state_store import restore_runtime_state
@@ -204,6 +209,32 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             name="upstream-token-refresh",
         )
 
+    # Kalıcı tarayıcı girişi: site oturumu kendi token'ını yeniler, biz
+    # periyodik olarak taze çerezi ayarlara yazarız. Varsayılan kapalı.
+    session_keeper: SessionKeeper | None = None
+    keeper_task: asyncio.Task[None] | None = None
+    if settings.upstream_login_enabled:
+        if not login_configured(settings):
+            logger.warning(
+                "upstream_login_skipped",
+                hint=(
+                    "UPSTREAM_LOGIN_ENABLED=true ama UPSTREAM_LOGIN_EMAIL / "
+                    "UPSTREAM_LOGIN_PASSWORD eksik."
+                ),
+            )
+        else:
+            session_keeper = SessionKeeper(settings)
+            app.state.session_keeper = session_keeper
+            await session_keeper.startup()
+            keeper_task = asyncio.create_task(
+                run_session_keeper(
+                    settings,
+                    keeper=session_keeper,
+                    interval_seconds=settings.upstream_login_interval_seconds,
+                ),
+                name="upstream-login-keeper",
+            )
+
     keepalive_task: asyncio.Task[None] | None = None
     if settings.upstream_keepalive_interval_seconds > 0:
         # Aynı görev hem canlılık denemesi hem teşhis/bildirim kaynağıdır.
@@ -231,6 +262,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             keepalive_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await keepalive_task
+        if keeper_task is not None:
+            keeper_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await keeper_task
+        if session_keeper is not None:
+            await session_keeper.shutdown()
         if telegram_task is not None:
             telegram_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

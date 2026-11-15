@@ -1,5 +1,11 @@
 # Çerez ömrü: neyin süresi dolar, neyin dolmaz, ne sürekli alınmalı
 
+> ⚠️ **§5 (otomatik refresh) BU KURULUMDA KULLANILMIYOR.** Servis **1 Kasım
+> mantığıyla** çalışır: `UPSTREAM_REFRESH_ENABLED=false`. Gerekçe: yenileme
+> ucu Supabase anon `apikey` istiyor ve o anahtar elde edilemiyor. Yetkili
+> kaynak: [README § İşletim Modeli](../README.md#i̇şletim-modeli-kalıcı-karar).
+> Çerez **elle** tazelenir; erişim token'ı ~20 dakikada ölür.
+
 Bu belge `/tani` ve `/yenile` çıktısındaki çerezleri tek tek açıklar. Amaç
 "her seferinde çerez almak" döngüsünü kırmak: hangi değer **kendiliğinden**
 döner, hangisi **yalnız oturum ölünce** elle taşınır.
@@ -12,8 +18,10 @@ döner, hangisi **yalnız oturum ölünce** elle taşınır.
 | **2. Türev değerler** | `dpl_...` sürüm damgası, `cx`, `referer` yolu | Saatler–günler (her deploy'da değişir) | **`/yenile`** otomatik yakalar |
 | **3. Geçici/telemetri** | `__cf_bm`, `_dd_s`, `_ga*`, `_vcrr_*` | 15 dk – 2 yıl | Site kendi yazar; **kimlik değeri yok** |
 
-**Sonuç:** Elle sürekli alınması gereken bir şey **yok**. Katman 1 yalnız oturum
-gerçekten öldüğünde, katman 2 zaten otomatik, katman 3 tamamen ilgisiz.
+**Sonuç (bu kurulum):** Katman 1 **elle** taşınır ve erişim token'ı ~20
+dakikada öldüğü için pratikte **~15-20 dakikada bir tazeleme** gerekir
+(`/curl` veya `/cookie`, yeniden deploy gerekmez). Katman 2 kanarya/`/yenile`
+ile tazelenir, katman 3 tamamen ilgisizdir.
 
 ## 1. /tani çıktısındaki çerezler — ne işe yarar
 

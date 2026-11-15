@@ -133,6 +133,9 @@ def build_upstream_request(
         ),
         modality="chat",
         recaptchaV3Token=recaptcha_token,
+        # `mode` gövdeden **asla** düşmemeli: tarayıcı cURL'ünde her zaman var ve
+        # eksikliği hedefte 400 üretiyordu. Boş env değeri şemanın kendi
+        # varsayılanına (`direct-battle`) düşer, `None` geçilmez.
         mode=settings.upstream_mode.strip() or None,
         # `cx` yalnızca açıkça istendiğinde gönderilir; varsayılan davranış
         # (alan yok) canlıda çalıştığı gözlendi, gereksiz risk alınmaz.

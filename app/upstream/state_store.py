@@ -90,6 +90,16 @@ PERSISTED_FIELDS: tuple[str, ...] = (
 # JSON/local state içinde bool türü korunarak saklanan alanlar.
 PERSISTED_BOOL_FIELDS: tuple[str, ...] = ("upstream_auth_from_cookie", "upstream_cx_send")
 
+#: Açıkça env'den verilmişse **diskteki kayıt tarafından ezilmeyen** alanlar.
+#:
+#: `upstream_mode` bir *kimlik* ya da *dönen token* değildir: operatörün env'de
+#: yazdığı sabit bir istemci parametresidir. Diskteki anlık görüntü ise onu eski
+#: değeriyle (canlı arızada boş olarak) taşır. Sonuç: Render'da `UPSTREAM_MODE`
+#: düzeltilse bile restart'ta disk kaydı değeri boşaltıyor, gövdeden `mode`
+#: alanı düşüyor ve hedef 400 dönüyordu. Bu yüzden env'de değer varsa **env
+#: kazanır**; env boşsa diskteki kayıt (cURL'den öğrenilmiş olabilir) uygulanır.
+ENV_AUTHORITATIVE_FIELDS: tuple[str, ...] = ("upstream_mode",)
+
 #: Süreç başında hesaplanan tohum özeti (`id(settings)` -> sha256 hex).
 _SEED_HASHES: dict[int, str] = {}
 
@@ -300,6 +310,11 @@ def restore_runtime_state(settings: Settings) -> list[str]:
             continue
         val = saved.get(field)
         if not isinstance(val, str):
+            continue
+        if field in ENV_AUTHORITATIVE_FIELDS and str(
+            getattr(settings, field, "") or ""
+        ).strip():
+            # Operatörün env'de verdiği değer diskteki eski kayda ezdirilmez.
             continue
         if getattr(settings, field, "") != val:
             setattr(settings, field, val)

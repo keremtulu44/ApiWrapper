@@ -256,8 +256,13 @@ def apply_upstream_curl(
     # cURL uygulandığında token boşalıyor ve statik kipte her istek
     # `recaptcha_rejected` ile düşüyordu. Alan yalnızca cURL'de yeni bir
     # captcha değeri varsa değişir (aşağıdaki CAPTCHA bloğu).
+    # `UPSTREAM_MODE` burada **bilinçli olarak yok**: cURL'de `mode` alanı
+    # bulunmaması, operatörün env'de yazdığı `mode` değerini silmek için
+    # gerekçe değildir. Önceden varsayılana (`""`) çekiliyordu; sonuç, env'de
+    # `direct-battle` yazılı olsa bile isteğin `mode`suz gitmesi ve hedefin
+    # 400 dönmesiydi (2026-11 canlı arızası). `mode` alanı cURL'de varsa
+    # yukarıdaki `updates` sözlüğüyle zaten uygulanır.
     for key in (
-        "UPSTREAM_MODE",
         "UPSTREAM_RECAPTCHA_FIELD",
         "UPSTREAM_ACCEPT_LANGUAGE",
         "UPSTREAM_USER_AGENT",

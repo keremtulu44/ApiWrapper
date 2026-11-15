@@ -1,5 +1,13 @@
 # Büyük resim: neden sürekli cURL/çerez yeniliyorduk, şimdi nasıl çalışıyor
 
+> ⚠️ **BU BELGEKİ OTOMATİK YENİLEME MODELİ BU KURULUMDA GEÇERLİ DEĞİLDİR.**
+> Servis **1 Kasım mantığıyla** çalışıyor: `UPSTREAM_REFRESH_ENABLED=false`,
+> çerez elle tazelenir (~20 dk'da bir). Gerekçe: yenileme ucunun istediği
+> Supabase anon `apikey` elde edilemiyor. Yetkili kaynak:
+> [README § İşletim Modeli](../README.md#i̇şletim-modeli-kalıcı-karar).
+> Bu belge yalnızca **katman ayrımını** açıklamak için okunmalı; §3'teki
+> "ölmesine izin verme" modelini uygulamayın.
+
 > Tek sayfalık zihinsel model. Yeni bir oturuma başlarken önce burayı oku.
 > Ayrıntılar: [`COOKIE_LIFECYCLE.md`](COOKIE_LIFECYCLE.md),
 > [`MOBILE_CURL.md`](MOBILE_CURL.md), [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md),
@@ -16,7 +24,7 @@ tedavi ediliyordu.
 
 | Katman | Ne | Ömür | Kim tazeler |
 |---|---|---|---|
-| **1. Kimlik** | `arena-auth-prod-v1.0/.1` içinde `access_token` + `refresh_token` | access **1 saat**, refresh **haftalar** | **Wrapper** (otomatik) |
+| **1. Kimlik** | `arena-auth-prod-v1.0/.1` içinde `access_token` + `refresh_token` | access **~20 dk** (ölçüldü: 1200 s), refresh haftalar | **Elle** (`/curl`, `/cookie`) — bu kurulumda otomatik yenileme kapalı |
 | **2. Türev** | `dpl_…` sürüm damgası, `cx`, `referer` | upstream her deploy'unda | **`/yenile`** |
 | **3. Gürültü** | `__cf_bm`, `_dd_s`, `_ga*`, `ph_*`, `_vcrr`, `user_country_code`, `arena_visit_id` | dakikalar–yıllar | **Kimse** (kimlik değil) |
 

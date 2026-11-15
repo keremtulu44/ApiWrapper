@@ -141,7 +141,11 @@ def test_missing_optional_curl_fields_do_not_reuse_old_custom_values():
 
     updated, _ = apply_upstream_curl(settings)
 
-    assert updated.upstream_mode == ""
+    # `UPSTREAM_MODE` bilinçli istisnadır: `mode` bir kimlik/token değil, hedefin
+    # şemasının beklediği istemci parametresidir. cURL'de alanın bulunmaması
+    # operatörün env'de verdiği değeri silmemeli; silindiğinde istek `mode`suz
+    # gidip hedefte 400 üretiyordu (2026-11 canlı arızası).
+    assert updated.upstream_mode == "old-mode"
     assert updated.upstream_referer_path == "/c/{chat_id}"
     assert updated.upstream_user_agent != "OldAgent/1.0"
     # `RECAPTCHA_STATIC_TOKEN` bilinçli istisnadır: gövdede captcha alanı yoksa
@@ -287,3 +291,33 @@ def test_curl_with_captcha_preserves_browser_and_external_providers():
         updated, _ = apply_upstream_curl(settings)
         assert updated.recaptcha_provider == provider
         assert updated.recaptcha_static_token == ""
+
+
+def test_operator_mode_survives_a_curl_without_mode_field():
+    """Env'de verilen `UPSTREAM_MODE`, `mode` alanı olmayan cURL ile silinmemeli.
+
+    Canlı arıza (2026-11): Render'da `UPSTREAM_MODE=direct-battle` yazılıydı ama
+    `UPSTREAM_CURL` gövdesinde `mode` yoktu. İçe aktarıcı eksik alanı varsayılana
+    (`""`) çekiyor, gövdeden `mode` düşüyor ve hedef 400 dönüyordu.
+    """
+    settings = make_settings(
+        upstream_curl=_curl(include_mode=False),
+        upstream_mode="direct-battle",
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.upstream_mode == "direct-battle"
+    # Aynı değer gövdeye de yazılmalı (şema varsayılanı da aynı sonucu verir).
+    assert updated.upstream_mode.strip() == "direct-battle"
+
+
+def test_curl_mode_still_overrides_operator_value():
+    """cURL'de `mode` **varsa** kazanmaya devam eder (davranış korunur)."""
+    curl = _curl().replace('"mode": "direct-battle"', '"mode": "side-by-side"')
+    assert '"side-by-side"' in curl
+    settings = make_settings(upstream_curl=curl, upstream_mode="direct-battle")
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.upstream_mode == "side-by-side"

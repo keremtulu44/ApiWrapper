@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import Any, Literal, cast
 
 from app.core.config import Settings
+from app.schemas.upstream import DEFAULT_UPSTREAM_MODE
 from app.upstream.auth import (
     decode_jwt_claims,
     extract_access_token,
@@ -145,6 +146,22 @@ def build_layer_verdict(
                 ),
             )
         )
+
+    # ------------------------------------------------------- gövde alanları
+    #: `mode` gövdeden düşerse hedef 400 döner (canlı arıza, 2026-11). Env boş
+    #: olsa da şema varsayılanı gönderildiği için burada her durumda "ok"tur;
+    #: kontrol, operatörün hangi değerin gittiğini tek bakışta görmesi içindir.
+    wire_mode = (settings.upstream_mode or "").strip() or DEFAULT_UPSTREAM_MODE
+    checks.append(
+        Check(
+            "upstream_mode",
+            "config",
+            "ok",
+            f"Gövdedeki `mode` alanı gönderilecek: {wire_mode} (kaynak: "
+            + ("UPSTREAM_MODE" if settings.upstream_mode.strip() else "varsayılan")
+            + ").",
+        )
+    )
 
     # ---------------------------------------------------------------- kimlik
     cookie_token = extract_access_token(

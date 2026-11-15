@@ -8,6 +8,7 @@ from app.adapters.openai_to_upstream import build_upstream_request, validate_req
 from app.adapters.prompt_builder import build_prompt, collect_attachments
 from app.core.errors import InvalidRequestError, PayloadTooLargeError
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
+from app.schemas.upstream import DEFAULT_UPSTREAM_MODE
 from tests.conftest import make_settings
 
 
@@ -183,6 +184,7 @@ def test_built_payload_matches_target_wire_format():
         "modelAMessageId",
         "userMessage",
         "modality",
+        "mode",
         "recaptchaV3Token",
     }
     assert wire["id"] == "chat-1"
@@ -192,7 +194,9 @@ def test_built_payload_matches_target_wire_format():
     assert wire["userMessage"]["content"] == "Merhaba"
     assert wire["userMessage"]["experimental_attachments"] == []
     assert wire["userMessage"]["metadata"] == {}
-    assert "mode" not in wire
+    # `mode` alanı tarayıcı cURL'ünde **her zaman** var. `UPSTREAM_MODE` boşken
+    # gövdeden düşmesi canlıda 400 üretti; artık varsayılana düşer.
+    assert wire["mode"] == DEFAULT_UPSTREAM_MODE
 
 
 def test_built_payload_includes_mode_when_configured():
@@ -208,3 +212,59 @@ def test_built_payload_includes_mode_when_configured():
     assert wire["mode"] == "direct"
     # cx her gerçek istekte değişiyor; tahmini/sabit bir değer üretilmemeli.
     assert "cx" not in wire
+
+
+def test_mode_is_never_dropped_when_env_is_empty():
+    """`UPSTREAM_MODE` boşken gövdede `mode` **yok olmamalı**.
+
+    Canlı arıza (2026-11): Render boş env değeri saklayamadığı için
+    `UPSTREAM_MODE` yer tutucuya dönüşüyor, `Settings` onu boşa çeviriyor,
+    adapter `None` geçiyor ve `to_wire(exclude_none=True)` alanı gövdeden
+    siliyordu. Tarayıcı cURL'ünde alan her zaman var; eksikliği hedefte 400
+    üretiyordu. Bu test o zincirin geri dönmesini engeller.
+    """
+    settings = make_settings()  # upstream_mode varsayılanı boş
+    request = ChatCompletionRequest(model="test-model", messages=[msg("user", "ping")])
+    wire = build_upstream_request(
+        request,
+        settings=settings,
+        upstream_model_id="u1",
+        chat_id="c1",
+        recaptcha_token="tok",
+    ).payload.to_wire()
+    assert wire["mode"] == DEFAULT_UPSTREAM_MODE
+
+
+def test_mode_is_never_dropped_when_env_holds_render_sentinel():
+    """Render'ın boş-değer işareti de gövdeyi `mode`suz bırakmamalı.
+
+    Panoda boş değer yazılamadığı için yer tutucu saklanıyor; `Settings` onu
+    boşa çeviriyor. Aynı zincir, aynı sonuç: alan varsayılana düşmeli.
+    """
+    from app.core.config import RENDER_EMPTY_VALUE
+
+    settings = make_settings(upstream_mode=RENDER_EMPTY_VALUE)
+    request = ChatCompletionRequest(model="test-model", messages=[msg("user", "ping")])
+    wire = build_upstream_request(
+        request,
+        settings=settings,
+        upstream_model_id="u1",
+        chat_id="c1",
+        recaptcha_token="tok",
+    ).payload.to_wire()
+    assert wire["mode"] == DEFAULT_UPSTREAM_MODE
+
+
+def test_blank_value_in_payload_schema_falls_back_to_default_mode():
+    """Doğrudan şema üzerinden boş `mode` verilse bile alan düşmez."""
+    from app.schemas.upstream import UpstreamPayload, UserMessage
+
+    payload = UpstreamPayload(
+        id="c1",
+        modelAId="u1",
+        userMessageId="m1",
+        modelAMessageId="m2",
+        userMessage=UserMessage(content="hi"),
+        mode="",
+    )
+    assert payload.to_wire()["mode"] == DEFAULT_UPSTREAM_MODE

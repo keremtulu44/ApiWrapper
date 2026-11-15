@@ -262,6 +262,9 @@ class TelegramBot:
         if command in {"/yenile", "/refresh", "/capture"}:
             await self.capture_upstream_session(chat_id)
             return
+        if command in {"/giris", "/login", "/oturum"}:
+            await self.refresh_browser_login(chat_id)
+            return
         if command in {"/cookie", "/cerez"}:
             await self.send_cookie(chat_id, text)
             return
@@ -796,6 +799,51 @@ class TelegramBot:
             "Yine de zorlamak isterseniz: /cookie! <çerez>",
         )
         return None
+
+    async def refresh_browser_login(self, chat_id: int) -> None:
+        """Kalıcı tarayıcı oturumundan taze çerez üretir (sunucuda Chromium).
+
+        Bu, `/capture`'dan farklıdır: `/capture` tek seferlik yakalama dener,
+        `/giris` ise **kalıcı giriş yapmış tarayıcıdan** çerezi yeniler.
+        `UPSTREAM_LOGIN_ENABLED=true` değilse açıklayıcı hata döner.
+        """
+        await self.send_text(chat_id, "Oturum tazeleniyor, bu 10-30 sn sürebilir…")
+        try:
+            response = await self.wrapper.post("/v1/admin/upstream/login", json={})
+        except httpx.HTTPError as exc:
+            logger.warning("telegram_login_failed", error_type=type(exc).__name__)
+            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; tazeleme yapılmadı.")
+            return
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {}
+        if response.status_code != 200:
+            error = payload.get("error") if isinstance(payload, dict) else None
+            detail = (
+                str(error.get("message") or "")
+                if isinstance(error, dict)
+                else f"HTTP {response.status_code}"
+            )
+            await self.send_text(chat_id, "Tazeleme başarısız: " + detail)
+            return
+
+        ok = bool(payload.get("ok"))
+        remaining = payload.get("token_seconds")
+        lines = ["✓ Tarayıcı oturumu tazelendi." if ok else "⚠ Tazeleme başarısız."]
+        if remaining is not None:
+            lines.append(f"Yeni token ömrü: ≈{int(remaining)} sn.")
+        if payload.get("changed"):
+            lines.append("Çerez güncellendi ve çalışan ayarlara uygulandı.")
+        elif ok:
+            lines.append("Çerez zaten tazeydi; değişiklik yok.")
+        notes = payload.get("notes") or []
+        if notes:
+            lines.append("Adımlar: " + ", ".join(str(n) for n in notes))
+        if not ok and payload.get("reason"):
+            lines.append("Neden: " + str(payload["reason"]))
+        await self.send_text(chat_id, "\n".join(lines))
 
     async def capture_upstream_session(self, chat_id: int) -> None:
         """Sunucudaki Chromium ile taze oturum yakalar (telefonda DevTools gerekmez)."""

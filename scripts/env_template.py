@@ -85,7 +85,35 @@ ENTRIES: dict[str, tuple[str, str]] = {
         "Boş bırak. İstek başına üretilir; sabit değer ikinci sohbette reddedilir.",
     ),
     "UPSTREAM_CX_SEND": (WRITE, "`false` — canlı gözlemde bu alan olmadan da istek geçti."),
-    "UPSTREAM_MODE": (WRITE, "`direct-battle` — gövdedeki `mode` alanı; cURL'den birebir."),
+    "UPSTREAM_LOGIN_ENABLED": (
+        WRITE,
+        "`false` — **kalıcı tarayıcı girişi**. `true` yaparsanız sunucudaki "
+        "Chromium siteye mail+şifre ile girer ve taze çerezi kendisi üretir; "
+        "20 dakikalık token sorunu biter. RAM yer (512 MB planda risk).",
+    ),
+    "UPSTREAM_LOGIN_EMAIL": (EMPTY, "Siteye giriş e-postası (secret değil)."),
+    "UPSTREAM_LOGIN_PASSWORD": (
+        EMPTY,
+        "Site giriş şifresi. **Yalnız env'de** durur; loglanmaz, diske yazılmaz.",
+    ),
+    "UPSTREAM_LOGIN_PATH": (
+        EMPTY,
+        "Giriş ekranının yolu (ör. `/login`). Boşsa hedef kökü kullanılır.",
+    ),
+    "UPSTREAM_LOGIN_INTERVAL_SECONDS": (
+        DEFAULT,
+        "`600` — tazeleme aralığı. Token ~1200 s ömürlü; yarısından önce tazelenir.",
+    ),
+    "UPSTREAM_BROWSER_PROFILE_DIR": (
+        EMPTY,
+        "Kalıcı Chromium profil dizini. Render'da disk kalıcı olmadığı için boş bırakın.",
+    ),
+    "UPSTREAM_MODE": (
+        WRITE,
+        "`direct-battle` — gövdedeki `mode` alanı; cURL'den birebir. Boş bırakılsa "
+        "bile alan gövdeye yazılır (varsayılan `direct-battle`); `.cache` ve "
+        "`UPSTREAM_CURL` bu değeri ezmez.",
+    ),
     "UPSTREAM_RECAPTCHA_FIELD": (
         WRITE,
         "`recaptchaV3Token` (v2 görürsen `recaptchaV2Token`) — gövdedeki captcha alan adı.",
@@ -153,7 +181,12 @@ ENTRIES: dict[str, tuple[str, str]] = {
     "TOTAL_REQUEST_TIMEOUT": (DEFAULT, "`600` sn."),
     "STREAM_IDLE_TIMEOUT": (DEFAULT, "`120` sn — bu süre veri gelmezse akış düşer."),
     # --------------------------------------------------------------- refresh
-    "UPSTREAM_REFRESH_ENABLED": (DEFAULT, "`true` — erişim token'ı kendiliğinden yenilenir."),
+    "UPSTREAM_REFRESH_ENABLED": (
+        WRITE,
+        "`false` — **bu kurulumda kalıcı olarak kapalı**. Yenileme ucu Supabase anon "
+        "`apikey` istiyor ve o anahtar elde edilemiyor; çerez elle tazelenir "
+        "(~20 dk'da bir, `/curl` veya `/cookie`). Gerekçe: README § İşletim Modeli.",
+    ),
     "UPSTREAM_REFRESH_LEEWAY_SECONDS": (
         DEFAULT,
         "`600`. JWT ömrünün yarısından büyük olursa her istekte yenileme tetiklenir; `/v1/admin/auth` bunu uyarır.",
