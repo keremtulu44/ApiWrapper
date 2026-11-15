@@ -141,7 +141,12 @@ def test_missing_optional_curl_fields_do_not_reuse_old_custom_values():
 
     updated, _ = apply_upstream_curl(settings)
 
-    assert updated.upstream_mode == ""
+    # `UPSTREAM_MODE` bilinçli istisnadır (15 Kasım canlı arızası): `mode`
+    # hedefin **zorunlu** alanı. Gövdesinde `mode` olmayan bir cURL uygulandığında
+    # buradaki sıfırlama ayarı "" yapıyor, `to_wire` boş değeri düşürüyor ve hedef
+    # her isteği `400 ZodError · mode Required` ile reddediyordu — sohbet tamamen
+    # kapandı. cURL'de görünmemesi, operatörün değerini silmek için gerekçe değil.
+    assert updated.upstream_mode == "old-mode"
     assert updated.upstream_referer_path == "/c/{chat_id}"
     assert updated.upstream_user_agent != "OldAgent/1.0"
     # `RECAPTCHA_STATIC_TOKEN` bilinçli istisnadır: gövdede captcha alanı yoksa

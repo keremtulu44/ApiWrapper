@@ -8,6 +8,7 @@ from app.adapters.openai_to_upstream import build_upstream_request, validate_req
 from app.adapters.prompt_builder import build_prompt, collect_attachments
 from app.core.errors import InvalidRequestError, PayloadTooLargeError
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
+from app.schemas.upstream import DEFAULT_UPSTREAM_MODE
 from tests.conftest import make_settings
 
 
@@ -183,6 +184,7 @@ def test_built_payload_matches_target_wire_format():
         "modelAMessageId",
         "userMessage",
         "modality",
+        "mode",
         "recaptchaV3Token",
     }
     assert wire["id"] == "chat-1"
@@ -192,7 +194,29 @@ def test_built_payload_matches_target_wire_format():
     assert wire["userMessage"]["content"] == "Merhaba"
     assert wire["userMessage"]["experimental_attachments"] == []
     assert wire["userMessage"]["metadata"] == {}
-    assert "mode" not in wire
+    # `UPSTREAM_MODE` boşken bile alan gönderilir: hedef `mode`'u zorunlu tutuyor
+    # (400 ZodError · mode Required). Eski davranış alanı düşürüyordu.
+    assert wire["mode"] == "direct-battle"
+
+
+def test_mode_field_is_never_dropped_when_setting_is_empty():
+    """Boş `UPSTREAM_MODE` isteği öldürmez — yedek değer gönderilir.
+
+    15 Kasım canlı arızası: gövdesinde `mode` olmayan bir cURL uygulandığında
+    ayar boşalıyor, `to_wire(exclude_none=True)` alanı düşürüyor ve hedef her
+    isteği `400 · path ["mode"] · Required` ile reddediyordu. Sohbet tamamen
+    kapalıydı.
+    """
+    settings = make_settings(upstream_mode="   ")
+    request = ChatCompletionRequest(model="test-model", messages=[msg("user", "hi")])
+    wire = build_upstream_request(
+        request,
+        settings=settings,
+        upstream_model_id="u1",
+        chat_id="c1",
+        recaptcha_token="",
+    ).payload.to_wire()
+    assert wire["mode"] == DEFAULT_UPSTREAM_MODE
 
 
 def test_built_payload_includes_mode_when_configured():

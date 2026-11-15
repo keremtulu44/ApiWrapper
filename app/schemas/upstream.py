@@ -8,6 +8,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
+#: Hedefin gövdede **zorunlu** tuttuğu `mode` alanı için yedek değer.
+#: Ölçüm (15 Kasım, canlı 400 yanıtı): hedef `mode` yoksa isteği reddediyor —
+#: `ZodError: path ["mode"], received "undefined", message "Required"`, izin
+#: verilen değerler `'direct' | 'direct-battle' | 'side-by-side' | 'battle'`.
+#: Tarayıcı yakalamalarında görülen değer `direct-battle`'dır.
+DEFAULT_UPSTREAM_MODE = "direct-battle"
+
 
 class UserMessage(BaseModel):
     """`userMessage` alanı."""
@@ -33,9 +40,10 @@ class UpstreamPayload(BaseModel):
     user_message: UserMessage = Field(alias="userMessage")
     modality: str = "chat"
     recaptcha_v3_token: str = Field(default="", alias="recaptchaV3Token")
-    #: Hedef servisin beklediği `mode`. Tarayıcı cURL'ündeki gerçek değer
-    #: `UPSTREAM_MODE` ile ezilir; boş bırakılırsa bu varsayılan gönderilir.
-    mode: str | None = "direct-battle"
+    #: Hedef servisin **zorunlu** tuttuğu `mode`. `UPSTREAM_MODE` ile ezilir;
+    #: boşsa `DEFAULT_UPSTREAM_MODE` gönderilir. Alanı hiç göndermemek ölümcül:
+    #: hedef `400 ZodError · mode Required` döner (15 Kasım canlı ölçümü).
+    mode: str | None = DEFAULT_UPSTREAM_MODE
     #: Hedef istemci bağlamı. Tarayıcı cURL'ünde gövdede gelir; boşsa alan
     #: hiç gönderilmez (uydurulmuş bir değer göndermek isteği bozar).
     cx: str | None = None

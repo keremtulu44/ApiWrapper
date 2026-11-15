@@ -242,8 +242,13 @@ def apply_upstream_curl(settings: Settings) -> tuple[Settings, str | None]:
     # cURL uygulandığında token boşalıyor ve statik kipte her istek
     # `recaptcha_rejected` ile düşüyordu. Alan yalnızca cURL'de yeni bir
     # captcha değeri varsa değişir (aşağıdaki CAPTCHA bloğu).
+    #
+    # `UPSTREAM_MODE` da **bu listede değil** (15 Kasım canlı arızası): gövdesinde
+    # `mode` olmayan bir cURL uygulandığında alan sınıf varsayılanına ("")
+    # sıfırlanıyor, `to_wire` boş değeri düşürüyor ve hedef her isteği
+    # `400 ZodError · mode Required` ile reddediyordu. `mode` zorunlu bir alan;
+    # cURL'de görünmemesi operatörün değerini silmek için gerekçe değil.
     for key in (
-        "UPSTREAM_MODE",
         "UPSTREAM_RECAPTCHA_FIELD",
         "UPSTREAM_ACCEPT_LANGUAGE",
         "UPSTREAM_USER_AGENT",
