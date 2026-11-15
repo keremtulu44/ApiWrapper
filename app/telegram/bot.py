@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import json
+import re
 from typing import Any
 
 import httpx
@@ -35,6 +36,8 @@ _HELP = (
     "/yenile (sunucu "
     "tarayıcısıyla oturumu tazele), /cookie <çerez> ya da /curl <cURL>, /help.\n"
     "/web <soru> = web arama modu (model=web, modality=search); düz metin = sohbet.\n"
+    "/gorsel <istem> = görsel üretim modu (model=image, modality=image); sonuç "
+    "fotoğraf olarak gönderilir.\n"
     "/cookie! <çerez> = kontrolü atlayıp zorla uygula, /token = erişim token'ını "
     "yenile, /apikey [anahtar] = yenileme anon anahtarını keşfet/ayarla.\n"
     "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
@@ -77,6 +80,9 @@ class TelegramSettings(BaseSettings):
     #: `/web <soru>` komutunun kullanacağı model adı (models.yaml'da
     #: `modality: search` taşıyan kayıt). Düz metin mesajlar `telegram_model`'de kalır.
     telegram_web_model: str = "web"
+    #: `/gorsel <istem>` komutunun kullanacağı model adı (models.yaml'da
+    #: `modality: image` taşıyan kayıt).
+    telegram_image_model: str = "image"
     telegram_poll_timeout: int = Field(default=30, ge=1, le=50)
     telegram_request_timeout: float = Field(default=180.0, gt=0)
     telegram_max_reply_chars: int = Field(default=12000, ge=1000, le=50000)
@@ -142,6 +148,25 @@ def split_telegram_text(text: str, limit: int = 3500, max_chars: int = 12000) ->
     if remaining:
         chunks.append(remaining)
     return chunks or ["(wrapper boş yanıt döndürdü)"]
+
+
+#: Wrapper, görsel modunu OpenAI şemasını bozmadan iletmek için içeriğe
+#: `![görsel](<adres>)` ekler (bkz. `stream_parser.media_markdown`). Telegram
+#: markdown çizmediği için bu adresler ayrıştırılıp `sendPhoto` ile gönderilir.
+_MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
+
+
+def split_markdown_images(text: str) -> tuple[str, list[str]]:
+    """İçerikteki markdown görselleri ayırır: (kalan metin, adres listesi).
+
+    Adresler imzalı ve ~1 saat ömürlü (`X-Amz-Expires=3600`): yalnız bu turda
+    kullanılır, saklanmaz ve loglanmaz.
+    """
+    urls = [url.strip() for url in _MARKDOWN_IMAGE.findall(text) if url.strip()]
+    # Görsel satırı çıkarılınca kalan boş satır yığınları ikiye indirilir:
+    # kullanıcıya giden açıklama metni düzgün görünsün.
+    remaining = re.sub(r"\n{3,}", "\n\n", _MARKDOWN_IMAGE.sub("", text)).strip()
+    return remaining, urls
 
 
 def wrapper_error_code(response: httpx.Response) -> str:
@@ -212,6 +237,24 @@ class TelegramBot:
                     status_code=response.status_code,
                 )
 
+    async def send_photo(self, chat_id: int, url: str) -> bool:
+        """Görsel adresini Telegram'a **fotoğraf** olarak gönderir.
+
+        Adres `photo` alanıyla verilir: dosyayı Telegram sunucuları indirir,
+        wrapper üzerinden bayt taşımaya gerek kalmaz. Dönüş değeri başarısızsa
+        çağıran adresi metin olarak yedekler — görsel kaybolmasın (adres kısa
+        ömürlü olduğu için kullanıcıya hemen verilmesi gerekir).
+        """
+        response = await self.telegram.post(
+            f"{self.telegram_api_url}/sendPhoto",
+            json={"chat_id": chat_id, "photo": url},
+        )
+        if response.status_code >= 400:
+            # Hata gövdesi loglanmaz: adres imza taşıyor.
+            logger.warning("telegram_send_photo_failed", status_code=response.status_code)
+            return False
+        return True
+
     async def handle_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat")
         text = message.get("text")
@@ -273,6 +316,24 @@ class TelegramBot:
                 return
             await self.ask_wrapper(
                 chat_id, question, model=self.settings.telegram_web_model
+            )
+            return
+        if command in {"/gorsel", "/görsel", "/image", "/resim", "/ciz", "/çiz"}:
+            # Görsel modu: aynı sistem — modu seçen tek şey `model` adı, ayrı
+            # uç nokta yok. Sonuç `send_photo` ile fotoğraf olarak iletilir.
+            parts = text.split(maxsplit=1)
+            prompt = parts[1].strip() if len(parts) > 1 else ""
+            if not prompt:
+                await self.send_text(
+                    chat_id,
+                    "Kullanım: /gorsel <istem>\n"
+                    "Görsel modunda (modality=image) üretim yapar; sonuç fotoğraf "
+                    "olarak gönderilir. Düz metin gönderirsen sohbet modu (chat) "
+                    "kullanılır.",
+                )
+                return
+            await self.ask_wrapper(
+                chat_id, prompt, model=self.settings.telegram_image_model
             )
             return
         if command in {"/curl", "/setcurl"}:
@@ -1025,9 +1086,10 @@ class TelegramBot:
     ) -> None:
         """Mesajı wrapper'a non-stream completion olarak sorar.
 
-        `model` verilirse o mod kullanılır (`/web` → `telegram_web_model`);
-        verilmezse `telegram_model` (chat) geçerlidir. Mod seçimi buradan
-        yapılır çünkü wrapper tarafında modu belirleyen tek şey `model` adıdır.
+        `model` verilirse o mod kullanılır (`/web` → `telegram_web_model`,
+        `/gorsel` → `telegram_image_model`); verilmezse `telegram_model` (chat)
+        geçerlidir. Mod seçimi buradan yapılır çünkü wrapper tarafında modu
+        belirleyen tek şey `model` adıdır.
         """
         payload = {
             "model": (model or self.settings.telegram_model),
@@ -1065,7 +1127,21 @@ class TelegramBot:
         if not isinstance(content, str):
             await self.send_text(chat_id, "Wrapper metin yerine beklenmeyen içerik döndürdü.")
             return
-        await self.send_text(chat_id, content)
+        # Görsel modunda wrapper içeriğe `![görsel](<imzalı adres>)` ekler;
+        # Telegram markdown çizmediği için adresler fotoğrafa çevrilir.
+        remaining, image_urls = split_markdown_images(content)
+        failed: list[str] = []
+        for url in image_urls:
+            if not await self.send_photo(chat_id, url):
+                failed.append(url)
+        if failed:
+            # Fotoğraf gönderilemediyse adres metin olarak verilsin: görsel
+            # kaybolmasın, adres ~1 saat geçerli.
+            fallback = "\n".join(f"Görsel (≈1 saat geçerli): {url}" for url in failed)
+            remaining = f"{remaining}\n\n{fallback}" if remaining else fallback
+        if remaining or not image_urls:
+            # İçerik boş ve görsel de yoksa mevcut "(boş yanıt)" mesajı gider.
+            await self.send_text(chat_id, remaining)
 
     async def poll_once(self, offset: int | None) -> int | None:
         payload: dict[str, Any] = {

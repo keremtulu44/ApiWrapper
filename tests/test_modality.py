@@ -520,15 +520,27 @@ def test_shape_summary_describes_data_part_without_values():
     assert "https://hedef/x.png" not in shape
 
 
-def test_shape_summary_keeps_first_sample_per_code():
+def test_shape_summary_records_every_distinct_shape_per_code():
+    """Kod başına **farklı** biçimlerin hepsi tutulur; tekrarlar yalnız sayılır.
+
+    "Kod başına ilk örnek yeter" varsayımı görseli gizledi: `a2` hem atıf hem
+    `heartbeat` hem `image` taşıyor, ilk gelen atıf olunca görsel biçimi logda
+    hiç görünmedi ve `content_chars: 0` gizemi çözülemedi (15 Kasım ölçümü).
+    """
     summary = PartShapeSummary()
-    summary.add(_event("2", '2:{"a":1}'))
-    summary.add(_event("2", '2:{"b":2}'))
+    summary.add(_event("a2", 'a2:[{"type":"citation","organization":"X"}]'))
+    summary.add(_event("a2", 'a2:[{"type":"heartbeat"}]'))
+    summary.add(_event("a2", 'a2:[{"type":"heartbeat"}]'))  # tekrar → yalnız sayaç
     summary.add(_event("8", '8:[{"cite":"k"}]'))
-    assert summary.counts == {"2": 2, "8": 1}
-    # Uzun akışta log şişmesin: kod başına tek örnek.
-    assert summary.shapes["2"] == "dict(1){a:num}"
-    assert summary.shapes["8"].startswith("list(1)[")
+    assert summary.counts == {"a2": 3, "8": 1}
+    shapes = summary.shapes["a2"].split(" | ")
+    assert len(shapes) == 2, shapes
+    assert "type:str(8)" in shapes[0] and "organization:str(1)" in shapes[0]
+    assert shapes[1] == "list(1)[dict(1){type:str(9)}]"
+    # Uzun akışta log şişmesin: kod başına biçim sayısı sınırlı.
+    for index in range(10):
+        summary.add(_event("9", f'9:{{"k{index}":{index}}}'))
+    assert len(summary.shapes["9"].split(" | ")) == 3
 
 
 def test_shape_summary_describes_nested_and_long_values():
@@ -541,12 +553,12 @@ def test_shape_summary_describes_nested_and_long_values():
 
 
 @respx.mock
-def test_data_parts_are_not_forwarded_to_client_yet(client):
-    """Bilinen boşluk: `2:` parçası istemciye iletilmez.
+def test_image_part_is_delivered_to_the_client(client):
+    """Görsel parçası istemciye markdown olarak iletilir (eski "bilinen boşluk").
 
-    Görsel modunda sonuç metin delta'sı olarak gelmiyorsa yanıt boş görünür.
-    Bu test bugünkü davranışı kilitler; görsel çıktısı desteklendiğinde
-    beklenti tersine çevrilecek (bilerek kırılması istenen bir test).
+    Hedef görseli TEXT delta'sı olarak göndermiyor; `content_chars: 0` bunun
+    sonucuydu. Yeni şema/endpoint icat edilmeden, içerik metnine markdown
+    görsel ekleniyor — OpenAI uyumu korunur, istemciler çizer.
     """
     body = (
         b'f:{"messageId":"m-img"}\n'
@@ -562,4 +574,60 @@ def test_data_parts_are_not_forwarded_to_client_yet(client):
         },
     )
     assert response.status_code == 200
-    assert response.json()["choices"][0]["message"]["content"] == ""
+    assert response.json()["choices"][0]["message"]["content"] == (
+        "\n\n![görsel](data:image/png;base64,QUJDREVG)\n\n"
+    )
+
+
+#: 15 Kasım canlı ölçümü: `create-evaluation` yanıtında görsel `a2` kanalında,
+#: imzalı ve 1 saat ömürlü bir R2 adresi olarak geliyor (`X-Amz-Expires=3600`).
+#: Buradaki değerler sahte — gerçek imza depoya yazılmaz.
+_SIGNED_IMAGE_LINE = (
+    'a2:[{"type":"image","image":"https://messages-prod.test.r2.cloudflarestorage.com'
+    "/chat-1/17-uuid.jpeg?X-Amz-Algorithm=AWS4-HMAC-SHA256&amp;X-Amz-Expires=3600"
+    '&amp;X-Amz-Signature=sahte","mimeType":"image/jpeg"}]'
+)
+_SIGNED_IMAGE_URL = (
+    "https://messages-prod.test.r2.cloudflarestorage.com/chat-1/17-uuid.jpeg"
+    "?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Expires=3600&X-Amz-Signature=sahte"
+)
+
+
+@respx.mock
+def test_signed_image_url_survives_the_stream_path(client):
+    """Ölçülen gerçek biçim: `heartbeat` elenir, imzalı adres bozulmadan geçer.
+
+    `&amp;` kaçışı çözülmezse imza geçersiz kalır ve adres 403 verir — bu
+    yüzden normalizasyon şart. Heartbeat parçası adres alanı taşımadığı için
+    istemciye gitmez (yoksa içerik `![görsel]()` çöpleriyle dolardı).
+    """
+    body = (
+        'f:{"messageId":"m-img"}\n'
+        'a2:[{"type":"heartbeat"}]\n'
+        'a2:[{"type":"heartbeat"}]\n'
+        f"{_SIGNED_IMAGE_LINE}\n"
+        'ad:{"finishReason":"stop"}\n'
+    ).encode()
+    stream_route(respx).mock(return_value=httpx.Response(200, content=body))
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "second-model",
+            "messages": [{"role": "user", "content": "bir manzara çiz"}],
+            "stream": True,
+        },
+    ) as response:
+        assert response.status_code == 200
+        raw = b"".join(response.iter_bytes()).decode()
+
+    text = "".join(
+        json.loads(line[len("data:") :].strip())["choices"][0]["delta"].get("content", "")
+        for line in raw.splitlines()
+        if line.startswith("data:") and "[DONE]" not in line
+    )
+    assert text.count("![") == 1, text
+    assert _SIGNED_IMAGE_URL in text
+    assert "&amp;" not in text
+    assert "heartbeat" not in text

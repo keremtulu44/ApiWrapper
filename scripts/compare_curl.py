@@ -188,8 +188,8 @@ def main() -> int:
         # bu modun **farklı bir modelAId** istemesi. Alan ADI üç modda da aynı
         # olduğu için ad karşılaştırması bunu asla yakalamaz.
         ref_model = str(ref_body.get("modelAId") or "").strip()
-        our_model = (entry.upstream_id if entry else "").strip()
-        if ref_model and our_model:
+        our_model = (entry.upstream_id if entry is not None else "").strip()
+        if entry is not None and ref_model and our_model:
             if ref_model != our_model:
                 print(f"{RED}  FARKLI  modelAId{RESET}")
                 print(f"{DIM}      tarayıcı: {ref_model}{RESET}")

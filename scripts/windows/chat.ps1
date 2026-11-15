@@ -27,7 +27,9 @@ param(
     [string]$System = "",
     [switch]$NoStream,
     [switch]$Interactive,
-    [switch]$Diagnose
+    [switch]$Diagnose,
+    # Gorsel modunda yanittaki markdown gorsel adresini tarayicida acar.
+    [switch]$OpenImage
 )
 
 $ErrorActionPreference = "Stop"
@@ -191,6 +193,31 @@ function Invoke-ChatBlocking([string]$JsonBody) {
     return $text
 }
 
+# Gorsel modunun ciktisini PowerShell'de kullanilabilir hale getirir.
+# Wrapper gorseli OpenAI semasini bozmadan iletmek icin icerige
+# '![gorsel](<adres>)' ekler; konsol markdown cizmez. Adres imzali ve ~1 saat
+# gecerli oldugu icin burada yalniz gosterilir/acilir, dosyaya yazilmaz.
+function Show-Images([string]$Text) {
+    if (-not $Text) { return }
+    $found = [regex]::Matches($Text, '!\[[^\]]*\]\(([^)\s]+)\)')
+    if ($found.Count -eq 0) { return }
+
+    Write-Host ""
+    $index = 0
+    foreach ($hit in $found) {
+        $index++
+        $url = $hit.Groups[1].Value
+        Write-Host ("Gorsel {0} (imzali adres, ~1 saat gecerli): " -f $index) `
+            -ForegroundColor Magenta -NoNewline
+        Write-Host $url -ForegroundColor DarkMagenta
+        if ($OpenImage) { Start-Process $url }
+    }
+    if (-not $OpenImage) {
+        Write-Host "  Konsol cizmez: -OpenImage ile tarayicida acin ya da Telegram'da /gorsel kullanin." `
+            -ForegroundColor DarkGray
+    }
+}
+
 # --- Teshis modu -------------------------------------------------------------
 if ($Diagnose) {
     Write-Host "=== Saglik ===" -ForegroundColor Cyan
@@ -231,6 +258,7 @@ if ($Interactive) {
         $body = Build-Body $userInput $history
         $reply = if ($NoStream) { Invoke-ChatBlocking $body } else { Invoke-ChatStream $body }
 
+        Show-Images $reply
         if ($reply) {
             $history += @{ role = "user"; content = $userInput }
             $history += @{ role = "assistant"; content = $reply }
@@ -247,4 +275,5 @@ Write-Host "Yanit : " -ForegroundColor Green -NoNewline
 Write-Host ""
 
 $body = Build-Body $Message @()
-if ($NoStream) { [void](Invoke-ChatBlocking $body) } else { [void](Invoke-ChatStream $body) }
+$reply = if ($NoStream) { Invoke-ChatBlocking $body } else { Invoke-ChatStream $body }
+Show-Images $reply

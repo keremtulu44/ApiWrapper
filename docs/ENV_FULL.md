@@ -96,6 +96,7 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `TELEGRAM_ALERT_REPEAT_SECONDS` | ↺ `21600` — aynı arıza sürerken hatırlatma aralığı. | telegram |
 | `TELEGRAM_ALLOWED_CHAT_IDS` | ⬜ İlk `/start` chat ID'yi gösterir; sonra buraya yaz. | telegram |
 | `TELEGRAM_BOT_TOKEN` | ⬜ Bot kullanmayacaksan boş; doluysa bot aynı servis içinde başlar. | telegram |
+| `TELEGRAM_IMAGE_MODEL` | ↺ `image` — `/gorsel <istem>` komutunun kullanacağı model (models.yaml'da `modality: image`); sonuç `sendPhoto` ile fotoğraf olarak gider. | telegram |
 | `TELEGRAM_MAX_REPLY_CHARS` | ↺ `12000` — Telegram mesaj bölme sınırı. | telegram |
 | `TELEGRAM_MODEL` | ↺ `max` — wrapper üzerinden çağrılacak model adı. | telegram |
 | `TELEGRAM_POLL_TIMEOUT` | ↺ `30` sn. | telegram |
@@ -176,5 +177,5 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `WRAPPER_BASE_URL` | ⬜ Aynı serviste çalışıyorsa **yazma**; varsayılan yerel adres kullanılır. | telegram |
 | `WRITE_TIMEOUT` | ↺ `30` sn. | dayanıklılık |
 
-Toplam **157** anahtar: 19 yazılacak, 47 boş, 91 varsayılan/yazma.
+Toplam **158** anahtar: 19 yazılacak, 47 boş, 92 varsayılan/yazma.
 Denetim için: `python -m scripts.env_audit .env`.

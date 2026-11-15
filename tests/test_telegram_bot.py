@@ -10,7 +10,12 @@ from typing import Any
 import httpx
 import pytest
 
-from app.telegram.bot import TelegramBot, TelegramSettings, split_telegram_text
+from app.telegram.bot import (
+    TelegramBot,
+    TelegramSettings,
+    split_markdown_images,
+    split_telegram_text,
+)
 
 
 def make_settings(**overrides: Any) -> TelegramSettings:
@@ -993,3 +998,86 @@ async def test_diagnose_puts_layer_verdict_first_with_its_fix():
     assert "✎ UPSTREAM_REFRESH_API_KEY yazın." in text
     # Katman satırı çerez ayrıntısından önce gelir.
     assert text.index("🎯 identity") < text.index("Çerez:")
+
+
+# ------------------------------------------------------------------ görsel modu
+#: Wrapper görsel modunu OpenAI şemasını bozmadan iletmek için içeriğe markdown
+#: görsel ekler; adres imzalı ve kısa ömürlü olduğu için burada sahte değer var.
+_IMAGE_URL = "https://r2.test/chat/1-uuid.jpeg?X-Amz-Expires=3600&X-Amz-Signature=sahte"
+_IMAGE_CONTENT = f"\n\n![görsel]({_IMAGE_URL})\n\n"
+
+
+def test_split_markdown_images_separates_text_and_urls():
+    text, urls = split_markdown_images(f"İşte sonuç:\n{_IMAGE_CONTENT}Beğendin mi?")
+    assert urls == [_IMAGE_URL]
+    assert text == "İşte sonuç:\n\nBeğendin mi?"
+    # Görsel yoksa içerik olduğu gibi kalır (sohbet yolu etkilenmez).
+    assert split_markdown_images("düz metin") == ("düz metin", [])
+
+
+async def _run_bot(message_text: str, wrapper_content: str, *, photo_status: int = 200):
+    """Botu sahte Telegram + wrapper ile çalıştırır; (çağrılar, wrapper gövdesi)."""
+    calls: list[tuple[str, dict[str, Any]]] = []
+    received: dict[str, Any] = {}
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        calls.append((request.url.path.rsplit("/", 1)[-1], json.loads(request.content)))
+        if request.url.path.endswith("/sendPhoto"):
+            return httpx.Response(photo_status, json={"ok": photo_status < 400})
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        received.update(json.loads(request.content))
+        return httpx.Response(
+            200, json={"choices": [{"message": {"role": "assistant",
+                                                "content": wrapper_content}}]}
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            headers={"Authorization": "Bearer test-wrapper-key"},
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": message_text})
+    return calls, received
+
+
+@pytest.mark.asyncio
+async def test_gorsel_command_uses_image_model_and_sends_a_photo():
+    calls, received = await _run_bot("/gorsel bir manzara çiz", _IMAGE_CONTENT)
+    # Modu seçen tek şey model adı: ayrı uç nokta/şema yok.
+    assert received["model"] == "image"
+    assert received["messages"] == [{"role": "user", "content": "bir manzara çiz"}]
+    assert [name for name, _ in calls] == ["sendPhoto"]
+    assert calls[0][1] == {"chat_id": 42, "photo": _IMAGE_URL}
+
+
+@pytest.mark.asyncio
+async def test_gorsel_aliases_and_missing_prompt_are_handled():
+    calls, received = await _run_bot("/görsel kedi", _IMAGE_CONTENT)
+    assert received["model"] == "image" and calls[0][0] == "sendPhoto"
+
+    calls, received = await _run_bot("/gorsel", "")
+    assert received == {}  # wrapper'a istek gitmez
+    assert "Kullanım: /gorsel <istem>" in calls[0][1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_photo_failure_falls_back_to_the_address_as_text():
+    """`sendPhoto` düşerse görsel kaybolmasın: adres metin olarak gönderilir."""
+    calls, _ = await _run_bot("/gorsel manzara", _IMAGE_CONTENT, photo_status=400)
+    assert [name for name, _ in calls] == ["sendPhoto", "sendMessage"]
+    text = calls[1][1]["text"]
+    assert _IMAGE_URL in text and "≈1 saat geçerli" in text
+
+
+@pytest.mark.asyncio
+async def test_plain_chat_without_images_still_sends_text_only():
+    calls, received = await _run_bot("Selam", "Merhaba")
+    assert received["model"] == "max"
+    assert [name for name, _ in calls] == ["sendMessage"]
+    assert calls[0][1]["text"] == "Merhaba"

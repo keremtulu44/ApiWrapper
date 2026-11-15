@@ -53,7 +53,12 @@ from app.upstream.refresh import (
     cookie_refresh_token,
     refresh_upstream_token,
 )
-from app.upstream.stream_parser import PartShapeSummary, parse_stream
+from app.upstream.stream_parser import (
+    PartShapeSummary,
+    extract_media_parts,
+    media_markdown,
+    parse_stream,
+)
 from app.utils.ids import new_completion_id, now_ts
 from app.utils.sse import sse_done, sse_event
 from app.utils.tokens import count_tokens, tiktoken_available
@@ -422,6 +427,9 @@ class CompletionService:
             # görsel/arama modlarında sonuç `0:` dışında bir kodda geliyorsa
             # hangi kod ve alan adlarında geldiği buradan okunur. Değer loglanmaz.
             shapes = PartShapeSummary()
+            # İstemciye iletilen görsel sayısı (log için): `a2` kanalından gelen
+            # görsel parçaları TEXT'e çevrilip iletiliyor, aşağıya bak.
+            media_count = 0
             # Upstream isteği kabul ettiğinde pencereye BİR mesaj işlenir.
             # `emitted` ile kontrol edilmez: `emitted` yalnızca istemciye içerik
             # taşıyan TEXT olaylarında artar, `f:` (START) olayında artmaz —
@@ -479,6 +487,24 @@ class CompletionService:
                         elif event.type is EventType.TEXT and event.text and scanner.active:
                             self._raise_for_quota(scanner.feed(event.text), event.text)
                         shapes.add(event)
+                        # Görsel parçaları istemciye markdown metin olarak iletilir.
+                        # Hedef görseli TEXT delta'sı değil `a2:[{"type":"image",
+                        # "image":"<imzalı R2 adresi>","mimeType":"image/jpeg"}]`
+                        # olarak gönderiyor (15 Kasım canlı ölçümü); TEXT dışı
+                        # parçalar iletilmediği için görsel modu boş yanıt
+                        # veriyordu. Dönüşüm burada yapılır çünkü hem akış hem
+                        # akışsız yol bu jeneratörü tüketir: tek yer, iki yol.
+                        # (TEXT delta'ları taranmaz: içerikleri zaten istemciye
+                        # metin olarak gidiyor, sıcak yolda gereksiz iş olmasın.)
+                        if event.type is not EventType.TEXT:
+                            for part in extract_media_parts(event.data):
+                                media_count += 1
+                                emitted += 1
+                                yield StreamEvent(
+                                    type=EventType.TEXT,
+                                    text=media_markdown(part),
+                                    raw_code=event.raw_code,
+                                )
                         if event.type in _CLIENT_VISIBLE_EVENTS and event.text:
                             emitted += 1
                         yield event
@@ -490,6 +516,7 @@ class CompletionService:
                         modality=built.modality,
                         counts=shapes.counts,
                         shapes=shapes.shapes,
+                        media_delivered=media_count,
                     )
                 return
             except UpstreamQuotaExceeded:
