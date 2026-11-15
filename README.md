@@ -29,6 +29,12 @@ OpenAI-compatible istemcilerle çalışır.
 
 **Doküman rehberi (buradan başla): [`docs/INDEX.md`](docs/INDEX.md)**
 
+> **Otomatik tarayıcı girişi (Chromium) bu dalda yoktur.** Kod yazıldı ve test
+> edildi ama `main`'e bilerek alınmadı — şu an gerekmiyor (çerez 15+ saat
+> yaşıyor) ve kullanıcının tarayıcı oturumuyla çakışabilir. Nerede durduğu,
+> bekleme modu ve nasıl devreye alınacağı:
+> **[`docs/INDEX.md` § Chromium](docs/INDEX.md#chromium--otomatik-tarayıcı-girişi--nerede-duruyor)**
+
 Mimari ayrıntılar için: **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** ·
 büyük resim ve 3 çerez katmanı: **[`docs/BIG_PICTURE.md`](docs/BIG_PICTURE.md)** ·
 çerez ömrü ve otomatik yenileme: **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)** ·
@@ -631,6 +637,23 @@ parametrelerin davranışını belirler:
 | `ignore` (varsayılan) | Sessizce yok sayılır |
 | `hint` | Prompt'a doğal dil ipucu olarak eklenir |
 | `error` | 400 ile reddedilir |
+
+---
+
+## Sık yapılan hatalar (bunları tekrar yapma)
+
+14-15 Kasım 2026 ölçümlerinden çıkan dersler. Ayrıntı:
+[`docs/LESSONS_2026_11_14.md`](docs/LESSONS_2026_11_14.md).
+
+| # | Hata | Doğrusu |
+|---|---|---|
+| 1 | Sunucudan reCAPTCHA token'ı üretmek (`RECAPTCHA_PROVIDER=browser`) | **Reddediliyor.** `static` kullan. Aynı çerez/gövde ile `browser` → `403`, `static` → ✅ |
+| 2 | Çerez "3 saatte ölüyor" sanıp sürekli cURL almak | Öldüren şey **tarayıcıya giriş yapmak**. Dokunmazsan **15+ saat** dayanır |
+| 3 | `401 User not found` görünce hemen yeni cURL aramak | Önce **tarayıcıya girmeden** bekle; kod çerezi silmez, genelde kendi döner |
+| 4 | cURL almak için tarayıcıda giriş yapıp **çıkış yapmamak** | Al, sonra **çıkış yap** (ya da ayrı hesap kullan). Yoksa sunucudaki çerez ölür |
+| 5 | 2-14 Kasım arası değişiklikleri suçlamak | 1 Kasım sürümü **de** aynı `recaptcha validation failed` hatasını veriyor. Sorun kodda değil |
+| 6 | Docker build'inde `playwright install --with-deps` | `libatomic.so.1` eksikliği → **`exit 127`**. Bugünkü Dockerfile kullanılır |
+| 7 | "Token 20 dakikada ölür" bilgisine güvenmek | **Eski/yanlış bilgi.** Ölçüm: reCAPTCHA token 2+ saat, çerez 15+ saat |
 
 ---
 

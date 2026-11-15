@@ -55,7 +55,7 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 | Doküman | Ne anlatıyor | Ne zaman |
 |---|---|---|
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Hata → çözüm tablosu | Bir şey bozulduğunda |
-| [`CAPTCHA_TEKNIK_INCELEME.md`](CAPTCHA_TEKNIK_INCELEME.md) | reCAPTCHA Enterprise analizi | Captcha reddederse |
+| [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) § captcha | reCAPTCHA hata → çözüm | Captcha reddederse |
 | [`CAPTURE_TIMELINE.md`](CAPTURE_TIMELINE.md) | Yakalama zaman çizelgesi | Geçmiş kararları anlamak |
 
 ### Geçmiş / arşiv
@@ -65,21 +65,78 @@ doğru için önce yukarıdaki tablolara bak.
 
 ---
 
-## Aktif kurulum (14-15 Kasım 2026)
+## Aktif kurulum (ana dal / `main`)
 
 ```env
 RECAPTCHA_PROVIDER=static        # KALICI
-UPSTREAM_LOGIN_ENABLED=false     # Chromium bekleme modunda
 UPSTREAM_REFRESH_ENABLED=false   # KALICI
 ```
 
-**Otomatik tarayıcı girişi** (`app/upstream/browser_login.py`) kod olarak hazır
-ama **kapalı**. `UPSTREAM_LOGIN_ENABLED=false` iken Chromium hiç açılmaz —
-sıfır RAM, sıfır CPU. Açmak tek env ile mümkün; ayrıntı `../README.md`
-"Otomatik tarayıcı girişi" bölümünde.
+> **`main` dalında otomatik tarayıcı girişi (Chromium) YOKTUR.** Aşağıdaki
+> tabloya bakın — kod nerede duruyor, hangi dalda, hangi commit'te.
 
-**Ne zaman açılır:** çerez sürekli ölüyorsa ve tarayıcıya girmene rağmen
-düzelmiyorsa. Şu an gerekmiyor.
+---
+
+## Chromium / otomatik tarayıcı girişi — nerede duruyor?
+
+**Kod yazıldı, test edildi, ama `main`'de DEĞİL.** Bilerek dışarıda tutuldu:
+şu an gerekmiyor ve `main`'e giren tek şeyin doküman olması istendi.
+
+| Nerede | Ne var | Commit |
+|---|---|---|
+| **`main`** | ❌ Yok. `browser_login.py` bulunmaz, `UPSTREAM_LOGIN_*` env tanımlı değil | — |
+| **`arena/1kasim-test`** | ✅ **1 Kasım kodu + otomatik giriş.** Deploy edilmiş, test edilmiş (393 test) | `e1e8d5a` |
+| **`arena/0715c3e6-apiwrapper`** | ✅ Tam sistem: giriş + kalıcı state + `mode` düzeltmesi | `e403f1d` |
+
+### Ne yapıyor
+
+Sunucudaki Chromium'u **açık tutar** ve hedef siteye **e-posta + şifre** ile
+girer; taze çerezi ayarlara yazar. Periyodik döngü (varsayılan 600 s) çerezi
+kontrol eder, eskidiyse önce sıcak sayfayı dürtüp kendi token'ını yeniletir,
+yetmezse yeniden giriş yapar.
+
+**CAPTCHA'ya dokunmaz.** Yalnızca `upstream_cookie`, `upstream_access_token`,
+`upstream_refresh_token` yazar. `recaptcha_provider` / `recaptcha_static_token`
+değişmez — uçtan uca doğrulandı (9 birim testi + sahte site testi).
+
+### Bekleme modu (o dalda deploy edilirse)
+
+| Env | Davranış |
+|---|---|
+| `UPSTREAM_LOGIN_ENABLED` boş/`false` | Chromium **hiç açılmaz**. `SessionKeeper` oluşturulmaz. Sıfır RAM/CPU |
+| `true` + e-posta + şifre | Chromium açılır, çerezi tazeler |
+| `true` ama eksik | Açılmaz; log'a `upstream_login_not_configured` |
+
+### ⚠️ Neden `main`'e alınmadı / dikkat
+
+1. **Gerekmiyor.** Çerez 15+ saat yaşıyor; otomatik giriş gereksiz.
+2. **Çakışma riski.** Otomatik giriş, kullanıcının kendi tarayıcı oturumuyla
+   çakışabilir — iki taraf birbirinin oturumunu iptal edebilir. Çerezi öldüren
+   şey tam olarak bu (yukarıdaki 1. kural).
+3. **RAM.** 512 MB planda ikinci bir Chromium risklidir.
+
+**Ne zaman alınır:** çerez sürekli ölüyorsa ve tarayıcıya girmediğin hâlde
+düzelmiyorsa.
+
+**Nasıl alınır:** ilgili daldan `app/upstream/browser_login.py`,
+`app/core/config.py` (6 alan + `login_url()`), `app/main.py` (lifespan),
+`app/api/v1/admin.py` (`POST /v1/admin/upstream/login`), `tests/test_browser_login.py`.
+
+**Denemek için (Render):**
+
+1. Render → servis → Settings → **Branch** = `arena/1kasim-test` → Save
+2. Environment'a ekle:
+   ```env
+   UPSTREAM_LOGIN_ENABLED=true
+   UPSTREAM_LOGIN_EMAIL=<hedef site e-postası>
+   UPSTREAM_LOGIN_PASSWORD=<şifre>
+   ```
+3. Deploy sonrası log'da bekle: `upstream_login_keeper_started` →
+   `upstream_login_refresh ok=true`
+4. Başarısızsa `notes` alanında sebep yazar
+   (`e-posta alanı bulunamadı` = giriş formu değişmiş)
+
+**Geri dönmek için:** Branch'i tekrar eski değere al + `UPSTREAM_LOGIN_ENABLED=false`.
 
 ---
 
