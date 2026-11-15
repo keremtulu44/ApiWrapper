@@ -18,9 +18,11 @@ import respx
 
 from app.adapters.openai_to_upstream import build_upstream_request
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
+from app.schemas.upstream import StreamEvent
 from app.services.model_registry import ModelRegistry
 from app.telegram.bot import TelegramBot, TelegramSettings
 from app.upstream.headers import build_stream_headers
+from app.upstream.stream_parser import PartShapeSummary, parse_line
 from tests.conftest import TEST_API_KEY, UPSTREAM_DOMAIN, ai_stream, make_settings
 
 STREAM_URL = f"https://{UPSTREAM_DOMAIN}/nextjs-api/stream/post-to-evaluation/"
@@ -397,3 +399,85 @@ def test_api_key_still_required_for_mode_switch(client):
     )
     assert response.status_code == 401
     assert TEST_API_KEY not in response.text
+
+
+# ------------------------------------------------------- biçim teşhisi (log)
+def _event(code: str, line: str) -> StreamEvent:
+    event = parse_line(line)
+    assert event is not None, line
+    assert event.raw_code == code
+    return event
+
+
+def test_shape_summary_counts_only_media_candidate_parts():
+    """Düşünme delta'ları özete girmez: her akışta gelirler, gürültü üretirler."""
+    summary = PartShapeSummary()
+    summary.add(_event("0", '0:"merhaba"'))
+    summary.add(_event("g", 'g:"düşünüyorum"'))
+    summary.add(_event("f", 'f:{"messageId":"m1"}'))
+    assert not summary  # metin-dışı aday parça yok → log satırı üretilmez
+
+
+def test_shape_summary_describes_data_part_without_values():
+    summary = PartShapeSummary()
+    summary.add(
+        _event(
+            "2",
+            '2:{"image":"QUJDREVG","mimeType":"image/png","url":"https://hedef/x.png"}',
+        )
+    )
+    assert summary
+    assert summary.counts == {"2": 1}
+    shape = summary.shapes["2"]
+    # Alan adları ve uzunluklar görünür — ayrıştırmayı yazmak için gereken bu.
+    assert "image:str(8)" in shape
+    assert "mimeType:str(9)" in shape
+    assert "url:str(19)" in shape
+    # Değerlerin kendisi loglanmaz (görsel verisi/adresi sızmasın).
+    assert "QUJDREVG" not in shape
+    assert "https://hedef/x.png" not in shape
+
+
+def test_shape_summary_keeps_first_sample_per_code():
+    summary = PartShapeSummary()
+    summary.add(_event("2", '2:{"a":1}'))
+    summary.add(_event("2", '2:{"b":2}'))
+    summary.add(_event("8", '8:[{"cite":"k"}]'))
+    assert summary.counts == {"2": 2, "8": 1}
+    # Uzun akışta log şişmesin: kod başına tek örnek.
+    assert summary.shapes["2"] == "dict(1){a:num}"
+    assert summary.shapes["8"].startswith("list(1)[")
+
+
+def test_shape_summary_describes_nested_and_long_values():
+    summary = PartShapeSummary()
+    summary.add(_event("a", 'a:{"result":{"items":[{"b64":"' + "A" * 5000 + '"}]}}'))
+    shape = summary.shapes["a"]
+    assert "list(1)" in shape
+    assert "str(5000)" in shape
+    assert "A" * 100 not in shape
+
+
+@respx.mock
+def test_data_parts_are_not_forwarded_to_client_yet(client):
+    """Bilinen boşluk: `2:` parçası istemciye iletilmez.
+
+    Görsel modunda sonuç metin delta'sı olarak gelmiyorsa yanıt boş görünür.
+    Bu test bugünkü davranışı kilitler; görsel çıktısı desteklendiğinde
+    beklenti tersine çevrilecek (bilerek kırılması istenen bir test).
+    """
+    body = (
+        b'f:{"messageId":"m-img"}\n'
+        b'2:{"image":"QUJDREVG","mimeType":"image/png"}\n'
+    ) + ai_stream("")
+    stream_route(respx).mock(return_value=httpx.Response(200, content=body))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "second-model",
+            "messages": [{"role": "user", "content": "görsel"}],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == ""
