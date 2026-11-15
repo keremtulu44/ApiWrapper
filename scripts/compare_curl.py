@@ -181,6 +181,64 @@ def main() -> int:
         elif ref_mode:
             print(f"{GREEN}  EŞLEŞTİ mode={ref_mode}{RESET}")
 
+        # --- modelAId DEĞERİ: mod başına farklı bir model olabilir ---
+        # 15 Kasım canlı ölçümü: görsel isteği 200 + `finish_reason: stop` döndü
+        # ama akışta ne metin ne görsel vardı (content_chars=0, yalnız `a2` atıf
+        # parçaları). İstek kabul edildi, hedef hiçbir şey üretmedi. İlk şüpheli
+        # bu modun **farklı bir modelAId** istemesi. Alan ADI üç modda da aynı
+        # olduğu için ad karşılaştırması bunu asla yakalamaz.
+        ref_model = str(ref_body.get("modelAId") or "").strip()
+        our_model = (entry.upstream_id if entry else "").strip()
+        if ref_model and our_model:
+            if ref_model != our_model:
+                print(f"{RED}  FARKLI  modelAId{RESET}")
+                print(f"{DIM}      tarayıcı: {ref_model}{RESET}")
+                print(f"{DIM}      bizim   : {our_model}{RESET}")
+                print(
+                    f"     config/models.yaml → '{entry.id}' kaydına kendi satırını ekle: "
+                    f"`upstream_id: {ref_model}`"
+                )
+                print(
+                    "     Kayıt düzeyi değer belge düzeyindeki ortak kimliği ezer; "
+                    "diğer modlar etkilenmez."
+                )
+                problems += 1
+            else:
+                print(
+                    f"{GREEN}  EŞLEŞTİ modelAId → '{entry.id}' kaydıyla aynı{RESET}"
+                )
+
+        # --- cx: ölçümde her istekte ve modda farklı; değer loglanmaz ---
+        ref_cx = str(ref_body.get("cx") or "").strip()
+        our_cx = settings.upstream_cx.strip() if settings.upstream_cx_send else ""
+        if ref_cx and not our_cx:
+            print(
+                f"{YELLOW}  EKSİK   cx — tarayıcı {len(ref_cx)} karakter gönderiyor, "
+                f"biz hiç göndermiyoruz{RESET}"
+            )
+            print(
+                "     Değer her istekte değiştiği için sabitlemek önerilmez "
+                "(layer_verdict uyarısı); hedef bu modda cx'i zorunlu tutuyorsa "
+                "mod başına cx alanı gerekir."
+            )
+        elif ref_cx and our_cx and len(ref_cx) != len(our_cx):
+            print(
+                f"{YELLOW}  FARKLI  cx uzunluğu — tarayıcı {len(ref_cx)}, bizim "
+                f"{len(our_cx)} (sabitlenmiş){RESET}"
+            )
+            print(
+                "     cx moda göre değişiyor: bu modun kendi cx'i değilse hedef "
+                "isteği kabul edip boş cevap verebilir."
+            )
+        elif ref_cx and our_cx:
+            print(f"{GREEN}  EŞLEŞTİ cx uzunluğu ({len(ref_cx)}){RESET}")
+        elif our_cx and not ref_cx:
+            print(
+                f"{YELLOW}  FAZLA   cx — tarayıcı göndermiyor, biz {len(our_cx)} "
+                f"karakter gönderiyoruz{RESET}"
+            )
+            problems += 1
+
         captcha_fields = [f for f in expected_fields if "recaptcha" in f.lower()]
         if captcha_fields and captcha_fields[0] != settings.upstream_recaptcha_field:
             print(

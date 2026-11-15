@@ -482,13 +482,22 @@ def _event(code: str, line: str) -> StreamEvent:
     return event
 
 
-def test_shape_summary_counts_only_media_candidate_parts():
-    """Düşünme delta'ları özete girmez: her akışta gelirler, gürültü üretirler."""
+def test_shape_summary_covers_everything_the_client_does_not_see():
+    """Özet, istemciye gitmeyen **her** parçayı sayar; metin ve başlık hariç.
+
+    `REASONING` başlangıçta dışarıdaydı ("her akışta gelir, gürültü olur").
+    15 Kasım canlı ölçümü bunu boşa düşürdü: `a2` atıf parçası her akışta
+    geldiği için satır zaten üretiliyor — elde kalan tek şey kör noktaydı
+    (görsel `g:` içinde gelse görünmezdi).
+    """
     summary = PartShapeSummary()
-    summary.add(_event("0", '0:"merhaba"'))
-    summary.add(_event("g", 'g:"düşünüyorum"'))
-    summary.add(_event("f", 'f:{"messageId":"m1"}'))
-    assert not summary  # metin-dışı aday parça yok → log satırı üretilmez
+    summary.add(_event("0", '0:"merhaba"'))  # istemciye gidiyor → sayılmaz
+    summary.add(_event("f", 'f:{"messageId":"m1"}'))  # akış başlığı → sayılmaz
+    assert not summary
+
+    summary.add(_event("g", 'g:"thinking"'))  # istemci görmüyor → sayılır
+    assert summary.counts == {"g": 1}
+    assert summary.shapes["g"] == "str(8)"
 
 
 def test_shape_summary_describes_data_part_without_values():

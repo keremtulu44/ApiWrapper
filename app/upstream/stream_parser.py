@@ -250,18 +250,24 @@ async def parse_stream(chunks: AsyncIterator[bytes]) -> AsyncIterator[StreamEven
 
 
 # --------------------------------------------------------------- biçim teşhisi
-#: İstemciye **iletilmeyen** ama görsel/arama sonucunu taşıyabilecek parçalar.
+#: İstemciye **iletilmeyen** her parça: görsel/arama sonucu bunlardan birinde.
 #: Akış yolunda istemciye giden tek şey `0:` metin delta'sıdır; görsel modunda
 #: cevap metin olarak gelmiyorsa sonuç bu kodlardan birindedir. Hangi kodda ve
 #: hangi alan adlarında geldiği görülmeden doğru ayrıştırma yazılamaz.
-#: `REASONING` bilinçli olarak dışarıda: düşünme delta'ları her akışta gelir ve
-#: metin taşıdığı zaten biliniyor — dahil etmek logu gürültüye boğardı.
+#:
+#: `REASONING` başlangıçta dışarıdaydı ("düşünme delta'ları her akışta gelir,
+#: logu gürültüye boğar"). 15 Kasım canlı ölçümü bu gerekçeyi boşa düşürdü:
+#: `a2` (atıf: `[{type,organization}]`) **her** akışta geliyor ve satırı zaten
+#: üretiyor — düz sohbette bile. Elimizde gürültü kazancı değil, yalnız kör
+#: nokta kaldı: görsel `g:` içinde gelse görünmezdi. Kural artık basit: özet,
+#: istemcinin görmediği **her şeyi** sayar.
 MEDIA_CANDIDATE_PARTS = frozenset(
     {
         EventType.DATA,
         EventType.MESSAGE_ANNOTATION,
         EventType.TOOL_CALL,
         EventType.TOOL_RESULT,
+        EventType.REASONING,
         EventType.UNKNOWN,
     }
 )
