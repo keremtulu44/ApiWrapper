@@ -18,7 +18,13 @@ def _to_card(entry) -> ModelCard:
 
 @router.get("/models", response_model=ModelList, summary="List available models")
 async def list_models(registry: ModelRegistry = Depends(get_registry)) -> ModelList:
-    return ModelList(data=[_to_card(entry) for entry in registry.list_models()])
+    # `listed_only=True`: `listed: false` işaretli ikincil modlar istemcinin
+    # model listesinde görünmez (Open WebUI/Cursor açılır listesi bozuk bir modu
+    # önermesin) ama `resolve()` çalışmaya devam eder — ad açıkça istenirse mod
+    # kullanılır ve `GET /v1/models/{id}` onu döndürür.
+    return ModelList(
+        data=[_to_card(entry) for entry in registry.list_models(listed_only=True)]
+    )
 
 
 @router.get("/models/{model_id:path}", response_model=ModelCard, summary="Retrieve a model")
