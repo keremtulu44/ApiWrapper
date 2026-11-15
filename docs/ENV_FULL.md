@@ -66,9 +66,9 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `RECAPTCHA_EXTERNAL_API_KEY` | ⬜ Yalnız `external` sağlayıcısı için. | captcha |
 | `RECAPTCHA_EXTERNAL_TIMEOUT` | ↺ `60` sn — `external` için. | captcha |
 | `RECAPTCHA_EXTERNAL_URL` | ⬜ Yalnız `external` sağlayıcısı için. | captcha |
-| `RECAPTCHA_PROVIDER` | ✅ `browser` — Enterprise token'ını gerçek tarayıcıda üretir. `static`/`noop` sabit token ister. | captcha |
+| `RECAPTCHA_PROVIDER` | ↺ `static` — **KALICI.** Sunucudaki Chromium'un ürettiği token hedefte `403 recaptcha validation failed` alıyor (14 Kasım ölçümü). Aynı çerez/gövde ile gerçek tarayıcıdan alınmış statik token çalışıyor. | captcha |
 | `RECAPTCHA_SITE_KEY` | ✅ `RECAPTCHA_SITE_KEY` = gözlenen sitedeki public site key (gizli değil, sayfada açık). | captcha |
-| `RECAPTCHA_STATIC_TOKEN` | ⛔ Boş bırak. Tek kullanımlık ve saniyeler içinde ölür. | captcha |
+| `RECAPTCHA_STATIC_TOKEN` | ✅ cURL'deki `recaptchaV3Token`. `RECAPTCHA_PROVIDER=static` iken gereklidir; ölçümde 2+ saat geçerli kaldı (hedef yaş denetimi yapmıyor). | captcha |
 | `RECAPTCHA_STATIC_TOKEN_2` | ⬜ 2. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. | captcha |
 | `RECAPTCHA_STATIC_TOKEN_3` | ⬜ 3. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. | captcha |
 | `RECAPTCHA_STATIC_TOKEN_4` | ⬜ 4. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. | captcha |
@@ -147,7 +147,7 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `UPSTREAM_REFERER_PATH_4` | ⬜ 4. hesap yuvası. Kullanmıyorsan boş bırak; boş yuva hesap havuzuna girmez. | upstream |
 | `UPSTREAM_REFRESH_API_KEY` | ⬜ Upstream `apikey` istiyorsa; boşsa siteden otomatik keşfedilir. | yenileme |
 | `UPSTREAM_REFRESH_CHECK_INTERVAL_SECONDS` | ↺ `60` sn. | yenileme |
-| `UPSTREAM_REFRESH_ENABLED` | ↺ `true` — erişim token'ı kendiliğinden yenilenir. | yenileme |
+| `UPSTREAM_REFRESH_ENABLED` | ↺ `false` — **KALICI.** Yenileme ucu Supabase `apikey` istiyor; o anahtar elde edilemiyor (backend'de ekleniyor, tarayıcı trafiğinde yok). Açmak çalışmayan bir yol dener. | yenileme |
 | `UPSTREAM_REFRESH_LEEWAY_SECONDS` | ↺ `600`. JWT ömrünün yarısından büyük olursa her istekte yenileme tetiklenir; `/v1/admin/auth` bunu uyarır. | yenileme |
 | `UPSTREAM_REFRESH_TOKEN` | ⬜ Çerezde refresh token varsa boş bırak. Yenilemede dönen yeni değer bellekte tutulur. | yenileme |
 | `UPSTREAM_REFRESH_URL` | ⬜ Boş → çerezdeki JWT'nin `iss` alanından türetilir. Yenileme 401 verirse doldur. | yenileme |

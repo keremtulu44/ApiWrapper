@@ -236,8 +236,11 @@ düştüğüne bakın (`expires_in_seconds: -1` = süresi dolmuş).
 * Çok hesaplı kurulumda istek otomatik olarak **sonraki hesaba devredilir**
   (`account_switched ... reason=auth_rejected`); tek hesapta kimlik tazelemek gerekir.
 * Token sabit süreli değildir: ölçülen `expires_in` değerleri 3600 s ve 1200 s
-  olarak değişti (`docs/CAPTURE_TIMELINE.md`). Karar `exp` alanına dayanır; sabit
-  süre varsaymayın.
+  olarak değişti (`docs/CAPTURE_TIMELINE.md`). Karar `exp` alanına dayanır.
+* **Ama `exp` pratikte bağlayıcı değil:** hedef token yaşını denetlemiyor. Aynı
+  çerez ve token'la **15+ saat** çalıştı (15 Kasım 2026 ölçümü). Yani 401'in
+  sebebi genelde süre dolması değil, **aynı hesapla tarayıcıda oturum açılması**
+  (`docs/LESSONS_2026_11_14.md`).
 * **Yer tutucu token tuzağı:** `UPSTREAM_ACCESS_TOKEN` içine "boş" anlamında
   `APIWRAPPER_EMPTY_VALUE_V1` gibi bir metin yazıldıysa istek
   `Authorization: Bearer APIWRAPPER_EMPTY_VALUE_V1` ile gider ve çerez ne kadar

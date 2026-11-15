@@ -47,7 +47,7 @@ git reset --hard origin/arena/c55e601b-apiwrapper
 
 ```bash
 cd /home/user/ApiWrapper
-.venv/bin/pytest -q          # beklenen: 589 passed
+.venv/bin/pytest -q          # beklenen: 750 passed
 .venv/bin/ruff check app tests   # beklenen: All checks passed!
 .venv/bin/mypy app           # beklenen: Success: no issues found in 61 source files
 git diff --check             # beklenen: çıktı yok
@@ -249,7 +249,7 @@ testler. Ayrıntı: `docs/HANDOFF.md` §13.
 
 ## 10. Bitirme kontrol listesi
 
-- [ ] `.venv/bin/pytest -q` → 574 passed
+- [ ] `.venv/bin/pytest -q` → 750 passed
 - [ ] `.venv/bin/ruff check app tests` → temiz
 - [ ] `.venv/bin/mypy app` → temiz
 - [ ] `git diff --check` → çıktı yok

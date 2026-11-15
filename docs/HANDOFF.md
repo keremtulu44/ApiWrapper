@@ -235,7 +235,7 @@ Gövdeyle ilgili upstream alanları: `upstream_mode` (91), `upstream_recaptcha_f
 
 | Dosya | Satır | İçerik |
 |---|---|---|
-| `render.yaml` | 43 | Blueprint. `RECAPTCHA_PROVIDER=browser` (34-35), `RECAPTCHA_SITE_KEY=6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0` (37-38), `RECAPTCHA_VERSION=enterprise` (39-40), `RECAPTCHA_ACTION=chat_submit` (41-42), `RECAPTCHA_BROWSER_TIMEOUT=45` (43-44) |
+| `render.yaml` | 43 | Blueprint. `RECAPTCHA_PROVIDER=static` (kalıcı; satır numaraları kaymış olabilir), `RECAPTCHA_SITE_KEY=6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0` (37-38), `RECAPTCHA_VERSION=enterprise` (39-40), `RECAPTCHA_ACTION=chat_submit` (41-42), `RECAPTCHA_BROWSER_TIMEOUT=45` (43-44) |
 | `Dockerfile` | 65 | `PLAYWRIGHT_BROWSERS_PATH=/opt/playwright-browsers` (9), `pip install ".[tokens,browser]"` (52), `playwright install --only-shell chromium` (53) |
 | `pyproject.toml` | 57 | `[project.optional-dependencies]`: `browser` (24), `tokens` (25), `dev` (26-34); ruff/mypy/pytest ayarları |
 | `config/models.yaml` | — | Model kayıt defteri (`app/services/model_registry.py` okur) |
@@ -266,7 +266,7 @@ Gövdeyle ilgili upstream alanları: `upstream_mode` (91), `upstream_recaptcha_f
 Çalıştırma:
 ```bash
 python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
-.venv/bin/pytest -q          # 574 passed
+.venv/bin/pytest -q          # 750 passed
 .venv/bin/ruff check app tests
 .venv/bin/mypy app           # 61 dosya
 ```

@@ -1,8 +1,18 @@
 # Çerez ömrü: neyin süresi dolar, neyin dolmaz, ne sürekli alınmalı
 
-Bu belge `/tani` ve `/yenile` çıktısındaki çerezleri tek tek açıklar. Amaç
-"her seferinde çerez almak" döngüsünü kırmak: hangi değer **kendiliğinden**
-döner, hangisi **yalnız oturum ölünce** elle taşınır.
+Bu belge `/tani` ve `/yenile` çıktısındaki çerezleri tek tek açıklar: hangi
+değer **kendiliğinden** döner, hangisi elle taşınır.
+
+> ## ⚠️ §5 (otomatik yenileme) bu kurulumda çalışmaz
+>
+> `UPSTREAM_REFRESH_ENABLED=false` kalıcıdır — yenileme ucu Supabase `apikey`
+> istiyor, o anahtar elde edilemiyor. §5'teki akış kod olarak durur, kullanılmaz.
+>
+> Ayrıca **token yaşı pratikte sorun değil**: hedef `exp` alanını denetlemiyor.
+> Aynı çerezle **15+ saat** çalıştı (ölçüldü). Çerezi öldüren şey yaş değil,
+> **aynı hesapla tarayıcıda oturum açmaktır**.
+>
+> Güncel model: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md).
 
 ## 0. Üç katman — karışan şey bu
 
