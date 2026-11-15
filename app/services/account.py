@@ -447,8 +447,8 @@ def build_account_pool(settings: Settings) -> AccountPool:
             accounts=shared_captcha,
             hint=(
                 "Bu hesapların kendi RECAPTCHA_STATIC_TOKEN değeri yok; global token "
-                "kullanılacak. Token tarayıcı oturumuna bağlıdır ve ~2 dk ömürlüdür — "
-                "hesap başına taze cURL ile token alın."
+                "kullanılacak. Token tarayıcı oturumuna bağlıdır — hesap başına taze "
+                "cURL ile token alın."
             ),
         )
     if configured:

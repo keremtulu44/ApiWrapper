@@ -164,13 +164,39 @@ def test_shipped_models_file_covers_three_modes():
 
     referers = {entry.id: entry.referer_path for entry in registry.list_models()}
     assert referers == {
-        "max": "/text/direct",
+        # Sohbet referer'ı bilerek boş: cURL'den gelen `UPSTREAM_REFERER_PATH`
+        # kullanılır. Buraya `/text/direct` yazmak, gerçek sohbet sayfasından
+        # alınmış `/c/{chat_id}` değerini ezip 7/24 çalışan sohbeti 403'e
+        # düşürmüştü (kayıt düzeyi env'i ezer). Bu assert o regresyonu kilitler.
+        "max": "",
         "web": "/search/direct",
         "image": "/image/direct",
     }
     # İstemci Türkçe/İngilizce takma adlarla da modu seçebilsin.
     assert registry.resolve("search").id == "web"
     assert registry.resolve("gorsel").id == "image"
+
+
+def test_shipped_chat_entry_takes_referer_from_the_operators_curl():
+    """Sohbet referer'ı cURL'den gelir; kayıtta pinlenmez (403 regresyonu).
+
+    Operatörün cURL'ü gerçek bir sohbet sayfasından kopyalandığında env'de
+    `/c/{chat_id}` durur ve sohbet o parmak iziyle kesintisiz çalışıyordu.
+    `max` kaydına `/text/direct` yazıldığında kayıt düzeyi env'i ezdiği için
+    çalışan sohbet 403 almaya başladı. Bu test o davranışı kilitler.
+    """
+    registry = ModelRegistry.from_file("config/models.yaml")
+    settings = make_settings(upstream_referer_path="/c/{chat_id}")
+
+    entry = registry.resolve("max")
+    assert entry.referer_path == ""
+    headers = build_stream_headers(settings, "cid-9", referer_path=entry.referer_path)
+    assert headers["referer"] == f"https://{UPSTREAM_DOMAIN}/c/cid-9"
+
+    # Arama ve görsel kendi ölçülmüş yolunu korur: elimizde çalışan bir temel
+    # olmadığı için o yollar doğrudan yakalamadan geldi.
+    for name, path in (("web", "/search/direct"), ("image", "/image/direct")):
+        assert registry.resolve(name).referer_path == path
 
 
 # ---------------------------------------------------------------------- gövde

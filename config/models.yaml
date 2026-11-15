@@ -11,9 +11,16 @@
 # `modelAId` ile gidiyor. Aradaki tek fark gövdedeki `modality` ve başlıktaki
 # `referer`:
 #
-#   chat  → modality: chat   · referer: /text/direct
+#   chat  → modality: chat   · referer: cURL'den gelen (UPSTREAM_REFERER_PATH)
 #   web   → modality: search · referer: /search/direct
 #   görsel→ modality: image  · referer: /image/direct
+#
+# Sohbet kaydına referer **yazılmaz** (15 Kasım düzeltmesi): operatörün cURL'ü
+# gerçek bir sohbet sayfasından kopyalandığında `extract_referer_path` onu
+# `/c/{chat_id}` şablonuna çevirir ve sohbet o refererla kesintisiz çalışıyordu.
+# Buraya `/text/direct` yazmak kayıt düzeyinde env'i ezdiği için çalışan sohbeti
+# bozdu (403). Kural: **kanıtlanmış değeri pinleme**, cURL'den gelsin. Arama ve
+# görsel için elimizde çalışan bir temel yok; o yollar doğrudan ölçümden geldi.
 #
 # Bu yüzden üç ayrı cURL gerekmez; tek `UPSTREAM_CURL` üç modu da taşır. İstemci
 # modu OpenAI şemasını bozmadan `model` alanıyla seçer: model=web / model=image.
@@ -38,7 +45,9 @@ models:
   - id: max
     owned_by: arena
     modality: chat
-    referer_path: /text/direct
+    # referer_path bilerek YOK: sohbet, cURL'den içe aktarılan
+    # UPSTREAM_REFERER_PATH değerini kullanır (ör. /c/{chat_id}). Sabitlemek
+    # 7/24 çalışan sohbeti bozdu — bkz. dosya başındaki not.
     description: Max — upstream tarafında otomatik model seçimi (sohbet modu).
     aliases:
       - max-auto

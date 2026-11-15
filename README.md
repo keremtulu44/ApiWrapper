@@ -331,7 +331,7 @@ yakalama karşılaştırıldı):
 
 | Mod | `model` | Gövde `modality` | `referer` |
 |---|---|---|---|
-| Sohbet | `max` | `chat` | `/text/direct` |
+| Sohbet | `max` | `chat` | cURL'den gelen (`UPSTREAM_REFERER_PATH`) |
 | Web arama | `web` | `search` | `/search/direct` |
 | Görsel | `image` | `image` | `/image/direct` |
 
