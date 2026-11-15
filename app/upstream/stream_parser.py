@@ -247,3 +247,89 @@ async def parse_stream(chunks: AsyncIterator[bytes]) -> AsyncIterator[StreamEven
         event = parse_line(line)
         if event is not None:
             yield event
+
+
+# --------------------------------------------------------------- biçim teşhisi
+#: İstemciye **iletilmeyen** ama görsel/arama sonucunu taşıyabilecek parçalar.
+#: Akış yolunda istemciye giden tek şey `0:` metin delta'sıdır; görsel modunda
+#: cevap metin olarak gelmiyorsa sonuç bu kodlardan birindedir. Hangi kodda ve
+#: hangi alan adlarında geldiği görülmeden doğru ayrıştırma yazılamaz.
+#: `REASONING` bilinçli olarak dışarıda: düşünme delta'ları her akışta gelir ve
+#: metin taşıdığı zaten biliniyor — dahil etmek logu gürültüye boğardı.
+MEDIA_CANDIDATE_PARTS = frozenset(
+    {
+        EventType.DATA,
+        EventType.MESSAGE_ANNOTATION,
+        EventType.TOOL_CALL,
+        EventType.TOOL_RESULT,
+        EventType.UNKNOWN,
+    }
+)
+
+#: Keşif amaçlı özetin inme derinliği. Gerçek görsel parçaları iç içe gelir
+#: (`{"parts":[{"type":"image","data":{…}}]}`); derinlik sığ olursa alan adları
+#: hiç görünmez ve teşhis işe yaramaz.
+_MAX_DESCRIBE_DEPTH = 4
+_MAX_DESCRIBE_KEYS = 12
+
+
+def _describe_value(value: Any, depth: int = 0) -> str:
+    """Bir değerin **biçimini** yazar; değerinin kendisini asla yazmaz.
+
+    Parça görsel verisi, oturum bilgisi ya da uzun bir base64 taşıyabilir.
+    Bu yüzden log'a yalnız tür + uzunluk + alan adı yazılır (`str(18432)`,
+    `dict(3){url:str(64),mimeType:str(9)}`), içerik yazılmaz.
+    """
+    if value is None:
+        return "null"
+    if isinstance(value, str):
+        return f"str({len(value)})"
+    if isinstance(value, bool):
+        return "bool"
+    if isinstance(value, (int, float)):
+        return "num"
+    if isinstance(value, list):
+        if not value or depth >= _MAX_DESCRIBE_DEPTH:
+            return f"list({len(value)})"
+        return f"list({len(value)})[{_describe_value(value[0], depth + 1)}]"
+    if isinstance(value, dict):
+        if depth >= _MAX_DESCRIBE_DEPTH:
+            return f"dict({len(value)})"
+        items = list(value.items())[:_MAX_DESCRIBE_KEYS]
+        inner = ",".join(f"{k}:{_describe_value(v, depth + 1)}" for k, v in items)
+        more = ",…" if len(value) > _MAX_DESCRIBE_KEYS else ""
+        return f"dict({len(value)}){{{inner}{more}}}"
+    return type(value).__name__
+
+
+class PartShapeSummary:
+    """Bir akıştaki metin-dışı parçaların kod başına biçim özeti.
+
+    Tek seferde bir `logger.info` satırı üretir; akış başına sabit maliyet.
+    Aynı kodun ilk örneği saklanır (sonraki tekrarlar yalnız sayacı artırır),
+    bu yüzden uzun bir akışta log şişmez.
+    """
+
+    def __init__(self, max_codes: int = 8) -> None:
+        self._counts: dict[str, int] = {}
+        self._shapes: dict[str, str] = {}
+        self._max_codes = max_codes
+
+    def add(self, event: StreamEvent) -> None:
+        if event.type not in MEDIA_CANDIDATE_PARTS:
+            return
+        code = event.raw_code or "-"
+        self._counts[code] = self._counts.get(code, 0) + 1
+        if code not in self._shapes and len(self._shapes) < self._max_codes:
+            self._shapes[code] = _describe_value(event.data)
+
+    def __bool__(self) -> bool:
+        return bool(self._counts)
+
+    @property
+    def counts(self) -> dict[str, int]:
+        return dict(self._counts)
+
+    @property
+    def shapes(self) -> dict[str, str]:
+        return dict(self._shapes)

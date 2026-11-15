@@ -712,14 +712,26 @@ class UpstreamClient:
 
     @asynccontextmanager
     async def stream_completion(
-        self, chat_id: str, payload: dict[str, object], account: Account | None = None
+        self,
+        chat_id: str,
+        payload: dict[str, object],
+        account: Account | None = None,
+        referer_path: str | None = None,
     ) -> AsyncIterator[AsyncIterator[bytes]]:
-        """İsteği client yaşam süresi boyunca koru; reset akışı kesmesin."""
+        """İsteği client yaşam süresi boyunca koru; reset akışı kesmesin.
+
+        `referer_path` model kaydından gelir (modality'ye göre değişir); `None`
+        ise ayarlardaki `UPSTREAM_REFERER_PATH` kullanılır.
+        """
         client = self._client_for(account)
         self._retain_client(client)
         try:
             async with self._stream_completion_with_client(
-                chat_id, payload, account=account, client=client
+                chat_id,
+                payload,
+                account=account,
+                client=client,
+                referer_path=referer_path,
             ) as chunks:
                 yield chunks
         finally:
@@ -733,6 +745,7 @@ class UpstreamClient:
         *,
         account: Account | None,
         client: httpx.AsyncClient,
+        referer_path: str | None = None,
     ) -> AsyncIterator[AsyncIterator[bytes]]:
         """Upstream'e istek atıp bayt akışı döndürür (retry + breaker dahil).
 
@@ -761,6 +774,7 @@ class UpstreamClient:
             chat_id,
             include_cookie=self._raw_cookie_header_required(request_settings),
             deployment_id=deployment_id,
+            referer_path=referer_path,
         )
 
         last_error: Exception | None = None
@@ -934,6 +948,7 @@ class UpstreamClient:
                                     request_settings
                                 ),
                                 deployment_id=refreshed,
+                                referer_path=referer_path,
                             )
                             deployment_id = refreshed
                             # Damga retry'ı normal deneme bütçesinden yemez.
