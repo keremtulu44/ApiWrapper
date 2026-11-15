@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from dataclasses import dataclass
 from typing import Any
 
 from app.core.logging import get_logger
@@ -250,18 +251,24 @@ async def parse_stream(chunks: AsyncIterator[bytes]) -> AsyncIterator[StreamEven
 
 
 # --------------------------------------------------------------- biçim teşhisi
-#: İstemciye **iletilmeyen** ama görsel/arama sonucunu taşıyabilecek parçalar.
+#: İstemciye **iletilmeyen** her parça: görsel/arama sonucu bunlardan birinde.
 #: Akış yolunda istemciye giden tek şey `0:` metin delta'sıdır; görsel modunda
 #: cevap metin olarak gelmiyorsa sonuç bu kodlardan birindedir. Hangi kodda ve
 #: hangi alan adlarında geldiği görülmeden doğru ayrıştırma yazılamaz.
-#: `REASONING` bilinçli olarak dışarıda: düşünme delta'ları her akışta gelir ve
-#: metin taşıdığı zaten biliniyor — dahil etmek logu gürültüye boğardı.
+#:
+#: `REASONING` başlangıçta dışarıdaydı ("düşünme delta'ları her akışta gelir,
+#: logu gürültüye boğar"). 15 Kasım canlı ölçümü bu gerekçeyi boşa düşürdü:
+#: `a2` (atıf: `[{type,organization}]`) **her** akışta geliyor ve satırı zaten
+#: üretiyor — düz sohbette bile. Elimizde gürültü kazancı değil, yalnız kör
+#: nokta kaldı: görsel `g:` içinde gelse görünmezdi. Kural artık basit: özet,
+#: istemcinin görmediği **her şeyi** sayar.
 MEDIA_CANDIDATE_PARTS = frozenset(
     {
         EventType.DATA,
         EventType.MESSAGE_ANNOTATION,
         EventType.TOOL_CALL,
         EventType.TOOL_RESULT,
+        EventType.REASONING,
         EventType.UNKNOWN,
     }
 )
@@ -306,22 +313,33 @@ class PartShapeSummary:
     """Bir akıştaki metin-dışı parçaların kod başına biçim özeti.
 
     Tek seferde bir `logger.info` satırı üretir; akış başına sabit maliyet.
-    Aynı kodun ilk örneği saklanır (sonraki tekrarlar yalnız sayacı artırır),
-    bu yüzden uzun bir akışta log şişmez.
+    Aynı kodun **farklı** biçimleri saklanır (tekrarlar yalnız sayacı artırır),
+    bu yüzden uzun bir akışta log şişmez ama çeşitlilik de kaybolmaz.
+
+    "Kod başına ilk örnek yeter" varsayımı yanlış çıktı: `a2` çok biçimli bir
+    kanal — sohbette atıf (`{type,organization}`), görsel üretiminde
+    `[{"type":"heartbeat"}]`, sonunda `[{"type":"image","image":"<url>",
+    "mimeType":"image/jpeg"}]` taşıyor (15 Kasım canlı ölçümü). İlk örnek atıf
+    olunca görsel biçimi logda hiç görünmedi.
     """
 
-    def __init__(self, max_codes: int = 8) -> None:
+    def __init__(self, max_codes: int = 8, max_shapes_per_code: int = 3) -> None:
         self._counts: dict[str, int] = {}
-        self._shapes: dict[str, str] = {}
+        self._shapes: dict[str, list[str]] = {}
         self._max_codes = max_codes
+        self._max_shapes_per_code = max_shapes_per_code
 
     def add(self, event: StreamEvent) -> None:
         if event.type not in MEDIA_CANDIDATE_PARTS:
             return
         code = event.raw_code or "-"
         self._counts[code] = self._counts.get(code, 0) + 1
-        if code not in self._shapes and len(self._shapes) < self._max_codes:
-            self._shapes[code] = _describe_value(event.data)
+        seen = self._shapes.setdefault(code, [])
+        if len(seen) >= self._max_shapes_per_code:
+            return
+        shape = _describe_value(event.data)
+        if shape not in seen:
+            seen.append(shape)
 
     def __bool__(self) -> bool:
         return bool(self._counts)
@@ -332,4 +350,93 @@ class PartShapeSummary:
 
     @property
     def shapes(self) -> dict[str, str]:
-        return dict(self._shapes)
+        """Kod → farklı biçimler (`|` ile birleşik). Değerler yalnız tür+uzunluk."""
+        return {code: " | ".join(seen) for code, seen in self._shapes.items() if seen}
+
+
+# ---------------------------------------------------------------- görsel parçaları
+#: Bir sözlükte görsel adresini/verisini taşıyabilecek alan adları. Ölçülen
+#: alan `image`; diğerleri hedef biçimi değiştirse diye yedek olarak taranır.
+_MEDIA_VALUE_KEYS = ("image", "url", "imageUrl", "src", "data")
+
+
+@dataclass(frozen=True, slots=True)
+class MediaPart:
+    """Akışta gelen tek bir görsel.
+
+    `url` ya http(s) adresi ya da (hedef base64 gönderirse) `data:` URI'sidir;
+    ikisi de istemciye olduğu gibi verilebilir.
+    """
+
+    url: str
+    mime: str = ""
+    kind: str = "image"
+
+
+def _as_media_url(raw: str, mime: str) -> str:
+    """Ham değeri istemciye verilebilir adrese çevirir.
+
+    `&amp;` kaçışı bilinçli olarak çözülür: imzalı R2 adresinin sorgu
+    parametreleri (`X-Amz-Signature`, `X-Amz-Expires`) kaçışlı geldiğinde adres
+    çalışmıyor. Aynı normalizasyon çerez içe aktarmada da var.
+    """
+    text = raw.strip().replace("&amp;", "&")
+    if text.startswith(("http://", "https://", "data:")):
+        return text
+    # Adres değil de ham base64 geldiyse data URI olarak taşınır; aksi hâlde
+    # markdown bağlantısı kırık bir ada işaret ederdi.
+    if mime and text:
+        return f"data:{mime};base64,{text}"
+    return text
+
+
+def extract_media_parts(data: Any) -> list[MediaPart]:
+    """Çok biçimli bir kanalın yükünden görsel parçalarını çıkarır.
+
+    Ölçüm (15 Kasım, canlı görsel akışı — tarayıcının `create-evaluation`
+    yanıtı)::
+
+        a2:[{"type":"heartbeat"}]                      ← üretim sürerken
+        a2:[{"type":"image","image":"https://…r2.cloudflarestorage.com/….jpeg
+             ?X-Amz-Expires=3600&X-Amz-Signature=…","mimeType":"image/jpeg"}]
+        ad:{"finishReason":"stop"}
+
+    Aynı kod (`a2`) sohbette atıf taşıyor: `[{type,organization}]`. Bu yüzden
+    **kod değil içerik** esas alınır: `type == "image"` ya da `image/` ile
+    başlayan bir mimeType varsa parça görseldir; `heartbeat` ve atıf parçaları
+    adres alanı taşımadığı için kendiliğinden elenir.
+
+    Adres **imzalı ve ~1 saat ömürlü** (`X-Amz-Expires=3600`): saklanmaz,
+    loglanmaz, geldiği anda istemciye iletilir.
+    """
+    items: list[Any] = data if isinstance(data, list) else [data]
+    parts: list[MediaPart] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw = ""
+        for key in _MEDIA_VALUE_KEYS:
+            value = item.get(key)
+            if isinstance(value, str) and value.strip():
+                raw = value
+                break
+        if not raw:
+            continue
+        kind = str(item.get("type") or "").strip().lower()
+        mime = str(item.get("mimeType") or item.get("mime_type") or "").strip()
+        if kind != "image" and not mime.lower().startswith("image/"):
+            continue
+        url = _as_media_url(raw, mime)
+        if url and all(part.url != url for part in parts):
+            parts.append(MediaPart(url=url, mime=mime, kind=kind or "image"))
+    return parts
+
+
+def media_markdown(part: MediaPart, alt: str = "görsel") -> str:
+    """Görseli OpenAI şemasını bozmadan iletmek için markdown'a çevirir.
+
+    Yeni alan/şema icat edilmez: içerik metindir, istemciler (Open WebUI,
+    Continue, Cursor) markdown görseli çizer; Telegram tarafı adresi buradan
+    okuyup `sendPhoto` ile gerçek fotoğrafı gönderir.
+    """
+    return f"\n\n![{alt}]({part.url})\n\n"

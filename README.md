@@ -348,6 +348,15 @@ curl -s "$BASE/v1/chat/completions" -H "Authorization: Bearer $KEY" \
 Takma adlar da geçerlidir: `search` / `web-search` / `ara` → `web`;
 `gorsel` / `görsel` / `img` → `image`.
 
+**Görsel çıktısı** metin delta'sı olarak gelmez: hedef görseli akışın `a2`
+kanalında `[{"type":"image","image":"<imzalı R2 adresi>","mimeType":"image/jpeg"}]`
+biçiminde gönderir (öncesinde `[{"type":"heartbeat"}]` parçaları gelir). Wrapper
+bu parçayı içeriğe `![görsel](<adres>)` markdown'ı olarak ekler — OpenAI şeması
+ve uç noktaları değişmez, istemciler (Open WebUI, Continue, Cursor) görseli
+çizer. Adres **imzalı ve ~1 saat ömürlü** (`X-Amz-Expires=3600`): saklanmaz,
+loglanmaz, geldiği anda iletilir. Telegram botu `/gorsel` ile bu adresi
+`sendPhoto` üzerinden gerçek fotoğrafa çevirir.
+
 **Yeni mod eklemek** `config/models.yaml`'a kayıt eklemektir, kod değişikliği
 değildir:
 
@@ -667,6 +676,10 @@ boşken hiçbir mesaj wrapper'a iletilmez; allowlist dışındaki sohbetler de y
 Sonra normal bir metin gönderin veya `/ping` ile wrapper health kontrolünü deneyin.
 `/web <soru>` aynı soruyu **web arama modunda** sorar (`model=web`, `modality=search`);
 düz metin sohbet modunda kalır. Model adı `TELEGRAM_WEB_MODEL` ile değiştirilir.
+`/gorsel <istem>` görsel üretir (`model=image`, `modality=image`) ve sonucu
+`sendPhoto` ile **fotoğraf** olarak gönderir; model adı `TELEGRAM_IMAGE_MODEL`.
+Görsel modunu görmek için en pratik yol budur — PowerShell/OpenAI istemcileri
+yanıtı markdown görsel adresi olarak döker, çizmez.
 `/help` komutları listeler. Konuşma geçmişi tutulmaz; her mesaj bağımsızdır ve yanıtlar
 Telegram sınırına göre parçalanır.
 
