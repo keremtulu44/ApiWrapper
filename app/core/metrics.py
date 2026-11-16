@@ -186,3 +186,18 @@ metrics.describe(
     "gauge",
     "Hesap dinlenmede mi (1) değil mi (0).",
 )
+metrics.describe(
+    "apiwrapper_project_requests_total",
+    "counter",
+    "Proje (API anahtarı etiketi) başına işlenen istek sayısı; hata ile bitenler dahil.",
+)
+metrics.describe(
+    "apiwrapper_project_errors_total",
+    "counter",
+    "Proje başına hata ile biten istek sayısı.",
+)
+metrics.describe(
+    "apiwrapper_project_tokens_total",
+    "counter",
+    "Proje başına işlenen token sayısı (upstream usage bildirdiyse).",
+)

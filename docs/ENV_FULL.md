@@ -25,6 +25,7 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `ACCOUNT_QUOTA_WINDOW_SECONDS` | ↺ `1200` — bütçenin sayıldığı pencere. | kota |
 | `ADMIN_API_KEYS` | ✅ Oturumu değiştiren `/v1/admin` uçları için ayrı anahtar; boş bırakırsan tüm `API_KEYS` admin sayılır. Telegram botu da bunu kullanır. | sunucu |
 | `API_KEYS` | ✅ En az bir anahtar: `sk-local-dev-key`. İstemciler `Authorization: Bearer <bu>` yollar. | sunucu |
+| `API_KEY_LABELS` | ⬜ Anahtar ↔ **proje etiketi** eşlemesi: `cli_<parmakizi>:<etiket>,…`. `POST /v1/admin/keys` doldurur, `GET /v1/admin/keys` hangi projenin ne kadar kullandığını gösterir. Anahtar değeri bu alanda taşınmaz (kimlik `client_fingerprint` parmak izidir). Elle yazman gerekmez. | sunucu |
 | `APP_NAME` | ↺ `ApiWrapper` — servis adı, loglarda görünür. | sunucu |
 | `APP_VERSION` | ↺ `1.0.0` — sürüm etiketi. | sunucu |
 | `AUTH_DISABLED` | ↺ `false` — `true` yapmak API'yi kimliksiz bırakır. | sunucu |
@@ -177,5 +178,5 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `WRAPPER_BASE_URL` | ⬜ Aynı serviste çalışıyorsa **yazma**; varsayılan yerel adres kullanılır. | telegram |
 | `WRITE_TIMEOUT` | ↺ `30` sn. | dayanıklılık |
 
-Toplam **158** anahtar: 19 yazılacak, 47 boş, 92 varsayılan/yazma.
+Toplam **159** anahtar: 19 yazılacak, 48 boş, 92 varsayılan/yazma.
 Denetim için: `python -m scripts.env_audit .env`.

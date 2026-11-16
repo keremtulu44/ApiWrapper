@@ -711,6 +711,45 @@ Gerçek Telegram ve Render testleri bu ortamda token/secret olmadan çalıştır
 
 ---
 
+## Başka projelere açmak (proje anahtarları)
+
+Servis OpenAI-uyumlu olduğu için bir tüketici yalnız `base_url` + `api_key`
+değiştirir. Her projeye **ayrı anahtar** ver; böylece kullanımı proje bazında
+görürsün ve bir projeyi diğerlerini etkilemeden iptal edersin.
+
+```powershell
+$B = "https://apiwrapper" + ".onrender.com"
+$A = "ADMIN_ANAHTARIN"
+
+# 1. Anahtar üret — değer yalnız bu yanıtta görünür, kaydet
+Invoke-RestMethod -Method Post -Uri "$B/v1/admin/keys" `
+  -Headers @{ Authorization = "Bearer $A" } -ContentType "application/json" `
+  -Body (@{ label = "mobil uygulama" } | ConvertTo-Json)
+
+# 2. Kullanımı oku (proje başına istek / token / hata)
+Invoke-RestMethod -Uri "$B/v1/admin/keys" -Headers @{ Authorization = "Bearer $A" }
+
+# 3. İptal et (anında etkili, son anahtar iptal edilemez)
+Invoke-RestMethod -Method Delete -Uri "$B/v1/admin/keys/cli_abc123def456" `
+  -Headers @{ Authorization = "Bearer $A" }
+```
+
+Kurallar:
+
+- **Önce `ADMIN_API_KEYS` ayır.** Boşsa her `API_KEYS` anahtarı admin sayılır
+  (geriye dönük uyumluluk) ve tüketiciye verdiğin anahtar `/v1/admin/*`
+  uçlarına da erişir. Ayrım yoksa her üretimde log'a
+  `project_key_minted_without_admin_separation` düşer.
+- Anahtar **değeri loglanmaz ve listelenmez**; her yerde ya maskeli (`sk-***GI`)
+  ya parmak izi (`cli_<sha256[:12]>`) olarak görünür. Etiketler `API_KEY_LABELS`
+  alanında taşınır ve durum dosyası + Render env'i ile kalıcı olur.
+- Bu katman **yalnız muhasebe**dir: model izni, günlük bütçe ve kuyruk yok.
+  Koruma anahtar başına hız sınırıdır (`RATE_LIMIT_RPM`/`RATE_LIMIT_BURST`,
+  varsayılan 120/30).
+- Sayaçlar bellek içidir, restart'ta sıfırlanır; kalıcı rapor için `/metrics`
+  (`apiwrapper_project_*`) dışarıda toplanır.
+- Tüketiciye vereceğin rehber: [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
+
 ## İşletim
 
 ```bash
@@ -729,6 +768,9 @@ make docker   # docker compose up --build
 - `POST /v1/admin/breaker/reset`, `/v1/admin/recaptcha/invalidate`, `/v1/admin/sessions/clear`
 - `GET /v1/admin/config` → hassas olmayan etkin yapılandırma
 - `GET /v1/admin/auth` → maskeli token teşhisi; diğer hesaplar için `?slot=2`, `?slot=3`, `?slot=4`
+- `POST /v1/admin/keys {"label":"proje adı"}` → tüketici anahtarı üretir (redeploy yok);
+  `GET /v1/admin/keys` → proje başına istek/token/hata; `DELETE /v1/admin/keys/{key_id}` → iptal.
+  Ayrıntı: [`docs/CONSUMERS.md`](docs/CONSUMERS.md)
 
 ### Ayar politikaları
 

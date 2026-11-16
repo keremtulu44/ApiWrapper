@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.api.deps import (
+    get_projects,
     get_recaptcha,
     get_registry,
     get_sessions,
@@ -21,6 +22,7 @@ from app.core.metrics import metrics
 from app.core.security import api_key_dependency, require_admin
 from app.services.account import AccountPool
 from app.services.model_registry import ModelRegistry
+from app.services.project_keys import ProjectRegistry
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
 from app.upstream.auth import (
@@ -794,3 +796,96 @@ def _session_cookie_candidates(cookies: dict[str, str]) -> list[dict[str, object
             }
         )
     return candidates
+
+
+# ------------------------------------------------------------- proje anahtarları
+class ProjectKeyPayload(BaseModel):
+    """`POST /v1/admin/keys` gövdesi: yalnız proje etiketi taşır (secret yok)."""
+
+    label: str = Field(min_length=1, max_length=64)
+
+
+@router.get(
+    "/keys", summary="List project keys and usage", dependencies=[Depends(require_admin)]
+)
+async def list_project_keys(
+    settings: Settings = Depends(get_settings_dep),
+    projects: ProjectRegistry = Depends(get_projects),
+) -> dict[str, Any]:
+    """Proje anahtarlarını etiket + kullanım sayaçlarıyla listeler.
+
+    Yanıtta anahtar **değeri yoktur** (maskelenmiş hâli döner): yanıt bir yere
+    sızarsa kimse anahtar ele geçiremez. Üretim/iptal gibi listeleme de admin
+    ister — proje etiketleri ve hacimler tüketicilere açık bilgi değildir.
+    """
+    return {
+        "object": "list",
+        "data": projects.snapshot(settings),
+        "admin_separation": bool(
+            any(key.strip() for key in settings.admin_api_keys)
+        ),
+        "counters_are_in_memory": True,
+        "hint": (
+            "Sayaçlar bellek içidir; restart'ta sıfırlanır. Kalıcı muhasebe için "
+            "/metrics dışarıda (Prometheus) toplanır."
+        ),
+    }
+
+
+@router.post(
+    "/keys", summary="Mint a project API key", dependencies=[Depends(require_admin)]
+)
+async def mint_project_key(
+    payload: ProjectKeyPayload,
+    settings: Settings = Depends(get_settings_dep),
+    projects: ProjectRegistry = Depends(get_projects),
+) -> dict[str, Any]:
+    """Yeni proje anahtarı üretir; değer **yalnız bu yanıtta** görünür.
+
+    Redeploy gerekmez: doğrulama `settings.api_keys`'i anlık okur. Kalıcılık
+    mevcut düzenle sağlanır (durum dosyası + Render env) çünkü Free Render'da
+    kalıcı disk yok — bkz. `docs/LESSONS_2026_11_14.md §9`.
+    """
+    from app.upstream.state_store import sync_render_env
+
+    key, key_id = projects.mint(settings, payload.label)
+    await sync_render_env(settings)
+    return {
+        "status": "minted",
+        "api_key": key,
+        "key_id": key_id,
+        "label": projects.label_for(key_id),
+        "total_keys": len(settings.api_keys),
+        "warning": (
+            "Bu değeri şimdi kaydedin: bir daha gösterilmez. İptal: "
+            "DELETE /v1/admin/keys/{key_id}"
+        ),
+    }
+
+
+@router.delete(
+    "/keys/{key_id}",
+    summary="Revoke a project API key",
+    dependencies=[Depends(require_admin)],
+)
+async def revoke_project_key(
+    key_id: str,
+    settings: Settings = Depends(get_settings_dep),
+    projects: ProjectRegistry = Depends(get_projects),
+) -> dict[str, Any]:
+    """Anahtarı listeden düşürür: sonraki istekler 401 alır.
+
+    Son anahtar iptal edilemez (wrapper her tüketiciyi reddederdi ve geri almak
+    için Render env'ine elle müdahale gerekirdi). `ADMIN_API_KEYS` da temizlenir;
+    aksi hâlde iptal edilen anahtar `/v1/admin/*` erişimini korurdu.
+    """
+    from app.upstream.state_store import sync_render_env
+
+    masked = projects.revoke(settings, key_id)
+    await sync_render_env(settings)
+    return {
+        "status": "revoked",
+        "key_id": key_id,
+        "masked_key": masked,
+        "remaining_keys": len(settings.api_keys),
+    }

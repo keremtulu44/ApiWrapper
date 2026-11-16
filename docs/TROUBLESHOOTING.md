@@ -270,6 +270,26 @@ düştüğüne bakın (`expires_in_seconds: -1` = süresi dolmuş).
 
 ---
 
+## 2b. Tüketici `401 invalid_api_key` alıyor (anahtar tarafı)
+
+Yukarıdaki 401 **upstream** oturumuyla ilgiliydi ve istemciye `502
+upstream_unauthorized` olarak yansır. Tüketicinin gördüğü düz `401
+invalid_api_key` ise **bizim anahtar listemizle** ilgilidir — çerezle ilgisi
+yoktur, `/curl` ya da `/yenile` düzeltmez.
+
+| Kontrol | Komut | Ne beklenir |
+|---|---|---|
+| Anahtar hâlâ listede mi | `GET /v1/admin/keys` | `key_id` görünüyor, `masked_key` tüketicinin elindekiyle örtüşüyor |
+| Yanlış anahtar tipi mi | aynı yanıtta `is_admin` | `/v1/admin/*` için `ADMIN_API_KEYS` (boşsa tüm `API_KEYS`) gerekir |
+| İptal edilmiş mi | log: `project_key_revoked key_id=…` | Varsa yeni anahtar üret |
+| Başlık biçimi | — | `Authorization: Bearer sk-…` (tırnaksız, tek boşluk) |
+| Anahtar restart'ta kayboldu mu | log: `upstream_state_restored fields=[…]` | `api_keys` listede olmalı; `runtime_state_empty_api_keys_ignored` görüyorsanız kayıt boştur, env'e bakın |
+
+Tüketicinin kendi tarafında yapması gerekenler ve hata kodlarının tam listesi:
+**[`CONSUMERS.md`](CONSUMERS.md)**.
+
+---
+
 ## 3. `HTTP 429` — `upstream_quota_reached`
 
 Hesap geçici olarak kilitli; upstream bunu metinle bildiriyor

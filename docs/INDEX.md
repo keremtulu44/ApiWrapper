@@ -49,6 +49,7 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 | [`RENDER.md`](RENDER.md) | Render kurulumu, env, uyku | Deploy ederken |
 | [`MOBILE_CURL.md`](MOBILE_CURL.md) | Telefondan cURL alma | Çerez tazelerken |
 | [`ENV_FULL.md`](ENV_FULL.md) | Tüm env değişkenleri (otomatik üretilir) | Env ararken |
+| [`CONSUMERS.md`](CONSUMERS.md) | **Tüketici rehberi**: OpenAI SDK ile bağlanma, modeller, hata kodları, hız sınırı + anahtar üretme/iptal | API'yi başka bir projeye verirken |
 | [`../README.md`](../README.md) | Genel bakış + **sık yapılan hatalar** | Her zaman |
 
 ### Arıza
@@ -153,3 +154,12 @@ Invoke-RestMethod -Method Post -Uri ($B + "/v1/admin/upstream/curl") `
 
 **Teşhis:** `POST /v1/admin/auth` · **Sağlık:** `GET /healthz`
 **Telegram:** `/ping`, `/tani`, `/curl <cURL>`
+
+**Proje anahtarı ver (başka bir proje bu API'yi kullanacaksa):**
+```powershell
+Invoke-RestMethod -Method Post -Uri ($B + "/v1/admin/keys") `
+  -Headers @{ "Authorization" = "Bearer ADMIN_ANAHTARIN" } `
+  -ContentType "application/json" -Body (@{ label = "proje adı" } | ConvertTo-Json)
+```
+Kullanım: `GET /v1/admin/keys` · İptal: `DELETE /v1/admin/keys/<key_id>` ·
+Rehber: [`CONSUMERS.md`](CONSUMERS.md)

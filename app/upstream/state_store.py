@@ -85,10 +85,18 @@ PERSISTED_FIELDS: tuple[str, ...] = (
     "recaptcha_site_key",
     "upstream_cx",
     "upstream_cx_send",
+    # Proje etiketleri (secret değil): `cli_<parmakizi>:<etiket>,…`. Üretilen
+    # anahtarların hangi projeye ait olduğu restart'ta kaybolmasın.
+    "api_key_labels",
 )
 
 # JSON/local state içinde bool türü korunarak saklanan alanlar.
 PERSISTED_BOOL_FIELDS: tuple[str, ...] = ("upstream_auth_from_cookie", "upstream_cx_send")
+
+#: Liste alanları virgülle birleştirilmiş metin olarak saklanır. `POST
+#: /v1/admin/keys` ile üretilen anahtarlar böylece restart/deploy sonrası da
+#: geçerli kalır (Free Render'da kalıcı disk yok).
+PERSISTED_LIST_FIELDS: tuple[str, ...] = ("api_keys",)
 
 #: Süreç başında hesaplanan tohum özeti (`id(settings)` -> sha256 hex).
 _SEED_HASHES: dict[int, str] = {}
@@ -129,6 +137,22 @@ def remember_seed(settings: Settings) -> str:
     seed = compute_seed_hash(settings)
     _SEED_HASHES[id(settings)] = seed
     return seed
+
+
+#: Süreç açılışında env'den okunan `API_KEYS` listesi. Durum dosyasındaki kayıtla
+#: karşılaştırılıp "operatör env'e yeni bir anahtar ekledi mi" sorusunu cevaplar
+#: (bkz. `_merge_api_keys`). Tohum gibi gizli değer tutmaz, yalnız karşılaştırır.
+_ENV_API_KEYS: dict[int, list[str]] = {}
+
+
+def remember_api_key_seed(settings: Settings) -> list[str]:
+    """Açılıştaki anahtar listesini kaydeder; **ilk** çağrı kazanır."""
+    return _ENV_API_KEYS.setdefault(id(settings), list(settings.api_keys or []))
+
+
+def env_api_keys(settings: Settings) -> list[str]:
+    """Açılışta env'de olan anahtarlar (kayıt yoksa anlık liste)."""
+    return _ENV_API_KEYS.get(id(settings)) or list(settings.api_keys or [])
 
 
 def current_seed(settings: Settings) -> str:
@@ -174,6 +198,11 @@ def save_runtime_state(settings: Settings, *, source: str = "runtime") -> bool:
         payload[field] = getattr(settings, field, "") or ""
     for field in PERSISTED_BOOL_FIELDS:
         payload[field] = bool(getattr(settings, field, False))
+    for field in PERSISTED_LIST_FIELDS:
+        payload[field] = ",".join(getattr(settings, field, None) or [])
+    # Açılış env'i ayrıca kaydedilir: restart'ta "operatör env'e yeni anahtar
+    # ekledi mi" ile "çalışma sırasında üretilen anahtar" ayırt edilebilsin.
+    payload["api_keys_env"] = ",".join(env_api_keys(settings))
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -272,28 +301,107 @@ def _should_restore(settings: Settings, saved: dict[str, Any]) -> tuple[bool, st
     return False, "env_preferred"
 
 
+def _merge_api_keys(
+    env_keys: list[str], saved_keys: list[str], saved: dict[str, Any]
+) -> list[str]:
+    """Durum dosyasındaki anahtar listesiyle açılış env'ini uzlaştırır.
+
+    İki ayrı hata modu var ve ikisi de pahalı:
+    * Üretilmiş anahtarı düşürmek → tüketici 401 alır (yeni cURL deploy'unda
+      olurdu, çünkü kimlik kararı "env daha taze" deyip disk kaydını atlar).
+    * İptal edilmiş anahtarı diriltmek → güvenlik açığı.
+
+    Kural: **kayıt kazanır** (iptal niyeti korunur), ama env'de olup kaydın
+    açılış env'inde *olmayan* anahtarlar operatörün yeni girdisidir ve sona
+    eklenir. Kayıt eski şemadaysa (`api_keys_env` yok) ayırt edilemediği için
+    olduğu gibi uygulanır.
+    """
+    baseline = [item.strip() for item in str(saved.get("api_keys_env") or "").split(",")]
+    baseline = [item for item in baseline if item]
+    if not baseline:
+        return saved_keys
+    added_by_operator = [
+        key for key in env_keys if key not in baseline and key not in saved_keys
+    ]
+    if added_by_operator:
+        logger.info(
+            "runtime_state_api_keys_env_added", added_count=len(added_by_operator)
+        )
+    return [*saved_keys, *added_by_operator]
+
+
+def _restore_non_identity_fields(settings: Settings, saved: dict[str, Any]) -> list[str]:
+    """Kimlik **olmayan** alanları (anahtar listesi + proje etiketleri) uygular.
+
+    Çerez/token kararından (`_should_restore`) bağımsızdır: `API_KEYS` upstream
+    kimliği değildir, dolayısıyla "hangisi daha taze" sorusunun token son
+    kullanma zamanıyla cevabı yok. Bu alanlar yalnız domain eşleştiğinde ve
+    kayıt boş değilse uygulanır.
+    """
+    domain = (settings.target_domain or "").strip().lower()
+    saved_domain = str(saved.get("target_domain") or "").strip().lower()
+    if not domain or saved_domain != domain:
+        return []
+
+    changed: list[str] = []
+    for field in PERSISTED_LIST_FIELDS:
+        if field not in saved:
+            continue
+        val = saved.get(field)
+        if not isinstance(val, str):
+            continue
+        parsed = [item.strip() for item in val.split(",") if item.strip()]
+        if not parsed and field == "api_keys":
+            # Boş anahtar listesi **uygulanmaz**: eksik/bozuk bir kayıt wrapper'ı
+            # herkese kapatırdı ve geri almak için env'e elle müdahale gerekirdi.
+            # "Anahtarları boşalt" diye bir niyet yok; iptal tek tek
+            # `DELETE /v1/admin/keys/{key_id}` ile yapılır ve son anahtarın
+            # iptali zaten reddediliyor.
+            logger.warning("runtime_state_empty_api_keys_ignored")
+            continue
+        current = list(getattr(settings, field, None) or [])
+        if field == "api_keys":
+            parsed = _merge_api_keys(current, parsed, saved)
+        if current != parsed:
+            setattr(settings, field, parsed)
+            changed.append(field)
+
+    if "api_key_labels" in saved:
+        label_val = saved.get("api_key_labels")
+        if isinstance(label_val, str) and settings.api_key_labels != label_val:
+            settings.api_key_labels = label_val
+            changed.append("api_key_labels")
+    return changed
+
+
 def restore_runtime_state(settings: Settings) -> list[str]:
     """Başlangıçta durum dosyasındaki daha taze kimlik/türevleri ayarlara uygular.
 
     Dönüş: güncellenen alan adları listesi.
     """
     remember_seed(settings)
+    remember_api_key_seed(settings)
     saved = load_runtime_state(settings)
     if saved is None:
         return []
 
+    # Üretilmiş proje anahtarları kimlik kararına bağlı değil: yeni bir cURL
+    # deploy edildi diye tüketicinin anahtarı düşmemeli.
+    changed: list[str] = _restore_non_identity_fields(settings, saved)
+
     should_apply, reason = _should_restore(settings, saved)
     if not should_apply:
-        logger.info("upstream_state_skipped", reason=reason)
+        logger.info(
+            "upstream_state_skipped", reason=reason, restored_fields=changed
+        )
         # Kullanıcı `.env`'e daha yeni bir cURL/çerez koyduysa durum dosyasını
         # bu yeni tohumla hizala ki sonraki restart'ta eski kayıt hortlamasın.
         if reason in {"env_token_newer_or_equal", "env_preferred"} and (
             settings.upstream_cookie or settings.upstream_access_token
         ):
             save_runtime_state(settings, source="seed_sync")
-        return []
+        return changed
 
-    changed: list[str] = []
     if saved.get("snapshot_version") == 1 and settings.upstream_snapshot_version != 1:
         settings.upstream_snapshot_version = 1
         changed.append("upstream_snapshot_version")
@@ -401,6 +509,13 @@ async def _sync_render_env_locked(
         "RECAPTCHA_SITE_KEY": settings.recaptcha_site_key or "",
     }
     updates.update(snapshot_fields)
+    # Üretilen proje anahtarları ve etiketleri de kalıcı olsun: Free Render'da
+    # disk yok, restart'ta bu değerler env'den okunuyor. `API_KEYS` boş
+    # yazılmaz — boş liste yukarıda DELETE'e dönüşürdü ve son anahtarın iptali
+    # zaten `ProjectRegistry.revoke` tarafından reddediliyor.
+    if settings.api_keys:
+        updates["API_KEYS"] = ",".join(settings.api_keys)
+    updates["API_KEY_LABELS"] = settings.api_key_labels or ""
     if settings.upstream_refresh_api_key:
         updates["UPSTREAM_REFRESH_API_KEY"] = settings.upstream_refresh_api_key
     if not updates:

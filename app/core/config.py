@@ -88,6 +88,11 @@ class Settings(BaseSettings):
     #: Doluysa, oturum kimliğini değiştirebilen uçlar yalnız bu anahtarlara açılır:
     #: normal istemci anahtarı sızdığında upstream oturumu ele geçirilemez.
     admin_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    #: Anahtar ↔ **proje etiketi** eşlemesi: `cli_<parmakizi>:<etiket>,…`.
+    #: `POST /v1/admin/keys` bu alanı günceller; amaç "hangi proje ne kadar
+    #: kullandı" sorusunu cevaplamak (`GET /v1/admin/keys`). Anahtar değeri bu
+    #: alanda taşınmaz — kimlik `client_fingerprint()` parmak izidir.
+    api_key_labels: str = ""
 
     # ------------------------------------------------------------------ CORS
     cors_origins: Annotated[list[str], NoDecode] = Field(default_factory=lambda: ["*"])

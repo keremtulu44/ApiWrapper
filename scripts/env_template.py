@@ -58,6 +58,13 @@ ENTRIES: dict[str, tuple[str, str]] = {
         WRITE,
         "Oturumu değiştiren `/v1/admin` uçları için ayrı anahtar; boş bırakırsan tüm `API_KEYS` admin sayılır. Telegram botu da bunu kullanır.",
     ),
+    "API_KEY_LABELS": (
+        EMPTY,
+        "Anahtar ↔ **proje etiketi** eşlemesi: `cli_<parmakizi>:<etiket>,…`. "
+        "`POST /v1/admin/keys` doldurur, `GET /v1/admin/keys` hangi projenin ne "
+        "kadar kullandığını gösterir. Anahtar değeri bu alanda taşınmaz "
+        "(kimlik `client_fingerprint` parmak izidir). Elle yazman gerekmez.",
+    ),
     "CORS_ORIGINS": (DEFAULT, "`*`; tarayıcıdan çağrı yoksa da `*` zararsız."),
     "CORS_ALLOW_CREDENTIALS": (DEFAULT, "`false` — çerezle tarayıcı çağrısı yapmayacaksan."),
     # -------------------------------------------------------------- upstream
