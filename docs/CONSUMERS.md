@@ -1,0 +1,252 @@
+# ApiWrapper — Tüketici Rehberi (başka projeler için)
+
+Bu servis **OpenAI-uyumlu** bir API'dir. Kendi projende yeni bir istemci
+yazmana gerek yok: mevcut OpenAI SDK'nda yalnız **iki değeri** değiştirirsin.
+
+```python
+base_url = "https://<servis-adin>.onrender.com/v1"   # 1
+api_key  = "sk-…"                                    # 2
+```
+
+> Anahtarı sana servisi işleten kişi verir. Her projeye **ayrı** anahtar verilir;
+> böylece kullanım proje bazında görülür ve bir proje iptal edildiğinde diğerleri
+> etkilenmez.
+
+---
+
+## 1. Hızlı başlangıç
+
+### Python (openai SDK)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="https://<servis-adin>.onrender.com/v1",
+    api_key="sk-…",
+)
+
+resp = client.chat.completions.create(
+    model="max",
+    messages=[{"role": "user", "content": "Merhaba, kendini tanıt."}],
+)
+print(resp.choices[0].message.content)
+```
+
+### Akışlı (stream)
+
+```python
+stream = client.chat.completions.create(
+    model="max",
+    messages=[{"role": "user", "content": "Kısa bir şiir yaz."}],
+    stream=True,
+    stream_options={"include_usage": True},   # istersen token sayacı da gelir
+)
+for chunk in stream:
+    delta = chunk.choices[0].delta.content if chunk.choices else None
+    if delta:
+        print(delta, end="", flush=True)
+```
+
+### PowerShell
+
+```powershell
+$B = "https://<servis-adin>.onrender.com"
+$K = "sk-…"
+$body = @{
+  model    = "max"
+  messages = @(@{ role = "user"; content = "Merhaba" })
+} | ConvertTo-Json -Depth 5
+
+Invoke-RestMethod -Method Post -Uri "$B/v1/chat/completions" `
+  -Headers @{ Authorization = "Bearer $K" } `
+  -ContentType "application/json" -Body $body
+```
+
+> Depodaki hazır betik: `scripts\windows\chat.ps1 "sorun" -BaseUrl $B -ApiKey $K`.
+
+### cURL
+
+```bash
+curl https://<servis-adin>.onrender.com/v1/chat/completions \
+  -H "Authorization: Bearer sk-…" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"max","messages":[{"role":"user","content":"Merhaba"}]}'
+```
+
+---
+
+## 2. Modeller
+
+Mod seçimi **yalnız `model` alanıyla** yapılır. Ayrı bir uç nokta, ayrı bir şema
+yok.
+
+| `model` | Ne yapar | Yanıt biçimi |
+|---|---|---|
+| `max` | Genel sohbet (varsayılan) | Düz metin |
+| `web` | Güncel bilgi için web araması | Metin + sonda **`Kaynaklar:`** listesi |
+
+Hangi modellerin açık olduğunu her zaman canlıdan oku:
+
+```bash
+curl https://<servis-adin>.onrender.com/v1/models -H "Authorization: Bearer sk-…"
+```
+
+Listede görünmeyen bir mod çalışıyor olabilir ama **desteklenmez** (ör. görsel
+üretimi vitrinden indirildi: hedef taraf sık sık `429` veriyor).
+
+`web` yanıtının sonundaki blok:
+
+```
+Kaynaklar:
+- [Başlık](https://…)
+- YouTube
+```
+
+Kaynakları ayıklamak istersen son `Kaynaklar:` satırından sonrasını kes; metnin
+geri kalanı normal yanıttır.
+
+---
+
+## 3. Hatalar ve tekrar deneme
+
+Yanıt gövdesi her zaman OpenAI zarfındadır:
+
+```json
+{"error": {"message": "…", "type": "…", "param": null, "code": "…"}}
+```
+
+| Durum | `type` | `code` | Ne yapmalısın |
+|---|---|---|---|
+| `401` | `invalid_request_error` | `invalid_api_key` | Anahtar yanlış ya da iptal edilmiş. **Tekrar deneme**; işleticiye sor |
+| `400` | `invalid_request_error` | `invalid_request` | Gövde şeması bozuk (ör. `messages` yok). Gövdeyi düzelt |
+| `404` | `invalid_request_error` | `model_not_found` | `model` adını `GET /v1/models` listesinden seç |
+| `429` | `rate_limit_error` | `rate_limit_exceeded` | **`Retry-After` başlığındaki saniye kadar bekle**, sonra devam et |
+| `429` | `rate_limit_error` | `upstream_rate_limited` · `upstream_quota_reached` | Hedef servis kısıtlıyor: en az 30-60 sn bekle |
+| `502` | `upstream_error` | `upstream_failure` | Geçici: üstel geri çekilmeyle (1-2-4 sn) en fazla 3 deneme |
+| `503` | `upstream_error` | `upstream_unavailable` | Devre kesici açık: 30-60 sn sonra tekrar dene |
+| `504` | `upstream_error` | `upstream_timeout` | Hedef yanıt vermedi: bir kez daha dene, süreyi uzat |
+
+Kurallar:
+
+1. **`401`'de asla otomatik tekrar deneme.** Anahtar iptal edilmiş olabilir.
+2. **`429`'da `Retry-After`'a uy.** Başlık yoksa 60 sn bekle.
+3. **`400`'i yeniden denemekle düzeltmeye çalışma.** Gövdeyi düzelt.
+4. İstemci tarafında **zaman aşımı ≥ 120 sn** olsun: hedef servis ilk token'ı
+   15+ saniyede verebiliyor (ölçüldü). Kısa zaman aşımı "çalışmıyor" gibi görünür.
+
+---
+
+## 4. Hız sınırları
+
+Anahtar **başına** token-bucket:
+
+| Ayar | Varsayılan |
+|---|---|
+| Dakikada istek (`RATE_LIMIT_RPM`) | **120** |
+| Anlık patlama (`RATE_LIMIT_BURST`) | **30** |
+
+Sınır anahtar başına tutulur: başka bir projenin yoğunluğu senin kotanı
+**yemez**. Ama hedef servis tek bir oturum üzerinden çalıştığı için toplam
+kapasite ortaktır — dakikada yüzlerce istek planlıyorsan önce işleticiyle konuş.
+
+Sağlık kontrolü (anahtar gerektirmez):
+
+```bash
+curl https://<servis-adin>.onrender.com/health
+```
+
+---
+
+## 5. İşletici tarafı: anahtar vermek ve kullanımı okumak
+
+> Bu bölüm servisi işleten kişi içindir. Tüketicinin bunları bilmesi gerekmez.
+
+### ⚠️ Önce bunu yap: `ADMIN_API_KEYS` ayır
+
+`ADMIN_API_KEYS` **boşsa her `API_KEYS` anahtarı admin sayılır** (geriye dönük
+uyumluluk). Yani tüketiciye verdiğin anahtar çerezi değiştirebilir, tüm
+oturumları silebilir ve başka anahtar üretebilir. Anahtar dağıtmadan önce:
+
+```env
+ADMIN_API_KEYS=sk-senin-yonetici-anahtarin   # yalnız sende kalır
+API_KEYS=sk-senin-yonetici-anahtarin         # tüketici anahtarları buraya eklenir
+```
+
+Ayrım yapıldıysa `GET /v1/admin/keys` yanıtında `admin_separation: true` ve
+tüketici satırlarında `is_admin: false` görürsün. Yapılmadıysa **her satır
+`is_admin: true` döner** (gerçek yetki budur) ve her üretimde log'a
+`project_key_minted_without_admin_separation` uyarısı düşer.
+
+**Anahtar üret** (redeploy gerekmez, değer yalnız bu yanıta bir kez yazılır):
+
+```powershell
+$B = "https://<servis-adin>.onrender.com"
+$A = "ADMIN_ANAHTARIN"
+Invoke-RestMethod -Method Post -Uri "$B/v1/admin/keys" `
+  -Headers @{ Authorization = "Bearer $A" } -ContentType "application/json" `
+  -Body (@{ label = "proje adı" } | ConvertTo-Json)
+```
+
+**Kullanımı oku** (proje başına istek / token / hata):
+
+```powershell
+Invoke-RestMethod -Uri "$B/v1/admin/keys" -Headers @{ Authorization = "Bearer $A" }
+```
+
+**İptal et** (`key_id` bir önceki yanıttan):
+
+```powershell
+Invoke-RestMethod -Method Delete -Uri "$B/v1/admin/keys/cli_abc123def456" `
+  -Headers @{ Authorization = "Bearer $A" }
+```
+
+Davranış notları:
+
+* `POST` yanıtındaki `api_key` değeri **bir kez** gösterilir; kaydetmezsen yeni
+  anahtar üretmen gerekir. Log'larda ve listelemede yalnız maskeli hâli
+  (`sk-***GI`) ve parmak izi (`cli_<sha256[:12]>`) görünür — anahtar değeri
+  hiçbir yüzeye yazılmaz.
+* İptal **anında** etkilidir (doğrulama ayarları canlı okur) ve kalıcıdır:
+  liste hem durum dosyasına hem Render env'ine (`API_KEYS`) yazılır.
+* **Son anahtar iptal edilemez** — wrapper her tüketiciyi reddederdi.
+* Sayaçlar **bellek içidir**: restart'ta sıfırlanır (Free Render'da kalıcı disk
+  yok). Kalıcı muhasebe istiyorsan `/metrics` çıktısını dışarıda topla:
+  `apiwrapper_project_requests_total{project="…"}`,
+  `apiwrapper_project_errors_total`, `apiwrapper_project_tokens_total`.
+* Üretim/iptal **hem durum dosyasına hem Render env'ine** (`API_KEYS`,
+  `API_KEY_LABELS`) yazar; ikisi de `render.yaml`'da `sync: false`, yani
+  blueprint bu değerleri yönetmez ve deploy onları eskiye döndürmez.
+  Anahtar listesini Render panosundan **elle** değiştirirsen değişiklik ancak
+  restart'ta okunur; çalışan süreç kendi listesini yazmaya devam eder. Üretim ve
+  iptal için daima API'yi kullan.
+* Bu katman **yalnız muhasebe** yapar: model izni, günlük bütçe ve kuyruk yok.
+  Koruma, anahtar başına hız sınırıdır (§4).
+
+---
+
+## 6. Bilinen sınırlar (dürüst liste)
+
+1. **Tek upstream oturumu.** Hedef siteye bir kişinin çereziyle gidiliyor. İki
+   proje de aynı kapasiteyi paylaşır; çerez ölürse ikisi de durur
+   (bkz. [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) — çerezi öldüren şey
+   tarayıcıdan giriş yapmaktır).
+2. **İlk token yavaş olabilir** (15+ sn ölçüldü). Bu hedef servisin davranışı,
+   bir hata değil.
+3. **`429` her zaman bizim değil.** Hedef servis kendi kotasını uyguluyor;
+   `Retry-After` yoksa bekle ve tekrar dene.
+4. **Görsel üretimi desteklenmiyor** (vitrinden indirildi, hedef `429` veriyor).
+5. **Sayaçlar kalıcı değil** (§5). Fatura/raporlama gerekiyorsa `/metrics`'i
+   dışarıda sakla.
+
+---
+
+## İlgili dokümanlar
+
+| Doküman | Ne için |
+|---|---|
+| [`../README.md`](../README.md) | Genel bakış, mod tabloları, sık yapılan hatalar |
+| [`ENV_FULL.md`](ENV_FULL.md) | `API_KEYS`, `API_KEY_LABELS`, hız sınırı ayarları |
+| [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Hata → çözüm tablosu |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | İstek akışı ve modül yapısı |
+| [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) | Ölçülmüş gerçekler (çerez ömrü, captcha, `mode`) |

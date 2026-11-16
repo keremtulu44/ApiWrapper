@@ -169,7 +169,13 @@ async def test_free_render_persists_rotated_credentials_through_env_api():
 
 
 @pytest.mark.asyncio
-async def test_render_env_sync_writes_empty_token_fields_with_cookie_snapshot():
+async def test_render_env_sync_clears_empty_fields_with_delete():
+    """Boş alanlar PUT ile **silinir**; niyet aynı, yöntem Render'ın kabul ettiği.
+
+    Snapshot boş değerleri bilerek taşır: yeni cURL'de olmayan eski header/token
+    restart'ta dirilmesin. Render boş değeri PUT ile reddediyor (ölçüm: 400 +
+    15/30/60 sn'lik sonsuz retry), bu yüzden boş alan DELETE'e gider.
+    """
     import json
 
     from app.upstream.state_store import sync_render_env
@@ -181,20 +187,117 @@ async def test_render_env_sync_writes_empty_token_fields_with_cookie_snapshot():
         upstream_access_token="",
         upstream_refresh_token="",
     )
-    updates: dict[str, object] = {}
+    calls: dict[str, tuple[str, object]] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
         key = request.url.path.rsplit("/", 1)[-1]
-        updates[key] = json.loads(request.read())["value"]
+        body = request.read().decode()
+        calls[key] = (request.method, json.loads(body)["value"] if body else None)
         return httpx.Response(200, json={"value": "stored"})
 
     async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
         assert await sync_render_env(settings, client) is True
 
-    assert updates["UPSTREAM_COOKIE"] == "session=opaque"
-    assert updates["UPSTREAM_ACCESS_TOKEN"] == ""
-    assert updates["UPSTREAM_REFRESH_TOKEN"] == ""
-    assert updates["UPSTREAM_EXTRA_HEADERS"] == ""
+    assert calls["UPSTREAM_COOKIE"] == ("PUT", "session=opaque")
+    # Boş alanlar silme olarak gider; hiçbir anahtara boş değer PUT edilmez.
+    for key in ("UPSTREAM_ACCESS_TOKEN", "UPSTREAM_REFRESH_TOKEN",
+                "UPSTREAM_EXTRA_HEADERS", "UPSTREAM_CAPTURED_MODEL_ID"):
+        assert calls[key][0] == "DELETE", key
+    assert all(value != "" for _, value in calls.values())
+
+
+@pytest.mark.asyncio
+async def test_render_env_sync_permanent_rejection_is_logged_once_and_not_retried():
+    """4xx tekrar deneme döngüsünü beslemez; süreç başına bir kez loglanır.
+
+    Eski davranış: her sync'te `render_env_sync_failed` + `retry_scheduled` çifti
+    (15/30/60 sn) — log gürültüsü gerçek arızayı gömüyordu.
+    """
+    from app.upstream import state_store
+
+    state_store._PERMANENT_SYNC_REJECTIONS.clear()
+    settings = make_settings(
+        render_api_key="render-secret",
+        render_service_id="srv-free-test",
+        upstream_cookie="session=opaque",
+    )
+    methods: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        methods.append(request.method)
+        if request.method == "DELETE":
+            return httpx.Response(403, json={"message": "forbidden"})
+        return httpx.Response(200, json={"value": "stored"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        first = await state_store.sync_render_env(settings, client)
+        rejects_after_first = set(state_store._PERMANENT_SYNC_REJECTIONS)
+        second = await state_store.sync_render_env(settings, client)
+
+    # Kalıcı red: sync "yerleşti" sayılır, retry döngüsü uyanık kalmaz.
+    assert (first, second) == (True, True)
+    assert "DELETE" in methods
+    assert rejects_after_first, "403 kalıcı red olarak işaretlenmeli"
+    assert all(op == "delete" for op, _ in rejects_after_first)
+    # İkinci deneme aynı anahtarları yeniden loglamaz (küme büyümez).
+    assert methods.count("DELETE") > len(rejects_after_first)
+    assert rejects_after_first == state_store._PERMANENT_SYNC_REJECTIONS
+
+
+@pytest.mark.asyncio
+async def test_render_env_sync_transient_failure_still_retries():
+    """5xx geçicidir: `False` döner ki retry döngüsü yeniden denesin."""
+    from app.upstream.state_store import sync_render_env
+
+    settings = make_settings(
+        render_api_key="render-secret",
+        render_service_id="srv-free-test",
+        upstream_cookie="session=opaque",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, json={"message": "unavailable"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await sync_render_env(settings, client) is False
+
+
+@pytest.mark.asyncio
+async def test_render_env_sync_rate_limit_counts_as_transient():
+    """429 geçicidir: Render API hız sınırında retry anlamlı (client.py ile aynı kural)."""
+    from app.upstream.state_store import sync_render_env
+
+    settings = make_settings(
+        render_api_key="render-secret",
+        render_service_id="srv-free-test",
+        upstream_cookie="session=opaque",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(429, json={"message": "slow down"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await sync_render_env(settings, client) is False
+
+
+@pytest.mark.asyncio
+async def test_render_env_delete_404_counts_as_cleared():
+    """Anahtar zaten yoksa istenen son durum sağlanmış demektir."""
+    from app.upstream.state_store import sync_render_env
+
+    settings = make_settings(
+        render_api_key="render-secret",
+        render_service_id="srv-free-test",
+        upstream_cookie="session=opaque",
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.method == "DELETE":
+            return httpx.Response(404, json={"message": "not found"})
+        return httpx.Response(200, json={"value": "stored"})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        assert await sync_render_env(settings, client) is True
 
 
 @pytest.mark.asyncio
@@ -215,7 +318,12 @@ async def test_slow_older_render_sync_cannot_overwrite_newer_credentials():
 
     async def async_handler(request: httpx.Request) -> httpx.Response:
         key = request.url.path.rsplit("/", 1)[-1]
-        value = json.loads(request.read())["value"]
+        body = request.read()
+        if request.method == "DELETE":
+            # Boş snapshot alanları silinir (Render boş değeri PUT ile reddediyor).
+            stored[key] = ""
+            return httpx.Response(200, json={"value": "deleted"})
+        value = json.loads(body)["value"]
         if key == "UPSTREAM_COOKIE" and value == "session=old":
             old_request_started.set()
             await release_old_request.wait()

@@ -33,7 +33,7 @@ _HELP = (
     "ApiWrapper test botu aktif.\n"
     "Bir metin gönderin; wrapper /v1/chat/completions üzerinden yanıt üretir.\n"
     "Komutlar: /ping (wrapper + son upstream kontrolü), /tani (kimlik teşhisi), "
-    "/yenile (sunucu "
+    "/zaman (oturum olay defteri: token rotasyonu ve 401 ölçümü), /yenile (sunucu "
     "tarayıcısıyla oturumu tazele), /cookie <çerez> ya da /curl <cURL>, /help.\n"
     "/web <soru> = web arama modu (model=web, modality=search); düz metin = sohbet.\n"
     "/cookie! <çerez> = kontrolü atlayıp zorla uygula, /token = erişim token'ını "
@@ -289,6 +289,9 @@ class TelegramBot:
         if command == "/ping":
             await self.ping(chat_id)
             return
+        if command in {"/zaman", "/olaylar", "/olaydefteri", "/timeline"}:
+            await self.session_timeline(chat_id)
+            return
         if command in {"/token", "/tokeni", "/refresh-token", "/yenitoken"}:
             await self.refresh_token(chat_id)
             return
@@ -376,6 +379,33 @@ class TelegramBot:
         # Süreç ayakta olsa da upstream oturumu ölmüş olabilir.
         lines.append(describe_probe(last_probe()))
         await self.send_text(chat_id, "\n".join(lines))
+
+    async def session_timeline(self, chat_id: int) -> None:
+        """`/zaman`: oturum olay defterini telefondan okunur biçimde gösterir.
+
+        `/tani` **şu anki ayarı** söyler; bu komut **zaman içinde ne olduğunu**:
+        token kaç kez rotasyona girdi, rotasyon ne zaman durdu, süresi dolmuş
+        görünen bir token'la başarılı istek oldu mu, 401 geldiği anda çerezde
+        taze token var mıydı. "401 bizden mi hedeften mi" sorusunu ayırt eden
+        ölçüm budur (bkz. `docs/SESSION_FORENSICS.md`).
+        """
+        try:
+            response = await self.wrapper.get(
+                "/v1/admin/timeline", params={"limit": 0, "report_events": 12}
+            )
+            payload = response.json()
+        except (httpx.HTTPError, ValueError):
+            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; olay defteri okunamadı.")
+            return
+        if response.status_code != 200 or not isinstance(payload, dict):
+            await self.send_text(
+                chat_id,
+                f"Olay defteri alınamadı (HTTP {response.status_code}). "
+                "API anahtarını kontrol edin.",
+            )
+            return
+        report = payload.get("report")
+        await self.send_text(chat_id, str(report).strip() if report else "Olay defteri boş.")
 
     async def refresh_token(self, chat_id: int) -> None:
         """`/token`: erişim token'ını refresh token ile **elle** yeniler.

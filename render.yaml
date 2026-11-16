@@ -14,6 +14,12 @@ services:
     envVars:
       - key: API_KEYS
         sync: false
+      # Tüketici (proje) anahtarlarının etiketleri. `POST /v1/admin/keys` hem
+      # API_KEYS hem bu alanı çalışma sırasında Render env'ine yazar; blueprint
+      # bu değerleri **yönetmez** (sync: false), yoksa her deploy üretilmiş
+      # anahtarları ve etiketlerini eski değerine döndürürdü.
+      - key: API_KEY_LABELS
+        sync: false
       # Free planda kalıcı disk yoktur. Dönen refresh token/çerezlerin restart
       # sonrası korunması için Render API key'i girin. RENDER_SERVICE_ID,
       # Render tarafından otomatik sağlanır; ayrıca yazılmaz. Env güncellemesi

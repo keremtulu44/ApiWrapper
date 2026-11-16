@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
 from app.api.deps import (
+    get_projects,
     get_recaptcha,
     get_registry,
     get_sessions,
@@ -19,8 +20,10 @@ from app.core.errors import InvalidRequestError
 from app.core.logging import mask_value
 from app.core.metrics import metrics
 from app.core.security import api_key_dependency, require_admin
+from app.services import session_timeline
 from app.services.account import AccountPool
 from app.services.model_registry import ModelRegistry
+from app.services.project_keys import ProjectRegistry
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
 from app.upstream.auth import (
@@ -762,6 +765,66 @@ async def auth_diagnostics(
             "expires_in_seconds": int(remaining) if remaining is not None else None,
             "expired": (remaining is not None and remaining <= 0),
         },
+        "identity_forensics": _identity_forensics_summary(settings),
+    }
+
+
+def _identity_forensics_summary(settings: Settings) -> dict[str, Any]:
+    """Olay defterinin tek ekranlık özeti — `/tani` bunu doğrudan gösterir.
+
+    Yukarıdaki `token` bloğu **şu anki ayarın** ne olduğunu söyler; bu blok
+    **zaman içinde ne olduğunu**: token kaç kez rotasyona girdi, rotasyon ne
+    zaman durdu, süresi dolmuş görünen bir token'la başarılı istek oldu mu.
+    Tam döküm `GET /v1/admin/timeline`'dadır.
+    """
+    data = session_timeline.analysis()
+    token: dict[str, Any] = data["token"]
+    upstream: dict[str, Any] = data["upstream"]
+    forensic: dict[str, Any] = data["forensic"]
+    current: dict[str, Any] = token.get("current") or {}
+    return {
+        "identity_source": (data.get("identity_last_used") or {}).get("source"),
+        "token_id": current.get("id"),
+        "token_expired": current.get("expired"),
+        "token_exp_in_seconds": current.get("exp_in_s"),
+        "token_ttl_seconds": current.get("ttl_s"),
+        "token_age_seconds": current.get("age_s"),
+        "rotations": token.get("rotations"),
+        "seconds_since_last_rotation": token.get("seconds_since_last_rotation"),
+        "successes": upstream.get("successes"),
+        "deaths": upstream.get("deaths"),
+        "max_working_age_seconds": upstream.get("max_working_age_s"),
+        "max_exp_overrun_seconds": upstream.get("max_exp_overrun_s"),
+        "forensic_outcomes": forensic.get("outcomes"),
+        "forensic_retry_enabled": settings.upstream_forensic_retry,
+        "verdict": data.get("verdict"),
+    }
+
+
+@router.get("/timeline", summary="Session identity measurement timeline")
+async def session_identity_timeline(
+    request: Request, limit: int = 50, report_events: int = 10
+) -> dict[str, Any]:
+    """Oturum olay defteri: token rotasyonu, kullanılan kimlik, kimlik retleri.
+
+    Bu uç nokta onarım yapmaz, **kanıt** üretir. Üç hipotezi ayırt eden
+    ölçümler: (1) rotasyon ne zaman durdu, (2) süresi dolmuş görünen bir
+    token'la başarılı istek oldu mu, (3) 401 anında çerezde taze token var
+    mıydı. Ayrıntı: `docs/SESSION_FORENSICS.md`.
+
+    Yetki `/auth` ile aynıdır (herhangi bir API anahtarı): yanıtta gizli değer
+    yok, yalnızca token parmak izi ve `exp` damgası var. Veriler bellek içidir
+    ve restart'ta sıfırlanır.
+    """
+    settings: Settings = request.app.state.settings
+    count = max(0, min(int(limit), int(settings.session_timeline_size)))
+    tail = max(1, min(int(report_events), 50))
+    return {
+        "object": "session_timeline",
+        "in_memory": True,
+        "analysis": session_timeline.analysis(),
+        "events": session_timeline.snapshot(count),
+        "report": session_timeline.format_report(limit=tail),
     }
 
 
@@ -794,3 +857,98 @@ def _session_cookie_candidates(cookies: dict[str, str]) -> list[dict[str, object
             }
         )
     return candidates
+
+
+# ------------------------------------------------------------- proje anahtarları
+class ProjectKeyPayload(BaseModel):
+    """`POST /v1/admin/keys` gövdesi: yalnız proje etiketi taşır (secret yok)."""
+
+    label: str = Field(min_length=1, max_length=64)
+
+
+@router.get(
+    "/keys", summary="List project keys and usage", dependencies=[Depends(require_admin)]
+)
+async def list_project_keys(
+    settings: Settings = Depends(get_settings_dep),
+    projects: ProjectRegistry = Depends(get_projects),
+) -> dict[str, Any]:
+    """Proje anahtarlarını etiket + kullanım sayaçlarıyla listeler.
+
+    Yanıtta anahtar **değeri yoktur** (maskelenmiş hâli döner): yanıt bir yere
+    sızarsa kimse anahtar ele geçiremez. Üretim/iptal gibi listeleme de admin
+    ister — proje etiketleri ve hacimler tüketicilere açık bilgi değildir.
+    """
+    separated = any(key.strip() for key in settings.admin_api_keys)
+    return {
+        "object": "list",
+        "data": projects.snapshot(settings),
+        "admin_separation": separated,
+        "counters_are_in_memory": True,
+        "hint": (
+            "Sayaçlar bellek içidir; restart'ta sıfırlanır. Kalıcı muhasebe için "
+            "/metrics dışarıda (Prometheus) toplanır."
+            if separated
+            else "ADMIN_API_KEYS boş: listedeki HER anahtar /v1/admin/* uçlarını da "
+            "kullanabilir. Tüketiciye anahtar vermeden önce ayırın."
+        ),
+    }
+
+
+@router.post(
+    "/keys", summary="Mint a project API key", dependencies=[Depends(require_admin)]
+)
+async def mint_project_key(
+    payload: ProjectKeyPayload,
+    settings: Settings = Depends(get_settings_dep),
+    projects: ProjectRegistry = Depends(get_projects),
+) -> dict[str, Any]:
+    """Yeni proje anahtarı üretir; değer **yalnız bu yanıtta** görünür.
+
+    Redeploy gerekmez: doğrulama `settings.api_keys`'i anlık okur. Kalıcılık
+    mevcut düzenle sağlanır (durum dosyası + Render env) çünkü Free Render'da
+    kalıcı disk yok — bkz. `docs/LESSONS_2026_11_14.md §9`.
+    """
+    from app.upstream.state_store import sync_render_env
+
+    key, key_id = projects.mint(settings, payload.label)
+    await sync_render_env(settings)
+    return {
+        "status": "minted",
+        "api_key": key,
+        "key_id": key_id,
+        "label": projects.label_for(key_id),
+        "total_keys": len(settings.api_keys),
+        "warning": (
+            "Bu değeri şimdi kaydedin: bir daha gösterilmez. İptal: "
+            "DELETE /v1/admin/keys/{key_id}"
+        ),
+    }
+
+
+@router.delete(
+    "/keys/{key_id}",
+    summary="Revoke a project API key",
+    dependencies=[Depends(require_admin)],
+)
+async def revoke_project_key(
+    key_id: str,
+    settings: Settings = Depends(get_settings_dep),
+    projects: ProjectRegistry = Depends(get_projects),
+) -> dict[str, Any]:
+    """Anahtarı listeden düşürür: sonraki istekler 401 alır.
+
+    Son anahtar iptal edilemez (wrapper her tüketiciyi reddederdi ve geri almak
+    için Render env'ine elle müdahale gerekirdi). `ADMIN_API_KEYS` da temizlenir;
+    aksi hâlde iptal edilen anahtar `/v1/admin/*` erişimini korurdu.
+    """
+    from app.upstream.state_store import sync_render_env
+
+    masked = projects.revoke(settings, key_id)
+    await sync_render_env(settings)
+    return {
+        "status": "revoked",
+        "key_id": key_id,
+        "masked_key": masked,
+        "remaining_keys": len(settings.api_keys),
+    }

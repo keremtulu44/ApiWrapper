@@ -32,6 +32,7 @@ from app.schemas.openai import ChatCompletionRequest, ChatCompletionResponse
 from app.schemas.upstream import EventType, StreamEvent
 from app.services.account import Account, AccountPool
 from app.services.model_registry import ModelRegistry
+from app.services.project_keys import ProjectRegistry
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
 from app.upstream.auth import is_token_expired
@@ -54,10 +55,13 @@ from app.upstream.refresh import (
     refresh_upstream_token,
 )
 from app.upstream.stream_parser import (
+    Citation,
     PartShapeSummary,
+    extract_citations,
     extract_media_parts,
     media_markdown,
     parse_stream,
+    render_sources,
 )
 from app.utils.ids import new_completion_id, now_ts
 from app.utils.sse import sse_done, sse_event
@@ -144,6 +148,7 @@ class CompletionService:
         sessions: SessionManager,
         recaptcha: RecaptchaProvider,
         accounts: AccountPool | None = None,
+        projects: ProjectRegistry | None = None,
     ) -> None:
         self.settings = settings
         self.upstream = upstream
@@ -151,6 +156,23 @@ class CompletionService:
         self.sessions = sessions
         self.recaptcha = recaptcha
         self.accounts = accounts if accounts is not None else AccountPool(settings)
+        #: Proje muhasebesi (opsiyonel): `None` ise hiçbir şey kaydedilmez.
+        self.projects = projects
+
+    def _record_project(
+        self, client_identity: str | None, *, tokens: int = 0, error: bool = False
+    ) -> None:
+        """Kullanımı proje hanesine yazar.
+
+        Muhasebe isteği **asla** etkilememeli: sayaç hatası bir tüketiciye 500
+        döndürmesin diye yutulur ve yalnız uyarı loglanır.
+        """
+        if self.projects is None:
+            return
+        try:
+            self.projects.record(client_identity, tokens=tokens, error=error)
+        except Exception:  # pragma: no cover - savunmacı
+            logger.warning("project_usage_record_failed")
 
     # ------------------------------------------------------------ helpers
     @property
@@ -430,6 +452,12 @@ class CompletionService:
             # İstemciye iletilen görsel sayısı (log için): `a2` kanalından gelen
             # görsel parçaları TEXT'e çevrilip iletiliyor, aşağıya bak.
             media_count = 0
+            # `a2` kanalının atıf parçaları (kaynak adları). Arama modunda yanıtın
+            # sonuna "Kaynaklar:" bloğu olarak eklenir; **her modda sayılır** ki
+            # sohbetin de atıf taşıdığı logdan görülebilsin — biçim kararı kanıtla
+            # verilir, tahminle değil.
+            sources: list[Citation] = []
+            sources_delivered = False
             # Upstream isteği kabul ettiğinde pencereye BİR mesaj işlenir.
             # `emitted` ile kontrol edilmez: `emitted` yalnızca istemciye içerik
             # taşıyan TEXT olaylarında artar, `f:` (START) olayında artmaz —
@@ -505,9 +533,31 @@ class CompletionService:
                                     text=media_markdown(part),
                                     raw_code=event.raw_code,
                                 )
+                            for citation in extract_citations(event.data):
+                                if citation not in sources:
+                                    sources.append(citation)
                         if event.type in _CLIENT_VISIBLE_EVENTS and event.text:
                             emitted += 1
                         yield event
+                if sources and built.modality == "search":
+                    # Kaynaklar yanıtın **sonunda** tek blok olarak eklenir
+                    # (arayüzün kendi düzeni de böyle). Sıra bozulmaz: akış
+                    # tüketicileri upstream'in bitiş olayını yalnız
+                    # `finish_reason`/usage kaydı için kullanır, kendi bitiş
+                    # parçalarını bu jeneratör bittikten sonra üretir — dolayısıyla
+                    # buradaki TEXT istemciye içerik olarak ulaşır.
+                    #
+                    # Yalnız arama modu: sohbet akışında da atıf parçaları geliyor
+                    # (`counts` logunda görünür) ama 7/24 çalışan düz sohbet
+                    # yanıtının biçimini değiştirmemek bilerek tercih edildi
+                    # (bkz. LESSONS §8: çalışan davranışa dokunma).
+                    sources_delivered = True
+                    emitted += 1
+                    yield StreamEvent(
+                        type=EventType.TEXT,
+                        text=render_sources(sources),
+                        raw_code="sources",
+                    )
                 if shapes:
                     # Yalnız gerçekten metin-dışı parça geldiyse loglanır: düz
                     # sohbet akışlarında satır üretmez (gürültü yok).
@@ -517,6 +567,8 @@ class CompletionService:
                         counts=shapes.counts,
                         shapes=shapes.shapes,
                         media_delivered=media_count,
+                        sources_seen=len(sources),
+                        sources_delivered=sources_delivered,
                     )
                 return
             except UpstreamQuotaExceeded:
@@ -663,6 +715,7 @@ class CompletionService:
                     if event.usage:
                         reported_usage.update(event.usage)
         except Exception as exc:
+            self._record_project(client_identity, error=True)
             raise self._translate(exc) from exc
 
         tail = stopper.flush()
@@ -700,6 +753,7 @@ class CompletionService:
             usage_total_tokens=usage.total_tokens,
             duration_ms=round((time.monotonic() - started) * 1000, 2),
         )
+        self._record_project(client_identity, tokens=usage.total_tokens)
         return response
 
     # ------------------------------------------------------------- stream
@@ -823,6 +877,7 @@ class CompletionService:
                 )
                 yield sse_event(api_error.to_payload())
                 stream_failed = True
+                self._record_project(client_identity, error=True)
 
             if not stream_failed:
                 yield sse_event(
@@ -861,6 +916,9 @@ class CompletionService:
                     usage_total_tokens=usage_total_tokens,
                     usage_included=request.wants_usage(),
                     duration_ms=round((time.monotonic() - started) * 1000, 2),
+                )
+                self._record_project(
+                    client_identity, tokens=usage_total_tokens or 0
                 )
 
         except (asyncio.CancelledError, GeneratorExit):

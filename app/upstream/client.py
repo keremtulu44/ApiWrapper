@@ -13,8 +13,13 @@ import httpx
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.core.metrics import metrics
+from app.services import session_timeline
 from app.services.account import Account
-from app.upstream.auth import parse_cookie_header
+from app.upstream.auth import (
+    extract_access_token,
+    merge_chunked_cookies,
+    parse_cookie_header,
+)
 from app.upstream.breaker import CircuitBreaker
 from app.upstream.deployment import DeploymentIdResolver
 from app.upstream.exceptions import (
@@ -107,6 +112,19 @@ AUTH_MARKERS = (
     "account not found",
     "invalid user",
 )
+
+
+def _sent_bearer(headers: dict[str, str]) -> str | None:
+    """Gönderilecek `Authorization` başlığından ham token'ı çıkarır.
+
+    Ölçüm için gerekli: hangi kimliğin gittiğini `build_authorization`'ın
+    kodunu okuyarak değil, gerçekten gönderilen başlıktan bilelim. Şema
+    (`Bearer`/`Token`) atılır, değer loglanmaz — yalnızca parmak izi alınır.
+    """
+    value = headers.get("authorization") or headers.get("Authorization")
+    if not value:
+        return None
+    return value.split(" ", 1)[1].strip() if " " in value.strip() else value.strip()
 
 
 def _is_availability_failure(error: Exception | None) -> bool:
@@ -435,7 +453,7 @@ class UpstreamClient:
             account.cookie = new_cookie
         setattr(self.settings, cookie_attr, new_cookie)
 
-        from app.upstream.auth import extract_access_token, extract_refresh_token
+        from app.upstream.auth import extract_refresh_token
         from app.upstream.state_store import save_runtime_state
 
         cookie_names = (
@@ -458,8 +476,25 @@ class UpstreamClient:
                 else f"upstream_access_token_{slot}"
             )
             current_access = str(getattr(self.settings, access_attr, "") or "")
+            replaced_pinned = False
             if current_access and current_access == old_access:
                 setattr(self.settings, access_attr, new_access)
+                replaced_pinned = True
+            # Ölçüm: rotasyonun kendisi kadar, sabitlenmiş `UPSTREAM_ACCESS_TOKEN`'ın
+            # bu rotasyonu **yutup yutmadığı** da kaydedilir. 401'lerin bir kısmı
+            # hedefin davranışı değil, bu öncelik sırasıdır.
+            session_timeline.note_token_rotation(
+                new_token=new_access,
+                old_token=old_access,
+                source="set_cookie",
+                slot=slot,
+                pinned_token=current_access or None,
+                replaced_pinned=replaced_pinned,
+            )
+        elif new_access:
+            # Çerez döndü ama token aynı: hedef rotasyonu durdurmuş olabilir.
+            # Bu, "oturum sunucu tarafında düştü" hipotezinin erken işaretidir.
+            session_timeline.note_cookie_unchanged(token=new_access, source="set_cookie")
 
         if slot <= 1:
             new_refresh = extract_refresh_token(new_cookie, cookie_names=cookie_names)
@@ -467,6 +502,112 @@ class UpstreamClient:
                 self.settings.upstream_refresh_token = new_refresh
             save_runtime_state(self.settings, source="upstream_set_cookie")
             self._schedule_render_env_sync()
+
+    def _forensic_identity_retry(
+        self,
+        *,
+        response: httpx.Response,
+        request_settings: Settings,
+        account: Account | None,
+        headers: dict[str, str],
+        sent_token: str | None,
+        status: int,
+    ) -> tuple[dict[str, object], str] | None:
+        """Ölüm yanıtındaki çerezden taze token çıkarıp başlığı yerinde değiştirir.
+
+        Bu bir kurtarma hamlesi değil, **ölçümdür**. Hedef rotasyonu sürdürüyorsa
+        çerezde gönderilenden farklı, taze bir token vardır ve istek geçer: suçlu
+        sabitlenmiş `UPSTREAM_ACCESS_TOKEN`'dır (H3). Taze token hiç yoksa ya da
+        yenisi de reddedilirse oturum sunucu tarafında ölmüştür (H2) ve tek çözüm
+        tarayıcıdan yeni cURL almaktır; `/yenile` diriltmez.
+
+        `(olay alanları, taze token)` döner; `None` dönerse çağıran normal hata
+        yoluna devam eder. Ölüm yanıtının çerezleri bilinçli olarak durum
+        dosyasına **yazılmaz**: başarısız yanıttan kalıcı durum üretmek gürültüyü
+        kalıcı hâle getirir. Deneme başarılı olursa başarı yolu o yanıtın
+        çerezlerini zaten işler.
+        """
+        stale = session_timeline.describe_token(sent_token)
+        cookie_names = (
+            account.token_cookie_names
+            if account is not None
+            else request_settings.upstream_token_cookie_names
+        )
+        # Ölüm yanıtının kendi Set-Cookie parçaları birleştirilir: taze token
+        # çoğu zaman tam oradadır ve bugüne dek bu değer sessizce atılıyordu.
+        chunks: dict[str, str] = {}
+        set_cookies = response.headers.get_list("set-cookie")
+        for raw in set_cookies:
+            chunks.update(parse_cookie_header(raw))
+        candidate = "; ".join(
+            f"{name}={value}" for name, value in merge_chunked_cookies(chunks).items()
+        )
+        if not candidate:
+            candidate = (account.cookie if account else "") or request_settings.upstream_cookie
+        fresh = extract_access_token(candidate, cookie_names=cookie_names)
+        fields: dict[str, object] = {
+            "stale_id": stale.get("id"),
+            "stale_age_s": stale.get("age_s"),
+            "stale_exp_in_s": stale.get("exp_in_s"),
+            "first_status": status,
+            "set_cookie_count": len(set_cookies),
+        }
+        if not fresh or fresh == sent_token:
+            session_timeline.note_forensic_retry(
+                outcome="skipped_no_fresh_token",
+                hint=(
+                    "401 anında çerezde, gönderilenden farklı bir erişim token'ı yok: "
+                    "rotasyon durmuş. Ölüm bizim ayarımızdan değil, oturumun hedef "
+                    "tarafında düşmesinden. Çözüm: tarayıcıdan taze cURL."
+                ),
+                **fields,
+            )
+            metrics.inc(
+                "apiwrapper_upstream_identity_forensic_total",
+                labels={"outcome": "skipped_no_fresh_token"},
+            )
+            logger.warning(
+                "upstream_identity_forensic_skipped",
+                reason="no_fresh_token",
+                status=status,
+                stale_id=fields["stale_id"],
+                stale_age_s=fields["stale_age_s"],
+                set_cookie_count=len(set_cookies),
+                hint=(
+                    "Ölüm anında taze token bulunamadı; doğrulama denemesi yapılmadı. "
+                    "Bu, oturumun hedef tarafında düştüğünün işaretidir."
+                ),
+            )
+            return None
+
+        fresh_desc = session_timeline.describe_token(fresh)
+        scheme = request_settings.upstream_auth_scheme.strip()
+        headers["authorization"] = f"{scheme} {fresh}" if scheme else fresh
+        fields.update(
+            {
+                "fresh_id": fresh_desc.get("id"),
+                "fresh_age_s": fresh_desc.get("age_s"),
+                "fresh_exp_in_s": fresh_desc.get("exp_in_s"),
+            }
+        )
+        metrics.inc(
+            "apiwrapper_upstream_identity_forensic_total",
+            labels={"outcome": "attempted"},
+        )
+        logger.warning(
+            "upstream_identity_forensic_retry",
+            status=status,
+            stale_id=fields["stale_id"],
+            stale_age_s=fields["stale_age_s"],
+            fresh_id=fields["fresh_id"],
+            fresh_exp_in_s=fields["fresh_exp_in_s"],
+            hint=(
+                "401 'user not found' sonrası çerezdeki taze token'la TEK doğrulama "
+                "denemesi. Geçerse suçlu sabitlenmiş UPSTREAM_ACCESS_TOKEN'dır ve "
+                "anahtar Render env'den silinmelidir."
+            ),
+        )
+        return fields, fresh
 
     async def _retry_with_fresh_stamp(
         self,
@@ -785,10 +926,32 @@ class UpstreamClient:
         stamp_strip_used = False
         # 409 sonrası damga çıkarılınca oturum da reddedildiyse ısıtma faydasız.
         session_dead = False
+        # 401 "user not found" sonrası taze çerez token'ıyla TEK doğrulama denemesi.
+        # Amaç isteği kurtarmak değil, suçluyu ayırt etmek: deneme geçerse bayat
+        # olan sabitlenmiş token'dır (bizim ayar), geçmezse oturum ölmüştür (hedef).
+        forensic_used = False
+        forensic_sent: dict[str, object] | None = None
+        # Ölçüm için çerezden ayıklanan token. `upstream_auth_from_cookie` kapalıyken
+        # bu değer başlıkta kullanılmaz ama "gönderilen token nereden geldi"
+        # sorusunun cevabı için gerekir: pinned mı, çerez mi?
+        measurement_cookie_token = extract_access_token(
+            request_settings.upstream_cookie,
+            cookie_names=request_settings.upstream_token_cookie_names,
+        )
 
         async with self._total_deadline(request_settings, url), self._semaphore:
             while attempt < attempts:
                 metrics.inc("apiwrapper_upstream_requests_total")
+                # Ölçüm: bu denemenin hangi kimlikle gittiği. Damga retry'ı
+                # başlıkları yeniden kurduğu için her turda tazelenir; olay
+                # yalnızca kimlik değişince (ya da 15 dakikada bir) yazılır.
+                sent_token = _sent_bearer(headers)
+                session_timeline.note_request_identity(
+                    token=sent_token,
+                    cookie_token=measurement_cookie_token,
+                    pinned_token=request_settings.upstream_access_token or None,
+                    account=account.label if account else None,
+                )
                 request = client.build_request(
                     "POST", url, headers=headers, content=body
                 )
@@ -806,6 +969,40 @@ class UpstreamClient:
                     )
                 else:
                     status = response.status_code
+                    forensic_response = forensic_sent is not None
+                    if forensic_sent is not None:
+                        # Doğrulama denemesinin sonucu — teşhisin kalbi burası:
+                        # `recovered` = suçlu sabitlenmiş bayat token (H3),
+                        # `rejected` = oturum gerçekten ölü (H2).
+                        outcome = (
+                            "recovered"
+                            if status < 400
+                            else "rejected" if status in CAPTCHA_STATUS else "other_status"
+                        )
+                        session_timeline.note_forensic_retry(
+                            outcome=outcome, status=status, **forensic_sent
+                        )
+                        metrics.inc(
+                            "apiwrapper_upstream_identity_forensic_total",
+                            labels={"outcome": outcome},
+                        )
+                        logger.warning(
+                            "upstream_identity_forensic_result",
+                            outcome=outcome,
+                            status=status,
+                            stale_id=forensic_sent.get("stale_id"),
+                            fresh_id=forensic_sent.get("fresh_id"),
+                            hint=(
+                                "401 sonrası çerezdeki taze token'la yapılan tek "
+                                "doğrulama denemesi. Sonuç 'recovered' ise istekler "
+                                "bayat UPSTREAM_ACCESS_TOKEN ile gidiyordu: anahtarı "
+                                "Render env'den silmek gerekir. 'rejected' ise oturum "
+                                "ölü: taze cURL şart."
+                                if outcome == "recovered"
+                                else "Deneme de reddedildi: oturum sunucu tarafında ölü."
+                            ),
+                        )
+                        forensic_sent = None
                     if 300 <= status < 400:
                         location = response.headers.get("location", "")
                         error_body = await self._read_error_body(response)
@@ -845,6 +1042,14 @@ class UpstreamClient:
                                     "belleğe ve durum deposuna kaydedildi."
                                 ),
                             )
+                        # Ölçüm: başarılı istek, gönderilen token'ın yaşıyla birlikte
+                        # kaydedilir. "Yaşı 15 saat ama çalıştı" gözlemi, hedefin
+                        # token yaşını denetleyip denetlemediğinin tek kanıtıdır.
+                        session_timeline.note_upstream_success(
+                            status=status,
+                            token=sent_token,
+                            account=account.label if account else None,
+                        )
                         try:
                             yield response.aiter_bytes()
                         finally:
@@ -1021,11 +1226,59 @@ class UpstreamClient:
                             marker=refresh_marker,
                         )
 
+                    if self._is_user_missing(status, error_body):
+                        # Oturum ölümü: damga denemesine bağlı olmadan her zaman
+                        # ölçülür (eski `upstream_session_dead` dalı yalnızca 409
+                        # damga soyma sonrası çalışıyordu, bu yüzden canlı 401'ler
+                        # olay defterinde hiç görünmüyordu).
+                        if not forensic_response:
+                            # Doğrulama denemesinin yanıtı ayrıca sayılmaz: aynı
+                            # isteğin parçasıdır ve sonucu `forensic_retry`
+                            # olayında durur. İki kez saymak "kaç istek öldü"
+                            # sorusunu bozardı.
+                            session_timeline.note_identity_rejected(
+                                status=status,
+                                body_class="user_not_found",
+                                token=sent_token,
+                                account=account.label if account else None,
+                            )
+                        if not forensic_used:
+                            forensic_used = True
+                            if not request_settings.upstream_forensic_retry:
+                                session_timeline.note_forensic_retry(
+                                    outcome="skipped_disabled",
+                                    status=status,
+                                    stale_id=session_timeline.token_id(sent_token),
+                                )
+                            else:
+                                prepared = self._forensic_identity_retry(
+                                    response=response,
+                                    request_settings=request_settings,
+                                    account=account,
+                                    headers=headers,
+                                    sent_token=sent_token,
+                                    status=status,
+                                )
+                                if prepared is not None:
+                                    forensic_sent, fresh_token = prepared
+                                    # Sonraki turun kimlik ölçümü doğru etiketi
+                                    # alsın: bu token çerezden geldi.
+                                    measurement_cookie_token = fresh_token
+                                    # Doğrulama denemesi normal deneme bütçesini harcamaz.
+                                    continue
+
                     if (
                         self._is_auth_body(status, error_body) or session_dead
                     ) and not self._is_captcha_body(
                         status, error_body
                     ):
+                        if not self._is_user_missing(status, error_body):
+                            session_timeline.note_identity_rejected(
+                                status=status,
+                                body_class="auth_body",
+                                token=sent_token,
+                                account=account.label if account else None,
+                            )
                         raise UpstreamAuthRejected(
                             (
                                 "Upstream rejected the session (401/403 after a stale "
@@ -1052,6 +1305,14 @@ class UpstreamClient:
                         )
 
                     if self._is_captcha_body(status, error_body):
+                        # Ölçüm: captcha reddi bir oturum ölümü değildir; ret
+                        # taksonomisinde ayrı sınıf olarak tutulur.
+                        session_timeline.note_identity_rejected(
+                            status=status,
+                            body_class="captcha",
+                            token=sent_token,
+                            account=account.label if account else None,
+                        )
                         # Operatör tam olarak hangi gövdenin geldiğini
                         # görsün: "captcha_rejected" diye bildiğimiz şey
                         # bazen cx alanı, deployment skew veya path

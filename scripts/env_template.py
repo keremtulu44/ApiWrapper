@@ -58,6 +58,13 @@ ENTRIES: dict[str, tuple[str, str]] = {
         WRITE,
         "Oturumu değiştiren `/v1/admin` uçları için ayrı anahtar; boş bırakırsan tüm `API_KEYS` admin sayılır. Telegram botu da bunu kullanır.",
     ),
+    "API_KEY_LABELS": (
+        EMPTY,
+        "Anahtar ↔ **proje etiketi** eşlemesi: `cli_<parmakizi>:<etiket>,…`. "
+        "`POST /v1/admin/keys` doldurur, `GET /v1/admin/keys` hangi projenin ne "
+        "kadar kullandığını gösterir. Anahtar değeri bu alanda taşınmaz "
+        "(kimlik `client_fingerprint` parmak izidir). Elle yazman gerekmez.",
+    ),
     "CORS_ORIGINS": (DEFAULT, "`*`; tarayıcıdan çağrı yoksa da `*` zararsız."),
     "CORS_ALLOW_CREDENTIALS": (DEFAULT, "`false` — çerezle tarayıcı çağrısı yapmayacaksan."),
     # -------------------------------------------------------------- upstream
@@ -188,6 +195,20 @@ ENTRIES: dict[str, tuple[str, str]] = {
         DEFAULT,
         "`86400` — günde bir gerçek akış yolu denemesi; `0` = kapalı.",
     ),
+    # ------------------------------------------------------------ ölçüm (olay defteri)
+    "UPSTREAM_FORENSIC_RETRY": (
+        DEFAULT,
+        "`true` — 401 `user not found` sonrası çerezdeki taze token'la TEK doğrulama denemesi. "
+        "Geçerse suçlu bayat `UPSTREAM_ACCESS_TOKEN`, geçmezse ölü oturumdur; ölüm başına 1 ek istek.",
+    ),
+    "SESSION_TIMELINE_SIZE": (
+        DEFAULT,
+        "`400` — olay defterinin bellek içi kapasitesi. `/zaman` ve `/v1/admin/timeline` bunu okur.",
+    ),
+    "SESSION_TIMELINE_UTC_OFFSET_HOURS": (
+        DEFAULT,
+        "`3` — raporlarda UTC yanında gösterilen yerel saat (Türkiye). `0` = yalnızca UTC.",
+    ),
     # -------------------------------------------------------------- bildirim
     "TELEGRAM_ALERTS_ENABLED": (DEFAULT, "`true` — arıza ve düzelme bildirimi."),
     "TELEGRAM_ALERT_REPEAT_SECONDS": (DEFAULT, "`21600` — aynı arıza sürerken hatırlatma aralığı."),
@@ -287,6 +308,8 @@ def _group(key: str) -> str:
         return "yenileme"
     if key.startswith(("UPSTREAM_KEEPALIVE",)):
         return "keepalive"
+    if key.startswith(("SESSION_TIMELINE", "UPSTREAM_FORENSIC")):
+        return "ölçüm"
     if key.startswith(("UPSTREAM_COOKIE", "UPSTREAM_ACCESS_TOKEN", "UPSTREAM_AUTH", "TARGET_DOMAIN")):
         return "kimlik"
     if key.startswith(("UPSTREAM_", "TARGET_DOMAIN")):

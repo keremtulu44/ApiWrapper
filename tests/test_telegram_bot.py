@@ -1081,3 +1081,73 @@ async def test_plain_chat_without_images_still_sends_text_only():
     assert received["model"] == "max"
     assert [name for name, _ in calls] == ["sendMessage"]
     assert calls[0][1]["text"] == "Merhaba"
+
+
+@pytest.mark.asyncio
+async def test_zaman_command_sends_the_session_timeline_report():
+    """`/zaman`: telefondan tek bakışta "neyin ne zaman olduğu" okunabilmeli.
+
+    `/tani` şu anki ayarı söyler; bu komut zaman içinde ne olduğunu: token kaç
+    kez rotasyona girdi, ölüm ne zaman oldu, forensic retry ne sonuç verdi.
+    """
+    sent: list[dict[str, Any]] = []
+    seen_paths: list[str] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        seen_paths.append(request.url.path)
+        return httpx.Response(
+            200,
+            json={
+                "object": "session_timeline",
+                "in_memory": True,
+                "analysis": {},
+                "events": [],
+                "report": (
+                    "🧾 OTURUM OLAY DEFTERİ\nToken: 4 rotasyon\nYORUM: H2 DESTEKLENDİ"
+                ),
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram=telegram, wrapper=wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/zaman"})
+
+    assert seen_paths == ["/v1/admin/timeline"]
+    text = sent[-1]["text"]
+    assert "OTURUM OLAY DEFTERİ" in text
+    assert "H2 DESTEKLENDİ" in text
+
+
+@pytest.mark.asyncio
+async def test_zaman_command_reports_a_failing_wrapper():
+    """Rapor alınamazsa sessiz kalmamalı: telefon ekranında sebep görünmeli."""
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, json={"detail": "patladı"})
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram=telegram, wrapper=wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/olaylar"})
+
+    assert "Olay defteri alınamadı (HTTP 500)" in sent[-1]["text"]

@@ -61,7 +61,7 @@ Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damg
 | **Çerez Ömrü & Otomatik Refresh** | **[`docs/COOKIE_LIFECYCLE.md`](docs/COOKIE_LIFECYCLE.md)** | `refresh_token` rotasyonu, `apikey` otomatik keşfi, parçalı çerez (`.0`/`.1`) yeniden yazımı ve 401 kurtarma |
 | **Yakalama Zaman Çizelgesi (ölçüm)** | **[`docs/CAPTURE_TIMELINE.md`](docs/CAPTURE_TIMELINE.md)** | Üç cURL'ün zaman sırasına göre farkı: hangi değer istek / sayfa / giriş / deploy başına döner; ölçülen `expires_in` (3600 → 1200 s) |
 | **Free Render Kurulumu** | **[`docs/RENDER.md`](docs/RENDER.md)** | `UPSTREAM_CURL`, `RENDER_API_KEY` ile restart sonrası kalıcılık, uyku davranışı ve gömülü Telegram botu |
-| **Telefondan Yönetim** | **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** | Bilgisayar yokken `/tani`, `/token`, `/apikey`, `/yenile`, `/cookie` ve `/curl` komutları |
+| **Telefondan Yönetim** | **[`docs/MOBILE_CURL.md`](docs/MOBILE_CURL.md)** | Bilgisayar yokken `/tani`, `/zaman`, `/token`, `/apikey`, `/yenile`, `/cookie` ve `/curl` komutları |
 | **Arıza & Teşhis Sözlüğü** | **[`docs/TROUBLESHOOTING.md`](docs/TROUBLESHOOTING.md)** | 401 / 403 / 409 / 429 hata kodlarının anlamı ve otomatik kurtarma kademeleri |
 | **Yeni Oturum Başlangıcı** | **[`docs/START_HERE.md`](docs/START_HERE.md)** | Okuma sırası, kurulum, doğrulama, problem tespit adımları, düzenleme kuralları |
 | **Oturum Devri (dosya/satır haritası)** | **[`docs/HANDOFF.md`](docs/HANDOFF.md)** | Hangi davranış hangi dosyada, hangi satırda; doğrulanmış konum listesi |
@@ -347,6 +347,13 @@ curl -s "$BASE/v1/chat/completions" -H "Authorization: Bearer $KEY" \
 
 Takma adlar da geçerlidir: `search` / `web-search` / `ara` → `web`;
 `gorsel` / `görsel` / `img` → `image`.
+
+**Web arama yanıtı**nın sonunda `Kaynaklar:` bloğu görünür: akışın `a2`
+kanalındaki atıf parçaları (hedef bugün kaynak **adı** gönderiyor:
+`organization`) yanıtın sonuna liste olarak eklenir. Yalnız `modality=search`'te —
+7/24 çalışan düz sohbetin biçimi bilerek değişmez (ama atıflar orada da
+`sources_seen` olarak loglanır). Hedef ileride adres de gönderirse satırlar
+kendiliğinden `- [başlık](adres)` biçimine geçer.
 
 ### İkincil mod: görsel (deneysel — vitrin dışında)
 
@@ -704,6 +711,46 @@ Gerçek Telegram ve Render testleri bu ortamda token/secret olmadan çalıştır
 
 ---
 
+## Başka projelere açmak (proje anahtarları)
+
+Servis OpenAI-uyumlu olduğu için bir tüketici yalnız `base_url` + `api_key`
+değiştirir. Her projeye **ayrı anahtar** ver; böylece kullanımı proje bazında
+görürsün ve bir projeyi diğerlerini etkilemeden iptal edersin.
+
+```powershell
+$B = "https://apiwrapper" + ".onrender.com"
+$A = "ADMIN_ANAHTARIN"
+
+# 1. Anahtar üret — değer yalnız bu yanıtta görünür, kaydet
+Invoke-RestMethod -Method Post -Uri "$B/v1/admin/keys" `
+  -Headers @{ Authorization = "Bearer $A" } -ContentType "application/json" `
+  -Body (@{ label = "mobil uygulama" } | ConvertTo-Json)
+
+# 2. Kullanımı oku (proje başına istek / token / hata)
+Invoke-RestMethod -Uri "$B/v1/admin/keys" -Headers @{ Authorization = "Bearer $A" }
+
+# 3. İptal et (anında etkili, son anahtar iptal edilemez)
+Invoke-RestMethod -Method Delete -Uri "$B/v1/admin/keys/cli_abc123def456" `
+  -Headers @{ Authorization = "Bearer $A" }
+```
+
+Kurallar:
+
+- **Önce `ADMIN_API_KEYS` ayır.** Boşsa her `API_KEYS` anahtarı admin sayılır
+  (geriye dönük uyumluluk) ve tüketiciye verdiğin anahtar `/v1/admin/*`
+  uçlarına da erişir. `GET /v1/admin/keys` bunu gizlemez: ayrım yoksa
+  `admin_separation: false` ve her satırda `is_admin: true` döner, her üretimde
+  de log'a `project_key_minted_without_admin_separation` düşer.
+- Anahtar **değeri loglanmaz ve listelenmez**; her yerde ya maskeli (`sk-***GI`)
+  ya parmak izi (`cli_<sha256[:12]>`) olarak görünür. Etiketler `API_KEY_LABELS`
+  alanında taşınır ve durum dosyası + Render env'i ile kalıcı olur.
+- Bu katman **yalnız muhasebe**dir: model izni, günlük bütçe ve kuyruk yok.
+  Koruma anahtar başına hız sınırıdır (`RATE_LIMIT_RPM`/`RATE_LIMIT_BURST`,
+  varsayılan 120/30).
+- Sayaçlar bellek içidir, restart'ta sıfırlanır; kalıcı rapor için `/metrics`
+  (`apiwrapper_project_*`) dışarıda toplanır.
+- Tüketiciye vereceğin rehber: [`docs/CONSUMERS.md`](docs/CONSUMERS.md).
+
 ## İşletim
 
 ```bash
@@ -722,6 +769,9 @@ make docker   # docker compose up --build
 - `POST /v1/admin/breaker/reset`, `/v1/admin/recaptcha/invalidate`, `/v1/admin/sessions/clear`
 - `GET /v1/admin/config` → hassas olmayan etkin yapılandırma
 - `GET /v1/admin/auth` → maskeli token teşhisi; diğer hesaplar için `?slot=2`, `?slot=3`, `?slot=4`
+- `POST /v1/admin/keys {"label":"proje adı"}` → tüketici anahtarı üretir (redeploy yok);
+  `GET /v1/admin/keys` → proje başına istek/token/hata; `DELETE /v1/admin/keys/{key_id}` → iptal.
+  Ayrıntı: [`docs/CONSUMERS.md`](docs/CONSUMERS.md)
 
 ### Ayar politikaları
 

@@ -1,6 +1,6 @@
 # ApiWrapper — Doküman Rehberi
 
-**Buradan başla.** 16 doküman var; burada hangisini ne zaman okuyacağın yazıyor.
+**Buradan başla.** 17 doküman var; burada hangisini ne zaman okuyacağın yazıyor.
 
 ---
 
@@ -49,6 +49,7 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 | [`RENDER.md`](RENDER.md) | Render kurulumu, env, uyku | Deploy ederken |
 | [`MOBILE_CURL.md`](MOBILE_CURL.md) | Telefondan cURL alma | Çerez tazelerken |
 | [`ENV_FULL.md`](ENV_FULL.md) | Tüm env değişkenleri (otomatik üretilir) | Env ararken |
+| [`CONSUMERS.md`](CONSUMERS.md) | **Tüketici rehberi**: OpenAI SDK ile bağlanma, modeller, hata kodları, hız sınırı + anahtar üretme/iptal | API'yi başka bir projeye verirken |
 | [`../README.md`](../README.md) | Genel bakış + **sık yapılan hatalar** | Her zaman |
 
 ### Arıza
@@ -56,12 +57,13 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 |---|---|---|
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Hata → çözüm tablosu | Bir şey bozulduğunda |
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) § captcha | reCAPTCHA hata → çözüm | Captcha reddederse |
+| [`SESSION_FORENSICS.md`](SESSION_FORENSICS.md) | **Ölçüm protokolü**: 401 bizden mi hedeften mi (H1–H4), `/zaman` olay defteri, 24 saatlik deney planı | `502 upstream_unauthorized` tekrarlıyorsa |
 | [`CAPTURE_TIMELINE.md`](CAPTURE_TIMELINE.md) | Yakalama zaman çizelgesi | Geçmiş kararları anlamak |
 
 ### Geçmiş / arşiv
 `AUDIT_2026_11.md`, `HANDOFF.md`, `START_HERE.md`, `DELIVERY_REPORT.md`,
-`MERGE_TARGET.md`, `SAHTE_CURL_TEST_RAPORU.md` — tarihsel kayıtlar. Güncel
-doğru için önce yukarıdaki tablolara bak.
+`MERGE_TARGET.md` — tarihsel kayıtlar. Güncel doğru için önce yukarıdaki
+tablolara bak.
 
 ---
 
@@ -153,3 +155,12 @@ Invoke-RestMethod -Method Post -Uri ($B + "/v1/admin/upstream/curl") `
 
 **Teşhis:** `POST /v1/admin/auth` · **Sağlık:** `GET /healthz`
 **Telegram:** `/ping`, `/tani`, `/curl <cURL>`
+
+**Proje anahtarı ver (başka bir proje bu API'yi kullanacaksa):**
+```powershell
+Invoke-RestMethod -Method Post -Uri ($B + "/v1/admin/keys") `
+  -Headers @{ "Authorization" = "Bearer ADMIN_ANAHTARIN" } `
+  -ContentType "application/json" -Body (@{ label = "proje adı" } | ConvertTo-Json)
+```
+Kullanım: `GET /v1/admin/keys` · İptal: `DELETE /v1/admin/keys/<key_id>` ·
+Rehber: [`CONSUMERS.md`](CONSUMERS.md)

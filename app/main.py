@@ -23,11 +23,13 @@ from app.core.middleware import (
     RateLimitMiddleware,
     RequestIDMiddleware,
 )
+from app.services import session_timeline
 from app.services.account import build_account_pool
 from app.services.alerting import build_alerter
 from app.services.completion_service import CompletionService
 from app.services.keepalive import run_upstream_keepalive
 from app.services.model_registry import ModelEntry, ModelRegistry
+from app.services.project_keys import ProjectRegistry
 from app.services.recaptcha import create_recaptcha_provider
 from app.services.session_manager import SessionManager
 from app.services.token_refresh import run_token_refresher
@@ -168,12 +170,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         bound = registry.apply_shared_upstream_id(model_id)
         logger.info("upstream_curl_model_loaded", models=bound)
     accounts = build_account_pool(settings)
+    # Proje muhasebesi: anahtar ↔ etiket + kullanım sayaçları. Anahtar üretimi/
+    # iptali `/v1/admin/keys` üzerinden redeploy'suz yapılır.
+    projects = ProjectRegistry(settings)
 
     app.state.upstream = upstream
     app.state.recaptcha = recaptcha
     app.state.sessions = sessions
     app.state.registry = registry
     app.state.accounts = accounts
+    app.state.projects = projects
     app.state.completion_service = CompletionService(
         settings=settings,
         upstream=upstream,
@@ -181,6 +187,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         sessions=sessions,
         recaptcha=recaptcha,
         accounts=accounts,
+        projects=projects,
     )
 
     telegram_task: asyncio.Task[None] | None = None
@@ -334,6 +341,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     restore_runtime_state(settings)
 
     configure_logging(settings.log_level, settings.log_json)
+    # Oturum olay defteri: token rotasyonu, kullanılan kimlik ve kimlik
+    # retlerinin ölçümü. Defter sürecin belleğinde yaşar, restart'ta sıfırlanır
+    # — bu bilinçli: ölçüm yaşayan sürecin davranışını anlatır (bkz.
+    # docs/SESSION_FORENSICS.md).
+    session_timeline.configure(
+        maxlen=settings.session_timeline_size,
+        utc_offset_hours=settings.session_timeline_utc_offset_hours,
+    )
+    session_timeline.note_process_started(version=settings.app_version)
     if (
         from_env
         and (os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID"))

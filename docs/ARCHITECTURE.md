@@ -103,6 +103,45 @@
 
 ---
 
+## 2b. Data-stream parçaları: **koda değil içeriğe bak**
+
+Vercel AI SDK kodları (`0:`, `a2:`, `ac:`, `ad:` …) **çok biçimlidir**: aynı kod
+farklı modlarda farklı yük taşır. 15 Kasım canlı ölçümü:
+
+| Kod | Sohbet | Web arama | Görsel (ikincil) |
+|---|---|---|---|
+| `a2` | atıf `{type,organization}` | atıf `{type,organization}` | `[{"type":"heartbeat"}]` → `[{"type":"image","image":<imzalı R2>,"mimeType":…}]` |
+| `ac` | – | `dict(2){toolCallId,argsTextDelta}` (arama aracı çağrısı) | – |
+| `ad` | `{"finishReason":"stop"}` | aynı | aynı |
+
+Bu yüzden sınıflandırma **yükün içeriğiyle** yapılır, kod adıyla değil
+(`app/upstream/stream_parser.py`):
+
+* `_iter_dict_items(data)` — tek gezinme kuralı: yük liste de tek sözlük de
+  olabilir, sözlük olmayan öğeler elenir. Bütün çıkarıcılar bunu kullanır.
+* `extract_media_parts()` — `type == "image"` ya da `image/…` mimeType taşıyan
+  parça → `MediaPart`; `&amp;` kaçışı çözülür (imzalı adres bozulmasın), ham
+  base64 `data:` URI'sine çevrilir.
+* `extract_citations()` — kaynak alanı (`title`/`organization`/`url` …) taşıyan
+  parça → `Citation`; görsel parçaları atlanır (aynı parça iki kez gitmesin).
+* `PartShapeSummary` — kod başına **farklı biçimlerin hepsini** sayar (yalnız tür
+  + uzunluk; değer asla loglanmaz). "İlk örnek yeter" varsayımı görsel yükünü
+  gizlemişti — bkz. `LESSONS_2026_11_14.md §10`.
+
+Tek dönüştürme noktası `CompletionService._events`'tir: görsel → markdown
+`![görsel](adres)`, atıflar → yanıtın **sonunda** `Kaynaklar:` bloğu (yalnız
+`modality=search`; 7/24 çalışan düz sohbetin biçimi değişmez, ama atıflar her
+modda `sources_seen` olarak loglanır). Hem akış hem akışsız yol bu jeneratörü
+tükettiği için iki yol birden düzelir. Sıra güvenlidir: tüketiciler upstream'in
+bitiş olayını yalnız `finish_reason`/usage kaydı için kullanır, kendi bitiş
+parçalarını jeneratör bittikten sonra üretir.
+
+> Yeni bir parça türü çıkarsa yapılacak iş **kod adı eklemek değil, çıkarıcı
+> eklemektir.** Log'daki `shapes` alanı hangi alan adlarının geldiğini söyler;
+> değer loglanmadığı için adres/veri oradan alınamaz.
+
+---
+
 ## 3. Dosya Mimarisi
 
 ```
@@ -140,6 +179,7 @@ ApiWrapper/
 │  │  ├─ completion_service.py    # orkestrasyon (stream + non-stream)
 │  │  ├─ session_manager.py       # chat_id/cookie/warm-up, LRU+TTL cache
 │  │  ├─ model_registry.py        # models.yaml yükleme, alias çözümü
+│  │  ├─ project_keys.py          # anahtar ↔ proje etiketi + kullanım muhasebesi
 │  │  └─ recaptcha/
 │  │     ├─ base.py  static.py  external.py  playwright.py
 │  ├─ api/v1/
@@ -171,6 +211,7 @@ tek token üretimini paylaşır. Token reddi (upstream 403) → otomatik invalid
 ## 5. Güvenlik Önlemleri
 
 - **Kimlik doğrulama:** `API_KEYS` çoklu anahtar listesi, sabit-zaman karşılaştırma; `/health` hariç tüm uçlar korumalı.
+- **Proje anahtarları:** `POST /v1/admin/keys` tüketici anahtarı üretir (redeploy yok), `GET /v1/admin/keys` proje başına istek/token/hata döndürür, `DELETE /v1/admin/keys/{key_id}` iptal eder (son anahtar iptal edilemez). Anahtar değeri yalnız üretim yanıtında bir kez görünür; log/liste/metrik her yerde parmak izi (`cli_<sha256[:12]>`) veya maske (`sk-***GI`) taşır. Ayrıntı: §9.
 - **Gizli veri sızıntısı yok:** loglarda `Authorization`, `cookie`, `recaptchaV3Token` alanları `***` ile maskelenir (structlog processor).
 - **Girdi sertleştirme:** `max_messages`, `max_prompt_chars`, `max_body_bytes` limitleri; aşımda 413/422.
 - **SSRF koruması:** `TARGET_DOMAIN` yalnızca config'den gelir, istemci girdisiyle asla oluşturulmaz; şema `https` zorunlu.
@@ -214,6 +255,55 @@ model alias'ı · bilinmeyen model · yanlış API key · gövde limit aşımı 
 Tam çalışan kod (placeholder yok) + `.env.example` + `config/models.yaml` + Dockerfile +
 docker-compose + pytest testleri (respx ile upstream mock, stream parser birim testleri,
 uçtan uca OpenAI SDK uyumluluk testi) + README (kurulum, örnek `curl`, OpenAI SDK örneği).
+
+---
+
+## 9. Proje anahtarları: kimlik ↔ etiket ↔ muhasebe
+
+Wrapper başka projelere açıldığında soru "kim ne kadar kullandı"dır. Katman
+bilerek **yalnız muhasebe** yapar; politika (model izni, bütçe, kuyruk) yok —
+1-2 tüketicili ölçekte koruma zaten anahtar başına hız sınırında
+(`app/core/middleware.py`, varsayılan 120 rpm / 30 burst).
+
+```
+istek ──▶ api_key_dependency ──▶ request.state.client_fingerprint = cli_<sha256[:12]>
+                                        │
+             CompletionService._record_project(...)  (stream + non-stream)
+                                        │
+             ProjectRegistry.record() ──▶ bellek sayaçları (istek/token/hata/son kullanım)
+                                      └─▶ metrics: apiwrapper_project_{requests,errors,tokens}_total{project="<etiket>"}
+```
+
+Üç ayrı kimlik gösterimi var ve karıştırmamak önemli:
+
+| Gösterim | Nerede | Gizlilik |
+|---|---|---|
+| Anahtar değeri (`sk-…`) | yalnız `settings.api_keys` + `POST /v1/admin/keys` yanıtı (bir kez) | düz metin, **asla loglanmaz/listelenmez** |
+| Parmak izi (`cli_<sha256[:12]>`) | log, `API_KEY_LABELS`, metrik, `key_id` | geri döndürülemez |
+| Maske (`sk-***GI`) | `GET /v1/admin/keys`, iptal yanıtı | `mask_value()` |
+
+Etiketler `API_KEY_LABELS` alanında `cli_x:etiket,cli_y:etiket` biçiminde
+taşınır; etikette `,` ve `:` bulunamaz (`normalize_label` ayraçları `-` yapar),
+aksi hâlde tek env alanındaki eşleme kayardı. Kayıt defteri etiketi
+**saklamaz**, her listelemede `settings.api_keys` üzerinden anlık kurulur:
+böylece iptal edilen anahtar kendiliğinden listeden düşer ve iki kaynak
+birbirinden ayrılamaz.
+
+Kalıcılık mevcut düzeni kullanır (yeni depo yok): `api_keys` + `api_key_labels`
+durum dosyasına ve Render env'ine yazılır. İnce nokta **geri yükleme
+kararıdır**: `_should_restore` upstream kimliği için "env mi disk mi daha taze"
+diye token son kullanma zamanına bakar; `API_KEYS` bir upstream kimliği
+**değildir**, o yüzden listeyi o kararın arkasına koymak üretilmiş anahtarları
+her cURL yenilemesinde düşürürdü. Liste alanları kimlik kararından bağımsız
+uygulanır (`_restore_non_identity_fields`), uzlaştırma kuralı:
+
+* **kayıt kazanır** (iptal niyeti korunur — env sync gecikse bile iptal edilen
+  anahtar dirilmez),
+* env'de olup kaydın *açılış env'inde* (`api_keys_env`) olmayan anahtarlar
+  operatörün yeni girdisidir ve sona eklenir,
+* **boş liste asla uygulanmaz** (eksik/bozuk bir kayıt herkesi 401'e düşürürdü;
+  "anahtarları boşalt" diye bir niyet yok, son anahtarın iptali de zaten
+  reddediliyor).
 
 ---
 

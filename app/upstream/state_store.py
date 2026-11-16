@@ -51,6 +51,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.services import session_timeline
 from app.upstream.auth import (
     extract_access_token,
     extract_refresh_token,
@@ -85,10 +86,18 @@ PERSISTED_FIELDS: tuple[str, ...] = (
     "recaptcha_site_key",
     "upstream_cx",
     "upstream_cx_send",
+    # Proje etiketleri (secret değil): `cli_<parmakizi>:<etiket>,…`. Üretilen
+    # anahtarların hangi projeye ait olduğu restart'ta kaybolmasın.
+    "api_key_labels",
 )
 
 # JSON/local state içinde bool türü korunarak saklanan alanlar.
 PERSISTED_BOOL_FIELDS: tuple[str, ...] = ("upstream_auth_from_cookie", "upstream_cx_send")
+
+#: Liste alanları virgülle birleştirilmiş metin olarak saklanır. `POST
+#: /v1/admin/keys` ile üretilen anahtarlar böylece restart/deploy sonrası da
+#: geçerli kalır (Free Render'da kalıcı disk yok).
+PERSISTED_LIST_FIELDS: tuple[str, ...] = ("api_keys",)
 
 #: Süreç başında hesaplanan tohum özeti (`id(settings)` -> sha256 hex).
 _SEED_HASHES: dict[int, str] = {}
@@ -98,6 +107,12 @@ _SEED_HASHES: dict[int, str] = {}
 # restart'ta eski refresh token'ı diriltebilir. Kilit yalnız Render API yazımlarını
 # seriler; canlı sohbet isteklerini veya local state yazımını beklemez.
 _RENDER_SYNC_LOCK = asyncio.Lock()
+
+#: Render'ın **kalıcı** olarak reddettiği işlemler (`op`, `env_key`). Aynı değeri
+#: tekrar göndermek sonucu değiştirmediği için süreç başına bir kez loglanır;
+#: böylece retry döngüsü log'u boğmaz (ölçüm: boş değere PUT → 15/30/60 sn'de bir
+#: 400, sonsuza dek). Yeni bir süreç (restart/deploy) listeyi sıfırlar.
+_PERMANENT_SYNC_REJECTIONS: set[tuple[str, str]] = set()
 
 
 def compute_seed_hash(settings: Settings) -> str:
@@ -123,6 +138,22 @@ def remember_seed(settings: Settings) -> str:
     seed = compute_seed_hash(settings)
     _SEED_HASHES[id(settings)] = seed
     return seed
+
+
+#: Süreç açılışında env'den okunan `API_KEYS` listesi. Durum dosyasındaki kayıtla
+#: karşılaştırılıp "operatör env'e yeni bir anahtar ekledi mi" sorusunu cevaplar
+#: (bkz. `_merge_api_keys`). Tohum gibi gizli değer tutmaz, yalnız karşılaştırır.
+_ENV_API_KEYS: dict[int, list[str]] = {}
+
+
+def remember_api_key_seed(settings: Settings) -> list[str]:
+    """Açılıştaki anahtar listesini kaydeder; **ilk** çağrı kazanır."""
+    return _ENV_API_KEYS.setdefault(id(settings), list(settings.api_keys or []))
+
+
+def env_api_keys(settings: Settings) -> list[str]:
+    """Açılışta env'de olan anahtarlar (kayıt yoksa anlık liste)."""
+    return _ENV_API_KEYS.get(id(settings)) or list(settings.api_keys or [])
 
 
 def current_seed(settings: Settings) -> str:
@@ -168,6 +199,11 @@ def save_runtime_state(settings: Settings, *, source: str = "runtime") -> bool:
         payload[field] = getattr(settings, field, "") or ""
     for field in PERSISTED_BOOL_FIELDS:
         payload[field] = bool(getattr(settings, field, False))
+    for field in PERSISTED_LIST_FIELDS:
+        payload[field] = ",".join(getattr(settings, field, None) or [])
+    # Açılış env'i ayrıca kaydedilir: restart'ta "operatör env'e yeni anahtar
+    # ekledi mi" ile "çalışma sırasında üretilen anahtar" ayırt edilebilsin.
+    payload["api_keys_env"] = ",".join(env_api_keys(settings))
 
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -194,6 +230,13 @@ def save_runtime_state(settings: Settings, *, source: str = "runtime") -> bool:
             or extract_refresh_token(payload["upstream_cookie"])
         ),
     )
+    # Ölçüm: kimlik yenileme sınırları olay defterine işlenir. "Ölüm taze
+    # cURL'den 3 dakika sonra mı oldu, yoksa 6 saat sonra mı?" sorusu ancak
+    # bu kayıtla cevaplanır; log satırları restart'ta kaybolur, defter kalır.
+    saved_token = str(payload.get("upstream_access_token") or "")
+    if not saved_token:
+        saved_token = extract_access_token(str(payload.get("upstream_cookie") or "")) or ""
+    session_timeline.note_state_saved(source=source, token=saved_token)
     return True
 
 
@@ -266,28 +309,107 @@ def _should_restore(settings: Settings, saved: dict[str, Any]) -> tuple[bool, st
     return False, "env_preferred"
 
 
+def _merge_api_keys(
+    env_keys: list[str], saved_keys: list[str], saved: dict[str, Any]
+) -> list[str]:
+    """Durum dosyasındaki anahtar listesiyle açılış env'ini uzlaştırır.
+
+    İki ayrı hata modu var ve ikisi de pahalı:
+    * Üretilmiş anahtarı düşürmek → tüketici 401 alır (yeni cURL deploy'unda
+      olurdu, çünkü kimlik kararı "env daha taze" deyip disk kaydını atlar).
+    * İptal edilmiş anahtarı diriltmek → güvenlik açığı.
+
+    Kural: **kayıt kazanır** (iptal niyeti korunur), ama env'de olup kaydın
+    açılış env'inde *olmayan* anahtarlar operatörün yeni girdisidir ve sona
+    eklenir. Kayıt eski şemadaysa (`api_keys_env` yok) ayırt edilemediği için
+    olduğu gibi uygulanır.
+    """
+    baseline = [item.strip() for item in str(saved.get("api_keys_env") or "").split(",")]
+    baseline = [item for item in baseline if item]
+    if not baseline:
+        return saved_keys
+    added_by_operator = [
+        key for key in env_keys if key not in baseline and key not in saved_keys
+    ]
+    if added_by_operator:
+        logger.info(
+            "runtime_state_api_keys_env_added", added_count=len(added_by_operator)
+        )
+    return [*saved_keys, *added_by_operator]
+
+
+def _restore_non_identity_fields(settings: Settings, saved: dict[str, Any]) -> list[str]:
+    """Kimlik **olmayan** alanları (anahtar listesi + proje etiketleri) uygular.
+
+    Çerez/token kararından (`_should_restore`) bağımsızdır: `API_KEYS` upstream
+    kimliği değildir, dolayısıyla "hangisi daha taze" sorusunun token son
+    kullanma zamanıyla cevabı yok. Bu alanlar yalnız domain eşleştiğinde ve
+    kayıt boş değilse uygulanır.
+    """
+    domain = (settings.target_domain or "").strip().lower()
+    saved_domain = str(saved.get("target_domain") or "").strip().lower()
+    if not domain or saved_domain != domain:
+        return []
+
+    changed: list[str] = []
+    for field in PERSISTED_LIST_FIELDS:
+        if field not in saved:
+            continue
+        val = saved.get(field)
+        if not isinstance(val, str):
+            continue
+        parsed = [item.strip() for item in val.split(",") if item.strip()]
+        if not parsed and field == "api_keys":
+            # Boş anahtar listesi **uygulanmaz**: eksik/bozuk bir kayıt wrapper'ı
+            # herkese kapatırdı ve geri almak için env'e elle müdahale gerekirdi.
+            # "Anahtarları boşalt" diye bir niyet yok; iptal tek tek
+            # `DELETE /v1/admin/keys/{key_id}` ile yapılır ve son anahtarın
+            # iptali zaten reddediliyor.
+            logger.warning("runtime_state_empty_api_keys_ignored")
+            continue
+        current = list(getattr(settings, field, None) or [])
+        if field == "api_keys":
+            parsed = _merge_api_keys(current, parsed, saved)
+        if current != parsed:
+            setattr(settings, field, parsed)
+            changed.append(field)
+
+    if "api_key_labels" in saved:
+        label_val = saved.get("api_key_labels")
+        if isinstance(label_val, str) and settings.api_key_labels != label_val:
+            settings.api_key_labels = label_val
+            changed.append("api_key_labels")
+    return changed
+
+
 def restore_runtime_state(settings: Settings) -> list[str]:
     """Başlangıçta durum dosyasındaki daha taze kimlik/türevleri ayarlara uygular.
 
     Dönüş: güncellenen alan adları listesi.
     """
     remember_seed(settings)
+    remember_api_key_seed(settings)
     saved = load_runtime_state(settings)
     if saved is None:
         return []
 
+    # Üretilmiş proje anahtarları kimlik kararına bağlı değil: yeni bir cURL
+    # deploy edildi diye tüketicinin anahtarı düşmemeli.
+    changed: list[str] = _restore_non_identity_fields(settings, saved)
+
     should_apply, reason = _should_restore(settings, saved)
     if not should_apply:
-        logger.info("upstream_state_skipped", reason=reason)
+        logger.info(
+            "upstream_state_skipped", reason=reason, restored_fields=changed
+        )
         # Kullanıcı `.env`'e daha yeni bir cURL/çerez koyduysa durum dosyasını
         # bu yeni tohumla hizala ki sonraki restart'ta eski kayıt hortlamasın.
         if reason in {"env_token_newer_or_equal", "env_preferred"} and (
             settings.upstream_cookie or settings.upstream_access_token
         ):
             save_runtime_state(settings, source="seed_sync")
-        return []
+        return changed
 
-    changed: list[str] = []
     if saved.get("snapshot_version") == 1 and settings.upstream_snapshot_version != 1:
         settings.upstream_snapshot_version = 1
         changed.append("upstream_snapshot_version")
@@ -395,6 +517,13 @@ async def _sync_render_env_locked(
         "RECAPTCHA_SITE_KEY": settings.recaptcha_site_key or "",
     }
     updates.update(snapshot_fields)
+    # Üretilen proje anahtarları ve etiketleri de kalıcı olsun: Free Render'da
+    # disk yok, restart'ta bu değerler env'den okunuyor. `API_KEYS` boş
+    # yazılmaz — boş liste yukarıda DELETE'e dönüşürdü ve son anahtarın iptali
+    # zaten `ProjectRegistry.revoke` tarafından reddediliyor.
+    if settings.api_keys:
+        updates["API_KEYS"] = ",".join(settings.api_keys)
+    updates["API_KEY_LABELS"] = settings.api_key_labels or ""
     if settings.upstream_refresh_api_key:
         updates["UPSTREAM_REFRESH_API_KEY"] = settings.upstream_refresh_api_key
     if not updates:
@@ -407,20 +536,20 @@ async def _sync_render_env_locked(
     }
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=15.0)
+    # Boş değerler snapshot'a **bilerek** girer: yeni cURL'de olmayan eski
+    # header/token restart'ta dirilmesin. Ama Render boş değeri PUT ile kabul
+    # etmiyor (ölçüm: 400 → 15/30/60 sn'lik sonsuz tekrar deneme). İstenen son
+    # durum "bu anahtar yok" olduğu için doğru işlem DELETE.
+    writes = {key: value for key, value in updates.items() if value.strip()}
+    clears = sorted(key for key, value in updates.items() if not value.strip())
     ok = True
     try:
-        for key, value in updates.items():
-            url = (
-                f"https://api.render.com/v1/services/{service_id}/env-vars/{key}"
-            )
-            response = await http.put(url, headers=headers, json={"value": value})
-            if response.status_code >= 400:
+        for key, value in writes.items():
+            if not await _put_env_var(http, headers, service_id, key, value):
                 ok = False
-                logger.warning(
-                    "render_env_sync_failed",
-                    env_key=key,
-                    status_code=response.status_code,
-                )
+        for key in clears:
+            if not await _delete_env_var(http, headers, service_id, key):
+                ok = False
     except httpx.HTTPError as exc:
         ok = False
         logger.warning("render_env_sync_error", error_type=type(exc).__name__)
@@ -429,5 +558,80 @@ async def _sync_render_env_locked(
             await http.aclose()
 
     if ok:
-        logger.info("render_env_synced", keys=sorted(updates))
+        logger.info("render_env_synced", keys=sorted(writes), cleared=clears)
     return ok
+
+
+def _env_var_url(service_id: str, key: str) -> str:
+    return f"https://api.render.com/v1/services/{service_id}/env-vars/{key}"
+
+
+def _is_transient_status(status: int) -> bool:
+    """Tekrar denemeye değer mi: 429 ve 5xx evet, diğer 4xx hayır.
+
+    `app/upstream/client.py` upstream için aynı kuralı uyguluyor; iki ayrı yerde
+    iki ayrı tanım olmasın diye buradaki de aynı biçimde yazıldı.
+    """
+    return status == 429 or status >= 500
+
+
+def _note_permanent_rejection(op: str, key: str, status_code: int) -> None:
+    """Kalıcı reddi (4xx) süreç başına **bir kez** loglar.
+
+    4xx'te sorun ağda değil değerde/yetkidedir: tekrar denemek aynı yanıtı
+    üretir. Ölçümde bu, her 15/30/60 sn'de bir `render_env_sync_failed` +
+    `render_env_sync_retry_scheduled` çifti demekti ve gerçek arızalar
+    gürültünün altında kayboluyordu.
+    """
+    marker = (op, key)
+    if marker in _PERMANENT_SYNC_REJECTIONS:
+        return
+    _PERMANENT_SYNC_REJECTIONS.add(marker)
+    logger.warning(
+        "render_env_sync_rejected", op=op, env_key=key, status_code=status_code
+    )
+
+
+async def _put_env_var(
+    http: httpx.AsyncClient,
+    headers: dict[str, str],
+    service_id: str,
+    key: str,
+    value: str,
+) -> bool:
+    """Tek anahtarı yazar.
+
+    Dönüş değeri "tekrar denemeye değer mi" sorusudur: `False` yalnız geçici
+    hatada (5xx) döner; kalıcı red loglanır ama retry döngüsünü beslemez.
+    """
+    response = await http.put(
+        _env_var_url(service_id, key), headers=headers, json={"value": value}
+    )
+    status = response.status_code
+    if status < 400:
+        return True
+    if not _is_transient_status(status):
+        _note_permanent_rejection("put", key, status)
+        return True
+    logger.warning("render_env_sync_failed", op="put", env_key=key, status_code=status)
+    return False
+
+
+async def _delete_env_var(
+    http: httpx.AsyncClient, headers: dict[str, str], service_id: str, key: str
+) -> bool:
+    """Boş değeri "anahtarı sil" olarak uygular.
+
+    404 başarısızlık değildir: anahtar zaten yok, yani istenen son durum sağlanmış.
+    """
+    response = await http.delete(_env_var_url(service_id, key), headers=headers)
+    status = response.status_code
+    if status < 400 or status == 404:
+        return True
+    if not _is_transient_status(status):
+        _note_permanent_rejection("delete", key, status)
+        return True
+    logger.warning(
+        "render_env_sync_failed", op="delete", env_key=key, status_code=status
+    )
+    return False
