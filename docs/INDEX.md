@@ -1,6 +1,6 @@
 # ApiWrapper — Doküman Rehberi
 
-**Buradan başla.** 16 doküman var; burada hangisini ne zaman okuyacağın yazıyor.
+**Buradan başla.** 17 doküman var; burada hangisini ne zaman okuyacağın yazıyor.
 
 ---
 
@@ -57,6 +57,7 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 |---|---|---|
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Hata → çözüm tablosu | Bir şey bozulduğunda |
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) § captcha | reCAPTCHA hata → çözüm | Captcha reddederse |
+| [`SESSION_FORENSICS.md`](SESSION_FORENSICS.md) | **Ölçüm protokolü**: 401 bizden mi hedeften mi (H1–H4), `/zaman` olay defteri, 24 saatlik deney planı | `502 upstream_unauthorized` tekrarlıyorsa |
 | [`CAPTURE_TIMELINE.md`](CAPTURE_TIMELINE.md) | Yakalama zaman çizelgesi | Geçmiş kararları anlamak |
 
 ### Geçmiş / arşiv

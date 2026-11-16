@@ -23,6 +23,7 @@ from app.core.middleware import (
     RateLimitMiddleware,
     RequestIDMiddleware,
 )
+from app.services import session_timeline
 from app.services.account import build_account_pool
 from app.services.alerting import build_alerter
 from app.services.completion_service import CompletionService
@@ -340,6 +341,15 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     restore_runtime_state(settings)
 
     configure_logging(settings.log_level, settings.log_json)
+    # Oturum olay defteri: token rotasyonu, kullanılan kimlik ve kimlik
+    # retlerinin ölçümü. Defter sürecin belleğinde yaşar, restart'ta sıfırlanır
+    # — bu bilinçli: ölçüm yaşayan sürecin davranışını anlatır (bkz.
+    # docs/SESSION_FORENSICS.md).
+    session_timeline.configure(
+        maxlen=settings.session_timeline_size,
+        utc_offset_hours=settings.session_timeline_utc_offset_hours,
+    )
+    session_timeline.note_process_started(version=settings.app_version)
     if (
         from_env
         and (os.environ.get("RENDER") or os.environ.get("RENDER_SERVICE_ID"))

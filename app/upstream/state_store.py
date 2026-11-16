@@ -51,6 +51,7 @@ import httpx
 
 from app.core.config import Settings
 from app.core.logging import get_logger
+from app.services import session_timeline
 from app.upstream.auth import (
     extract_access_token,
     extract_refresh_token,
@@ -229,6 +230,13 @@ def save_runtime_state(settings: Settings, *, source: str = "runtime") -> bool:
             or extract_refresh_token(payload["upstream_cookie"])
         ),
     )
+    # Ölçüm: kimlik yenileme sınırları olay defterine işlenir. "Ölüm taze
+    # cURL'den 3 dakika sonra mı oldu, yoksa 6 saat sonra mı?" sorusu ancak
+    # bu kayıtla cevaplanır; log satırları restart'ta kaybolur, defter kalır.
+    saved_token = str(payload.get("upstream_access_token") or "")
+    if not saved_token:
+        saved_token = extract_access_token(str(payload.get("upstream_cookie") or "")) or ""
+    session_timeline.note_state_saved(source=source, token=saved_token)
     return True
 
 

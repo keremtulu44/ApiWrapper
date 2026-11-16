@@ -149,6 +149,12 @@ class Settings(BaseSettings):
     upstream_auth_scheme: str = "Bearer"
     #: Token süresi dolmuşsa uyar (JWT `exp`); istek yine de denenir.
     upstream_warn_on_expired_token: bool = True
+    #: Upstream 401/403 "user not found" verdiğinde, az önce dönen çerezdeki
+    #: **taze** token'la isteği bir kez daha dene. Bu bir kurtarma hamlesi değil,
+    #: ölçümdür: istek geçerse suçlu sabitlenmiş `UPSTREAM_ACCESS_TOKEN`'dır
+    #: (H3), yine 401 gelirse oturum gerçekten ölmüştür (H2). Maliyeti ölüm
+    #: başına fazladan tek istektir. Bkz. `docs/SESSION_FORENSICS.md`.
+    upstream_forensic_retry: bool = True
     #: Ek başlıklar, "K1=V1;K2=V2" biçiminde.
     upstream_extra_headers: str = ""
     upstream_proxy: str | None = None
@@ -309,6 +315,17 @@ class Settings(BaseSettings):
     #: Günde bir kez `stream: true` ile gerçek akış yolunu dene (0 = kapalı).
     #: Non-stream probe, streaming ucundaki bir kırılmayı (SSE/parçalama) görmez.
     upstream_keepalive_stream_smoke_interval_seconds: float = 86400.0
+
+    # ------------------------------------------------------ ölçüm (olay defteri)
+    #: Oturum olay defterinin bellek içi kapasitesi (olay sayısı). `GET
+    #: /v1/admin/timeline` ve Telegram `/zaman` bunu okur. Küçültmek ölçümü
+    #: kapatmaz: toplamlar (rotasyon/ölüm sayıları, en yaşlı çalışan token)
+    #: halkadan bağımsız birikir, yalnızca olay listesi kısalır.
+    session_timeline_size: int = 400
+    #: Raporlarda UTC yanında gösterilecek yerel saat ofisi. Türkiye için `3`.
+    #: `0` = yalnızca UTC. Bildirim damgaları her zaman UTC kalır
+    #: (`alerting._stamp`); bu ofset yalnızca olay defteri raporlarını etkiler.
+    session_timeline_utc_offset_hours: float = 3.0
 
     # ---------------------------------------------------------------- alerts
     #: Telegram üzerinden arıza bildirimi. Bot token'ı ve bildirim sohbeti

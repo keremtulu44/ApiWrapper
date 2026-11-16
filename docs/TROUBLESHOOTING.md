@@ -195,9 +195,21 @@ loglarda görünür.
 
 | Olay | Anlamı |
 |---|---|
-| `upstream_session_dead` | 409'dan sonra 401 "user not found": oturum ölmüş, yeni cURL şart |
+| `upstream_session_dead` | 409'dan sonra 401 "user not found": oturum ölmüş, yeni cURL şart. ⚠️ Bu satır **yalnızca damga sıyırma denendiyse** yazılır (`stamp_strip_used`); düz bir 401'de görünmez |
+| `upstream_identity_forensic_retry` | 401 sonrası çerezdeki taze token'la tek doğrulama denemesi başladı |
+| `upstream_identity_forensic_result` | `outcome=recovered` → suçlu bayat `UPSTREAM_ACCESS_TOKEN` (H3); `outcome=rejected` → oturum ölü (H2) |
+| `upstream_identity_forensic_skipped` | `reason=no_fresh_token`: çerezde taze token yok, rotasyon durmuş |
 | `upstream_refresh_required` | Yalnızca damga sorunu, oturum sağlam görünüyor |
 | `deployment_stamp_refreshed` | Otomatik kurtarma çalıştı, elle müdahale gerekmez |
+
+**Ölçüm:** log satırları tek tek olayı anlatır, "neyin ne zaman olduğu"nu değil.
+Token rotasyonunun ne zaman durduğunu, isteğin hangi kimlikle gittiğini, süresi
+geçmiş bir token'la başarılı istek olup olmadığını ve 401 anında çerezde taze
+token bulunup bulunmadığını Telegram **`/zaman`** (veya `GET /v1/admin/timeline`)
+tek raporda verir. Dört hipotezin (H1 hedef yaşı denetliyor · H2 oturum hedefte
+düştü · H3 sabitlenmiş token gölgeliyor · H4 ikinci süreç aynı çerezi kullanıyor)
+hangisinin geçerli olduğuna dair karar tablosu ve 24 saatlik deney planı:
+**[`SESSION_FORENSICS.md`](SESSION_FORENSICS.md)**.
 
 ---
 
@@ -241,6 +253,14 @@ düştüğüne bakın (`expires_in_seconds: -1` = süresi dolmuş).
   çerez ve token'la **15+ saat** çalıştı (15 Kasım 2026 ölçümü). Yani 401'in
   sebebi genelde süre dolması değil, **aynı hesapla tarayıcıda oturum açılması**
   (`docs/LESSONS_2026_11_14.md`).
+  Bu iddia artık **sürekli ölçülüyor**: `/zaman` raporundaki
+  `En yaşlı ÇALIŞAN token` ve `exp aşımıyla çalışan istek` satırları, süresi
+  geçmiş bir token'la istek geçtiğini gösterir. Ölçüm bir gün tersini söylerse
+  bu maddeyi düzelt (`docs/SESSION_FORENSICS.md` Faz 1).
+* **401'in kimin yüzünden olduğunu ölç:** `/zaman` (ya da `GET /v1/admin/timeline`)
+  `forensic_retry` sonucunu raporlar — `recovered` ise suçlu bayat
+  `UPSTREAM_ACCESS_TOKEN`'dır (env'den **sil**), `rejected` ise oturum gerçekten
+  ölmüştür (taze cURL). Ayrıntı: [`SESSION_FORENSICS.md`](SESSION_FORENSICS.md).
 * **Yer tutucu token tuzağı:** `UPSTREAM_ACCESS_TOKEN` içine "boş" anlamında
   `APIWRAPPER_EMPTY_VALUE_V1` gibi bir metin yazıldıysa istek
   `Authorization: Bearer APIWRAPPER_EMPTY_VALUE_V1` ile gider ve çerez ne kadar

@@ -86,6 +86,8 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `SESSION_ROTATE_AFTER_MESSAGES` | ↺ `35` — sohbet bu sayıdan sonra yenilenir (`0` = sınırsız). | oturum |
 | `SESSION_ROTATE_AFTER_SECONDS` | ↺ `0` = yaş sınırı yok; kota penceresine hizalamak için `1200`. | oturum |
 | `SESSION_STATELESS` | ↺ `true` — istemci `conversation_id` taşımıyorsa. | oturum |
+| `SESSION_TIMELINE_SIZE` | ↺ `400` — olay defterinin bellek içi kapasitesi. `/zaman` ve `/v1/admin/timeline` bunu okur. | ölçüm |
+| `SESSION_TIMELINE_UTC_OFFSET_HOURS` | ↺ `3` — raporlarda UTC yanında gösterilen yerel saat (Türkiye). `0` = yalnızca UTC. | ölçüm |
 | `SESSION_TTL` | ↺ `1800` sn. | oturum |
 | `STREAM_IDLE_TIMEOUT` | ↺ `120` sn — bu süre veri gelmezse akış düşer. | dayanıklılık |
 | `TARGET_DOMAIN` | ✅ Gerçek host, **şemasız** (`ornek-servis.com`). Boş kalırsa `/readyz` 503 `target_domain_not_configured`. | kimlik |
@@ -135,6 +137,7 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `UPSTREAM_CX` | ⛔ Boş bırak. İstek başına üretilir; sabit değer ikinci sohbette reddedilir. | upstream |
 | `UPSTREAM_CX_SEND` | ✅ `false` — canlı gözlemde bu alan olmadan da istek geçti. | upstream |
 | `UPSTREAM_EXTRA_HEADERS` | ⬜ `dnt=1` yeterli. `x-deployment-id` / `x-arena-web-deployment` **buraya yazma** (her deploy'da değişir). | upstream |
+| `UPSTREAM_FORENSIC_RETRY` | ↺ `true` — 401 `user not found` sonrası çerezdeki taze token'la TEK doğrulama denemesi. Geçerse suçlu bayat `UPSTREAM_ACCESS_TOKEN`, geçmezse ölü oturumdur; ölüm başına 1 ek istek. | ölçüm |
 | `UPSTREAM_HTTP2` | ↺ `true` — tarayıcı parmak izine uyar. | upstream |
 | `UPSTREAM_KEEPALIVE_INITIAL_DELAY_SECONDS` | ↺ `60` — deploy sonrası ilk probe. | keepalive |
 | `UPSTREAM_KEEPALIVE_INTERVAL_SECONDS` | ↺ `0` = kapalı. `10800` = üç saatte bir kısa gerçek completion (kota ve captcha harcar). | keepalive |
@@ -178,5 +181,5 @@ o değerler `/v1/admin/auth` (cookie/curl) veya `UPSTREAM_CURL` üzerinden girer
 | `WRAPPER_BASE_URL` | ⬜ Aynı serviste çalışıyorsa **yazma**; varsayılan yerel adres kullanılır. | telegram |
 | `WRITE_TIMEOUT` | ↺ `30` sn. | dayanıklılık |
 
-Toplam **159** anahtar: 19 yazılacak, 48 boş, 92 varsayılan/yazma.
+Toplam **162** anahtar: 19 yazılacak, 48 boş, 95 varsayılan/yazma.
 Denetim için: `python -m scripts.env_audit .env`.
