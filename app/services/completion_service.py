@@ -54,10 +54,13 @@ from app.upstream.refresh import (
     refresh_upstream_token,
 )
 from app.upstream.stream_parser import (
+    Citation,
     PartShapeSummary,
+    extract_citations,
     extract_media_parts,
     media_markdown,
     parse_stream,
+    render_sources,
 )
 from app.utils.ids import new_completion_id, now_ts
 from app.utils.sse import sse_done, sse_event
@@ -430,6 +433,12 @@ class CompletionService:
             # İstemciye iletilen görsel sayısı (log için): `a2` kanalından gelen
             # görsel parçaları TEXT'e çevrilip iletiliyor, aşağıya bak.
             media_count = 0
+            # `a2` kanalının atıf parçaları (kaynak adları). Arama modunda yanıtın
+            # sonuna "Kaynaklar:" bloğu olarak eklenir; **her modda sayılır** ki
+            # sohbetin de atıf taşıdığı logdan görülebilsin — biçim kararı kanıtla
+            # verilir, tahminle değil.
+            sources: list[Citation] = []
+            sources_delivered = False
             # Upstream isteği kabul ettiğinde pencereye BİR mesaj işlenir.
             # `emitted` ile kontrol edilmez: `emitted` yalnızca istemciye içerik
             # taşıyan TEXT olaylarında artar, `f:` (START) olayında artmaz —
@@ -505,9 +514,31 @@ class CompletionService:
                                     text=media_markdown(part),
                                     raw_code=event.raw_code,
                                 )
+                            for citation in extract_citations(event.data):
+                                if citation not in sources:
+                                    sources.append(citation)
                         if event.type in _CLIENT_VISIBLE_EVENTS and event.text:
                             emitted += 1
                         yield event
+                if sources and built.modality == "search":
+                    # Kaynaklar yanıtın **sonunda** tek blok olarak eklenir
+                    # (arayüzün kendi düzeni de böyle). Sıra bozulmaz: akış
+                    # tüketicileri upstream'in bitiş olayını yalnız
+                    # `finish_reason`/usage kaydı için kullanır, kendi bitiş
+                    # parçalarını bu jeneratör bittikten sonra üretir — dolayısıyla
+                    # buradaki TEXT istemciye içerik olarak ulaşır.
+                    #
+                    # Yalnız arama modu: sohbet akışında da atıf parçaları geliyor
+                    # (`counts` logunda görünür) ama 7/24 çalışan düz sohbet
+                    # yanıtının biçimini değiştirmemek bilerek tercih edildi
+                    # (bkz. LESSONS §8: çalışan davranışa dokunma).
+                    sources_delivered = True
+                    emitted += 1
+                    yield StreamEvent(
+                        type=EventType.TEXT,
+                        text=render_sources(sources),
+                        raw_code="sources",
+                    )
                 if shapes:
                     # Yalnız gerçekten metin-dışı parça geldiyse loglanır: düz
                     # sohbet akışlarında satır üretmez (gürültü yok).
@@ -517,6 +548,8 @@ class CompletionService:
                         counts=shapes.counts,
                         shapes=shapes.shapes,
                         media_delivered=media_count,
+                        sources_seen=len(sources),
+                        sources_delivered=sources_delivered,
                     )
                 return
             except UpstreamQuotaExceeded:

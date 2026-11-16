@@ -679,3 +679,84 @@ def test_signed_image_url_survives_the_stream_path(client):
     assert _SIGNED_IMAGE_URL in text
     assert "&amp;" not in text
     assert "heartbeat" not in text
+
+
+# ------------------------------------------------------------------- kaynaklar
+#: 15 Kasım canlı ölçümü: arama/sohbet akışında `a2` atıf taşıyor
+#: (`list(1)[dict(2){type:str(12),organization:str(6)}]`), arada `heartbeat`.
+_CITATION_LINES = (
+    b'a2:[{"type":"heartbeat"}]\n'
+    b'a2:[{"type":"organization","organization":"Google"}]\n'
+    b'a2:[{"type":"organization","organization":"YouTube"}]\n'
+    b'a2:[{"type":"organization","organization":"Google"}]\n'  # tekrar → tek satır
+)
+
+
+@respx.mock
+def test_search_response_appends_the_sources_block(client):
+    """Arama modunda atıflar yanıtın **sonuna** "Kaynaklar:" bloğu olarak eklenir."""
+    body = b'f:{"messageId":"m-src"}\n' + _CITATION_LINES + ai_stream("Sonuç metni")
+    stream_route(respx).mock(return_value=httpx.Response(200, content=body))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "second-model", "messages": [{"role": "user", "content": "ara"}]},
+    )
+    assert response.status_code == 200
+    content = response.json()["choices"][0]["message"]["content"]
+    assert content.startswith("Sonuç metni")
+    assert content.endswith("Kaynaklar:\n- Google\n- YouTube\n")
+
+
+@respx.mock
+def test_chat_response_format_is_untouched_by_citations(client):
+    """Sohbet modunda atıf gelir ama yanıt biçimi değişmez (7/24 çalışan yol).
+
+    LESSONS §8: çalışan davranışa dokunma. Atıflar sohbet akışında da **sayılır**
+    (`sources_seen` log alanında), yani karar kanıtla değiştirilebilir.
+    """
+    body = b'f:{"messageId":"m-chat"}\n' + _CITATION_LINES + ai_stream("Merhaba")
+    stream_route(respx).mock(return_value=httpx.Response(200, content=body))
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "test-model", "messages": [{"role": "user", "content": "selam"}]},
+    )
+    assert response.status_code == 200
+    assert response.json()["choices"][0]["message"]["content"] == "Merhaba"
+
+
+@respx.mock
+def test_sources_chunk_arrives_before_the_finish_chunk_in_stream(client):
+    """Akışta sıra bozulmaz: kaynak bloğu, bitiş parçasından ÖNCE içerik olarak gider."""
+    body = b'f:{"messageId":"m-src"}\n' + _CITATION_LINES + ai_stream("Sonuç")
+    stream_route(respx).mock(return_value=httpx.Response(200, content=body))
+
+    with client.stream(
+        "POST",
+        "/v1/chat/completions",
+        json={
+            "model": "second-model",
+            "messages": [{"role": "user", "content": "ara"}],
+            "stream": True,
+        },
+    ) as response:
+        assert response.status_code == 200
+        raw = b"".join(response.iter_bytes()).decode()
+
+    payloads = [
+        json.loads(line[len("data:") :].strip())
+        for line in raw.splitlines()
+        if line.startswith("data:") and "[DONE]" not in line
+    ]
+    source_index = next(
+        index
+        for index, item in enumerate(payloads)
+        if "Kaynaklar:" in item["choices"][0]["delta"].get("content", "")
+    )
+    finish_index = next(
+        index
+        for index, item in enumerate(payloads)
+        if item["choices"][0].get("finish_reason")
+    )
+    assert source_index < finish_index, "kaynaklar bitişten sonra gelmemeli"

@@ -60,8 +60,8 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 
 ### Geçmiş / arşiv
 `AUDIT_2026_11.md`, `HANDOFF.md`, `START_HERE.md`, `DELIVERY_REPORT.md`,
-`MERGE_TARGET.md`, `SAHTE_CURL_TEST_RAPORU.md` — tarihsel kayıtlar. Güncel
-doğru için önce yukarıdaki tablolara bak.
+`MERGE_TARGET.md` — tarihsel kayıtlar. Güncel doğru için önce yukarıdaki
+tablolara bak.
 
 ---
 

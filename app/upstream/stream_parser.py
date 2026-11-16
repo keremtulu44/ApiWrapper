@@ -18,7 +18,7 @@ böylece upstream protokol değiştirse bile metin akışı korunur.
 from __future__ import annotations
 
 import json
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Iterator, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -390,6 +390,41 @@ def _as_media_url(raw: str, mime: str) -> str:
     return text
 
 
+def _iter_dict_items(data: Any) -> Iterator[dict[str, Any]]:
+    """Çok biçimli bir kanalın yükündeki sözlükleri verir (liste ya da tek dict).
+
+    `a2` gibi kanallar modlar arasında farklı yük taşır (`heartbeat`, `image`,
+    atıf) ve bazen liste bazen tek sözlük gelir. Gezinme kuralı tek yerde durur
+    ki her çıkarıcı aynı toleransı göstersin — sistematiğin özü bu: **koda değil
+    içeriğe bak**.
+    """
+    items: list[Any] = data if isinstance(data, list) else [data]
+    for item in items:
+        if isinstance(item, dict):
+            yield item
+
+
+def _first_text(item: dict[str, Any], keys: tuple[str, ...]) -> str:
+    """Verilen alan adlarından ilk dolu metin değerini döndürür."""
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return ""
+
+
+def _media_kind(item: dict[str, Any]) -> tuple[str, str]:
+    """Parçanın `type` ve mimeType değerlerini normalize eder."""
+    kind = str(item.get("type") or "").strip().lower()
+    mime = str(item.get("mimeType") or item.get("mime_type") or "").strip()
+    return kind, mime
+
+
+def _is_media_item(item: dict[str, Any]) -> bool:
+    kind, mime = _media_kind(item)
+    return kind == "image" or mime.lower().startswith("image/")
+
+
 def extract_media_parts(data: Any) -> list[MediaPart]:
     """Çok biçimli bir kanalın yükünden görsel parçalarını çıkarır.
 
@@ -409,23 +444,12 @@ def extract_media_parts(data: Any) -> list[MediaPart]:
     Adres **imzalı ve ~1 saat ömürlü** (`X-Amz-Expires=3600`): saklanmaz,
     loglanmaz, geldiği anda istemciye iletilir.
     """
-    items: list[Any] = data if isinstance(data, list) else [data]
     parts: list[MediaPart] = []
-    for item in items:
-        if not isinstance(item, dict):
+    for item in _iter_dict_items(data):
+        raw = _first_text(item, _MEDIA_VALUE_KEYS)
+        if not raw or not _is_media_item(item):
             continue
-        raw = ""
-        for key in _MEDIA_VALUE_KEYS:
-            value = item.get(key)
-            if isinstance(value, str) and value.strip():
-                raw = value
-                break
-        if not raw:
-            continue
-        kind = str(item.get("type") or "").strip().lower()
-        mime = str(item.get("mimeType") or item.get("mime_type") or "").strip()
-        if kind != "image" and not mime.lower().startswith("image/"):
-            continue
+        kind, mime = _media_kind(item)
         url = _as_media_url(raw, mime)
         if url and all(part.url != url for part in parts):
             parts.append(MediaPart(url=url, mime=mime, kind=kind or "image"))
@@ -440,3 +464,58 @@ def media_markdown(part: MediaPart, alt: str = "görsel") -> str:
     okuyup `sendPhoto` ile gerçek fotoğrafı gönderir.
     """
     return f"\n\n![{alt}]({part.url})\n\n"
+
+
+# ---------------------------------------------------------------- kaynak parçaları
+#: Bir sözlükte kaynak adı taşıyabilecek alanlar. Ölçülen alan `organization`
+#: (15 Kasım, canlı sohbet/arama akışı: `a2: list(1)[dict(2){type:str(12),
+#: organization:str(6)}]` ve `…str(7)` → 6-7 karakterlik kaynak adları). Diğerleri
+#: hedef biçimi zenginleştirirse (başlık/adres) diye yedek olarak taranır.
+_SOURCE_LABEL_KEYS = ("title", "organization", "name", "source", "site", "publisher")
+_SOURCE_URL_KEYS = ("url", "uri", "link", "href")
+
+
+@dataclass(frozen=True, slots=True)
+class Citation:
+    """Akışta gelen tek bir kaynak/atıf."""
+
+    label: str
+    url: str = ""
+
+
+def extract_citations(data: Any) -> list[Citation]:
+    """Kaynak/atıf parçalarını çıkarır (görsel ve `heartbeat` parçaları hariç).
+
+    `a2` kanalı görsel modunda `image`, sohbet/aramada atıf taşıdığı için burada
+    da **koda değil içeriğe** bakılır: kaynak alanı taşıyan parça atıftır, adres
+    alanı taşımayan `heartbeat` kendiliğinden elenir. Görsel parçaları atlanır ki
+    aynı parça hem görsel hem kaynak sayılıp iki kez istemciye gitmesin.
+    """
+    found: list[Citation] = []
+    for item in _iter_dict_items(data):
+        if _is_media_item(item):
+            continue
+        label = _first_text(item, _SOURCE_LABEL_KEYS)
+        url = _first_text(item, _SOURCE_URL_KEYS)
+        if not label and not url:
+            continue
+        citation = Citation(label=label or url, url=url)
+        if citation not in found:
+            found.append(citation)
+    return found
+
+
+def render_sources(citations: Sequence[Citation], heading: str = "Kaynaklar") -> str:
+    """Kaynakları yanıtın sonuna eklenecek metne çevirir.
+
+    Adres varsa markdown bağlantısı, yoksa düz ad: hedef bugün yalnız kaynak adı
+    gönderiyor (`organization`), ileride `url` de gönderirse biçim kendiliğinden
+    zenginleşir. OpenAI şeması değişmez — ek içerik metindir.
+    """
+    if not citations:
+        return ""
+    lines = [
+        f"- [{item.label}]({item.url})" if item.url else f"- {item.label}"
+        for item in citations
+    ]
+    return f"\n\n{heading}:\n" + "\n".join(lines) + "\n"

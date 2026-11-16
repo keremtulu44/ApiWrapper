@@ -348,6 +348,13 @@ curl -s "$BASE/v1/chat/completions" -H "Authorization: Bearer $KEY" \
 Takma adlar da geçerlidir: `search` / `web-search` / `ara` → `web`;
 `gorsel` / `görsel` / `img` → `image`.
 
+**Web arama yanıtı**nın sonunda `Kaynaklar:` bloğu görünür: akışın `a2`
+kanalındaki atıf parçaları (hedef bugün kaynak **adı** gönderiyor:
+`organization`) yanıtın sonuna liste olarak eklenir. Yalnız `modality=search`'te —
+7/24 çalışan düz sohbetin biçimi bilerek değişmez (ama atıflar orada da
+`sources_seen` olarak loglanır). Hedef ileride adres de gönderirse satırlar
+kendiliğinden `- [başlık](adres)` biçimine geçer.
+
 ### İkincil mod: görsel (deneysel — vitrin dışında)
 
 Görsel modu **silinmedi, ana akışın dışına alındı**: `config/models.yaml`'da

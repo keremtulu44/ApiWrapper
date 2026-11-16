@@ -99,6 +99,12 @@ _SEED_HASHES: dict[int, str] = {}
 # seriler; canlı sohbet isteklerini veya local state yazımını beklemez.
 _RENDER_SYNC_LOCK = asyncio.Lock()
 
+#: Render'ın **kalıcı** olarak reddettiği işlemler (`op`, `env_key`). Aynı değeri
+#: tekrar göndermek sonucu değiştirmediği için süreç başına bir kez loglanır;
+#: böylece retry döngüsü log'u boğmaz (ölçüm: boş değere PUT → 15/30/60 sn'de bir
+#: 400, sonsuza dek). Yeni bir süreç (restart/deploy) listeyi sıfırlar.
+_PERMANENT_SYNC_REJECTIONS: set[tuple[str, str]] = set()
+
 
 def compute_seed_hash(settings: Settings) -> str:
     """Başlangıçtaki `.env` / `UPSTREAM_CURL` kimliğinin kısa SHA-256 parmak izi.
@@ -407,20 +413,20 @@ async def _sync_render_env_locked(
     }
     owns_client = client is None
     http = client or httpx.AsyncClient(timeout=15.0)
+    # Boş değerler snapshot'a **bilerek** girer: yeni cURL'de olmayan eski
+    # header/token restart'ta dirilmesin. Ama Render boş değeri PUT ile kabul
+    # etmiyor (ölçüm: 400 → 15/30/60 sn'lik sonsuz tekrar deneme). İstenen son
+    # durum "bu anahtar yok" olduğu için doğru işlem DELETE.
+    writes = {key: value for key, value in updates.items() if value.strip()}
+    clears = sorted(key for key, value in updates.items() if not value.strip())
     ok = True
     try:
-        for key, value in updates.items():
-            url = (
-                f"https://api.render.com/v1/services/{service_id}/env-vars/{key}"
-            )
-            response = await http.put(url, headers=headers, json={"value": value})
-            if response.status_code >= 400:
+        for key, value in writes.items():
+            if not await _put_env_var(http, headers, service_id, key, value):
                 ok = False
-                logger.warning(
-                    "render_env_sync_failed",
-                    env_key=key,
-                    status_code=response.status_code,
-                )
+        for key in clears:
+            if not await _delete_env_var(http, headers, service_id, key):
+                ok = False
     except httpx.HTTPError as exc:
         ok = False
         logger.warning("render_env_sync_error", error_type=type(exc).__name__)
@@ -429,5 +435,80 @@ async def _sync_render_env_locked(
             await http.aclose()
 
     if ok:
-        logger.info("render_env_synced", keys=sorted(updates))
+        logger.info("render_env_synced", keys=sorted(writes), cleared=clears)
     return ok
+
+
+def _env_var_url(service_id: str, key: str) -> str:
+    return f"https://api.render.com/v1/services/{service_id}/env-vars/{key}"
+
+
+def _is_transient_status(status: int) -> bool:
+    """Tekrar denemeye değer mi: 429 ve 5xx evet, diğer 4xx hayır.
+
+    `app/upstream/client.py` upstream için aynı kuralı uyguluyor; iki ayrı yerde
+    iki ayrı tanım olmasın diye buradaki de aynı biçimde yazıldı.
+    """
+    return status == 429 or status >= 500
+
+
+def _note_permanent_rejection(op: str, key: str, status_code: int) -> None:
+    """Kalıcı reddi (4xx) süreç başına **bir kez** loglar.
+
+    4xx'te sorun ağda değil değerde/yetkidedir: tekrar denemek aynı yanıtı
+    üretir. Ölçümde bu, her 15/30/60 sn'de bir `render_env_sync_failed` +
+    `render_env_sync_retry_scheduled` çifti demekti ve gerçek arızalar
+    gürültünün altında kayboluyordu.
+    """
+    marker = (op, key)
+    if marker in _PERMANENT_SYNC_REJECTIONS:
+        return
+    _PERMANENT_SYNC_REJECTIONS.add(marker)
+    logger.warning(
+        "render_env_sync_rejected", op=op, env_key=key, status_code=status_code
+    )
+
+
+async def _put_env_var(
+    http: httpx.AsyncClient,
+    headers: dict[str, str],
+    service_id: str,
+    key: str,
+    value: str,
+) -> bool:
+    """Tek anahtarı yazar.
+
+    Dönüş değeri "tekrar denemeye değer mi" sorusudur: `False` yalnız geçici
+    hatada (5xx) döner; kalıcı red loglanır ama retry döngüsünü beslemez.
+    """
+    response = await http.put(
+        _env_var_url(service_id, key), headers=headers, json={"value": value}
+    )
+    status = response.status_code
+    if status < 400:
+        return True
+    if not _is_transient_status(status):
+        _note_permanent_rejection("put", key, status)
+        return True
+    logger.warning("render_env_sync_failed", op="put", env_key=key, status_code=status)
+    return False
+
+
+async def _delete_env_var(
+    http: httpx.AsyncClient, headers: dict[str, str], service_id: str, key: str
+) -> bool:
+    """Boş değeri "anahtarı sil" olarak uygular.
+
+    404 başarısızlık değildir: anahtar zaten yok, yani istenen son durum sağlanmış.
+    """
+    response = await http.delete(_env_var_url(service_id, key), headers=headers)
+    status = response.status_code
+    if status < 400 or status == 404:
+        return True
+    if not _is_transient_status(status):
+        _note_permanent_rejection("delete", key, status)
+        return True
+    logger.warning(
+        "render_env_sync_failed", op="delete", env_key=key, status_code=status
+    )
+    return False

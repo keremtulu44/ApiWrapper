@@ -103,6 +103,45 @@
 
 ---
 
+## 2b. Data-stream parçaları: **koda değil içeriğe bak**
+
+Vercel AI SDK kodları (`0:`, `a2:`, `ac:`, `ad:` …) **çok biçimlidir**: aynı kod
+farklı modlarda farklı yük taşır. 15 Kasım canlı ölçümü:
+
+| Kod | Sohbet | Web arama | Görsel (ikincil) |
+|---|---|---|---|
+| `a2` | atıf `{type,organization}` | atıf `{type,organization}` | `[{"type":"heartbeat"}]` → `[{"type":"image","image":<imzalı R2>,"mimeType":…}]` |
+| `ac` | – | `dict(2){toolCallId,argsTextDelta}` (arama aracı çağrısı) | – |
+| `ad` | `{"finishReason":"stop"}` | aynı | aynı |
+
+Bu yüzden sınıflandırma **yükün içeriğiyle** yapılır, kod adıyla değil
+(`app/upstream/stream_parser.py`):
+
+* `_iter_dict_items(data)` — tek gezinme kuralı: yük liste de tek sözlük de
+  olabilir, sözlük olmayan öğeler elenir. Bütün çıkarıcılar bunu kullanır.
+* `extract_media_parts()` — `type == "image"` ya da `image/…` mimeType taşıyan
+  parça → `MediaPart`; `&amp;` kaçışı çözülür (imzalı adres bozulmasın), ham
+  base64 `data:` URI'sine çevrilir.
+* `extract_citations()` — kaynak alanı (`title`/`organization`/`url` …) taşıyan
+  parça → `Citation`; görsel parçaları atlanır (aynı parça iki kez gitmesin).
+* `PartShapeSummary` — kod başına **farklı biçimlerin hepsini** sayar (yalnız tür
+  + uzunluk; değer asla loglanmaz). "İlk örnek yeter" varsayımı görsel yükünü
+  gizlemişti — bkz. `LESSONS_2026_11_14.md §10`.
+
+Tek dönüştürme noktası `CompletionService._events`'tir: görsel → markdown
+`![görsel](adres)`, atıflar → yanıtın **sonunda** `Kaynaklar:` bloğu (yalnız
+`modality=search`; 7/24 çalışan düz sohbetin biçimi değişmez, ama atıflar her
+modda `sources_seen` olarak loglanır). Hem akış hem akışsız yol bu jeneratörü
+tükettiği için iki yol birden düzelir. Sıra güvenlidir: tüketiciler upstream'in
+bitiş olayını yalnız `finish_reason`/usage kaydı için kullanır, kendi bitiş
+parçalarını jeneratör bittikten sonra üretir.
+
+> Yeni bir parça türü çıkarsa yapılacak iş **kod adı eklemek değil, çıkarıcı
+> eklemektir.** Log'daki `shapes` alanı hangi alan adlarının geldiğini söyler;
+> değer loglanmadığı için adres/veri oradan alınamaz.
+
+---
+
 ## 3. Dosya Mimarisi
 
 ```

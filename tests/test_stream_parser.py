@@ -6,13 +6,16 @@ import pytest
 
 from app.schemas.upstream import EventType
 from app.upstream.stream_parser import (
+    Citation,
     StreamDecoder,
+    extract_citations,
     extract_media_parts,
     media_markdown,
     normalize_finish_reason,
     normalize_usage,
     parse_line,
     parse_stream,
+    render_sources,
 )
 
 
@@ -200,3 +203,44 @@ def test_duplicate_urls_are_collapsed():
 def test_media_markdown_is_a_plain_image_tag():
     part = extract_media_parts([_MEASURED_IMAGE])[0]
     assert media_markdown(part) == f"\n\n![görsel]({part.url})\n\n"
+
+
+# ---------------------------------------------------------------- kaynak parçaları
+#: 15 Kasım canlı ölçümü: atıf `a2` kanalında `{type, organization}` olarak gelir
+#: (şekil özeti: `list(1)[dict(2){type:str(12),organization:str(6)}]`).
+_MEASURED_CITATION = {"type": "organization", "organization": "Google"}
+
+
+def test_extracts_the_measured_citation_part():
+    parts = extract_citations([{"type": "heartbeat"}, _MEASURED_CITATION])
+    assert parts == [Citation(label="Google")]
+
+
+def test_citation_with_url_renders_as_a_link():
+    parts = extract_citations([{"title": "Haber", "url": "https://kaynak.test/h"}])
+    assert parts == [Citation(label="Haber", url="https://kaynak.test/h")]
+    assert render_sources(parts) == "\n\nKaynaklar:\n- [Haber](https://kaynak.test/h)\n"
+
+
+def test_image_parts_are_not_counted_as_sources():
+    """Aynı parça hem görsel hem kaynak sayılıp iki kez istemciye gitmesin."""
+    assert extract_citations([_MEASURED_IMAGE]) == []
+
+
+def test_duplicate_sources_collapse_and_order_is_kept():
+    parts = extract_citations(
+        [_MEASURED_CITATION, {"organization": "YouTube"}, dict(_MEASURED_CITATION)]
+    )
+    assert [part.label for part in parts] == ["Google", "YouTube"]
+
+
+@pytest.mark.parametrize(
+    "data",
+    [[{"type": "heartbeat"}], "düz metin", None, [], [{"a": 1}], {"type": "image"}],
+)
+def test_payloads_without_source_fields_yield_no_citation(data):
+    assert extract_citations(data) == []
+
+
+def test_render_sources_is_empty_without_citations():
+    assert render_sources([]) == ""
