@@ -738,8 +738,9 @@ Kurallar:
 
 - **Önce `ADMIN_API_KEYS` ayır.** Boşsa her `API_KEYS` anahtarı admin sayılır
   (geriye dönük uyumluluk) ve tüketiciye verdiğin anahtar `/v1/admin/*`
-  uçlarına da erişir. Ayrım yoksa her üretimde log'a
-  `project_key_minted_without_admin_separation` düşer.
+  uçlarına da erişir. `GET /v1/admin/keys` bunu gizlemez: ayrım yoksa
+  `admin_separation: false` ve her satırda `is_admin: true` döner, her üretimde
+  de log'a `project_key_minted_without_admin_separation` düşer.
 - Anahtar **değeri loglanmaz ve listelenmez**; her yerde ya maskeli (`sk-***GI`)
   ya parmak izi (`cli_<sha256[:12]>`) olarak görünür. Etiketler `API_KEY_LABELS`
   alanında taşınır ve durum dosyası + Render env'i ile kalıcı olur.

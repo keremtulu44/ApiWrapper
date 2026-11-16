@@ -818,16 +818,18 @@ async def list_project_keys(
     sızarsa kimse anahtar ele geçiremez. Üretim/iptal gibi listeleme de admin
     ister — proje etiketleri ve hacimler tüketicilere açık bilgi değildir.
     """
+    separated = any(key.strip() for key in settings.admin_api_keys)
     return {
         "object": "list",
         "data": projects.snapshot(settings),
-        "admin_separation": bool(
-            any(key.strip() for key in settings.admin_api_keys)
-        ),
+        "admin_separation": separated,
         "counters_are_in_memory": True,
         "hint": (
             "Sayaçlar bellek içidir; restart'ta sıfırlanır. Kalıcı muhasebe için "
             "/metrics dışarıda (Prometheus) toplanır."
+            if separated
+            else "ADMIN_API_KEYS boş: listedeki HER anahtar /v1/admin/* uçlarını da "
+            "kullanabilir. Tüketiciye anahtar vermeden önce ayırın."
         ),
     }
 

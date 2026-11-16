@@ -242,6 +242,10 @@ class ProjectRegistry:
     # ------------------------------------------------------------- listeleme
     def snapshot(self, settings: Settings) -> list[dict[str, Any]]:
         """Projeleri kullanım sayaçlarıyla listeler (anahtar değeri maskeli)."""
+        # `require_admin` ile aynı kural: `ADMIN_API_KEYS` boşsa **her** anahtar
+        # admin sayılır. Alanı "listede yazıyor mu" diye doldurmak, tam da riskin
+        # olduğu durumda (ayrım yok) "bu anahtar admin değil" yalanını söylerdi.
+        separated = any(item.strip() for item in settings.admin_api_keys)
         rows: list[dict[str, Any]] = []
         for key in settings.api_keys:
             key_id = client_fingerprint(key)
@@ -251,8 +255,7 @@ class ProjectRegistry:
                     "key_id": key_id,
                     "label": self.label_for(key_id),
                     "masked_key": mask_value(key),
-                    "is_admin": bool(settings.admin_api_keys)
-                    and key in settings.admin_api_keys,
+                    "is_admin": (not separated) or key in settings.admin_api_keys,
                     "requests": usage.requests,
                     "tokens": usage.tokens,
                     "errors": usage.errors,

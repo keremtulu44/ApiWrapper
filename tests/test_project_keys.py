@@ -394,8 +394,10 @@ def test_mint_is_silent_and_consumer_key_is_not_admin(capsys):
     assert key not in json.dumps(rows)
 
 
-def test_key_list_reports_whether_admin_is_separated(client):
+def test_key_list_tells_the_truth_about_admin_rights(client):
     payload = client.get("/v1/admin/keys").json()
-    # conftest `admin_api_keys` vermez: ayrım yok, yanıt bunu açıkça söyler.
+    # conftest `admin_api_keys` vermez → ayrım yok → `require_admin` herkesi
+    # geçirir. Liste bunu gizlememeli, açıkça söylemeli.
     assert payload["admin_separation"] is False
-    assert all(row["is_admin"] is False for row in payload["data"])
+    assert all(row["is_admin"] is True for row in payload["data"])
+    assert "ADMIN_API_KEYS" in payload["hint"]

@@ -174,7 +174,8 @@ API_KEYS=sk-senin-yonetici-anahtarin         # tüketici anahtarları buraya ekl
 ```
 
 Ayrım yapıldıysa `GET /v1/admin/keys` yanıtında `admin_separation: true` ve
-satırlarda `is_admin: false` görürsün. Yapılmadıysa her üretimde log'a
+tüketici satırlarında `is_admin: false` görürsün. Yapılmadıysa **her satır
+`is_admin: true` döner** (gerçek yetki budur) ve her üretimde log'a
 `project_key_minted_without_admin_separation` uyarısı düşer.
 
 **Anahtar üret** (redeploy gerekmez, değer yalnız bu yanıta bir kez yazılır):
