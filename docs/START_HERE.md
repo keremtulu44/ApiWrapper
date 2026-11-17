@@ -239,6 +239,13 @@ Olay adları: `upstream_request`, `upstream_http_error`, `upstream_refresh_requi
 |---|---|---|
 | #28 | Stop reporting generic 403s as CAPTCHA rejections | açık, MERGEABLE, CI 3/3 pass |
 
+> **🔴 BAYAT KAYIT:** PR #28 **merge edildi** (`mergedAt=2026-11-06T05:02:43Z`).
+> Yukarıdaki "açık" durumu ve aşağıdaki kapsam listesi o anın fotoğrafıdır,
+> silinmedi. Düzeltme **kısmi** kaldı: `client.py:343`'teki işaret listesinde
+> hâlâ **`"forbidden"`** ve `"bot"` var, `AUTH_STATUS` yalnız `{401}` (`:43`) ⇒
+> her 403 captcha sayılabiliyor. 17 Kasım ölçümü ve doğru çare:
+> **`LESSONS_2026_11_14.md §15.3-§15.6`**.
+
 Kapsam: `app/upstream/client.py` (`CAPTCHA_MARKERS`, `_is_captcha_body`),
 `app/schemas/upstream.py` (boş token alanı), `app/services/recaptcha/static.py`
 (noop red saymaz), `app/core/config.py` (`upstream_cx_send`),

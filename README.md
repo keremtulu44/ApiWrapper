@@ -46,9 +46,19 @@ OpenAI-compatible istemcilerle çalışır.
 >    tazele ve yeniden deploy et. **Telefondan `/curl` YOK** — cURL güncellemek
 >    Render panosu ister.
 > 5. cURL'ü aldıktan sonra **tarayıcıdan çıkış yap** (aşağıdaki 1. kural değişmedi).
+> 6. **cURL'ü yalnız Google ile giriş yapılmış oturumdan al.** E-posta + şifre ile
+>    giriş yapılmış oturumun cURL'ü wrapper'da `recaptcha_rejected` veriyor
+>    (17 Kasım ölçümü) — bkz. `docs/LESSONS_2026_11_14.md §15.1`.
+> 7. **`recaptcha_rejected` görürsen 10-15 dakika BEKLE, hiçbir şeye dokunma.**
+>    `RECAPTCHA_PROVIDER=static` iken gönderilen token değişmez ve bu sürümde
+>    retry yok; yani red **hedef tarafında geçici**. Ölçüldü: bir kez görüldü,
+>    kendiliğinden geçti. **Taze cURL almaya kalkma** — tarayıcıya giriş yapmak
+>    sağlıklı oturumu öldürür (1. kural). Ayrıntı: `LESSONS §15.3-§15.4`.
 >
 > Tam kayıt, ölçümler, kaldırılanların listesi ve ileri dönüş tarifi:
 > **[`docs/ROLLBACK_2026_11_16.md`](docs/ROLLBACK_2026_11_16.md)**
+> Geri dönüşün **sonucu** (ep3: 10 saat+) ve ileri dönüşün doğru tarifi:
+> **`docs/ROLLBACK_2026_11_16.md §11`**
 
 > ## ⚠️ Önce oku (en sık yapılan 3 hata)
 >

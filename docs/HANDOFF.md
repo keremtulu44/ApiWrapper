@@ -22,6 +22,12 @@ Kurallar:
 | Açık PR | **#28** `Stop reporting generic 403s as CAPTCHA rejections`, MERGEABLE |
 | Açık PR değişen dosya | 9 dosya, +129 / −25 |
 
+> **🔴 BAYAT KAYIT:** bu tablo o günün fotoğrafıdır. PR #28 **merge edildi**
+> (`mergedAt=2026-11-06T05:02:43Z`), yani artık "açık PR" değil. Merge hedefi de
+> değişti: canlı dal **`arena/1kasim-test`**, `main` dokunulmaz. Aşağıdaki
+> **onay kuralı geçerliliğini koruyor.** Güncel durum:
+> `docs/ROLLBACK_2026_11_16.md §11`.
+
 Merge kuralları dosyası: **`docs/MERGE_TARGET.md`** (82 satır).
 Kritik kural: merge = Render deploy, kullanıcı o turda açıkça onaylamadan merge yapılmaz (§"Onay kuralı").
 

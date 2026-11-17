@@ -353,6 +353,36 @@ Ayrıntı: `LESSONS_2026_11_14.md §10`.
 Bildirim metni bu durumda "captcha token'ı üretilemedi/yenilenemedi" der ve
 site key / provider ayarını işaret eder.
 
+> ### 🔴 DÜZELTME (17 Kasım ölçümü) — yukarıdaki "Yapılacak" sütununa güvenme
+>
+> Öncelik **`LESSONS_2026_11_14.md §15`**'te. Ölçülen gerçek:
+>
+> 1. **`recaptcha_rejected` GEÇİCİDİR.** `RECAPTCHA_PROVIDER=static` iken
+>    gönderilen token **bayt-özdeş ve değişmez** (`recaptcha/static.py:26-38`,
+>    cache bile yok) ve static'te **retry yok**
+>    (`completion_service.py:455-460` → `raise`). Yani wrapper iyileşmek için
+>    hiçbir şey yapmıyor; yine de red **10-15 dakikada kendiliğinden** geçti.
+>    ⇒ **Sorun token değil.**
+> 2. **Doğru çare: BEKLE.** 10 saatlik kesintisiz koşuda red bir kez görüldü ve
+>    dokunulmadan geçti.
+> 3. **"Taze cURL al" çaresi ZARARLIDIR.** Taze cURL tarayıcıya giriş ister;
+>    giriş **sunucu oturumunu öldürür** (`LESSONS §1`). Belgedeki çareyi
+>    uygulamak sağlıklı oturumu kendi elinle öldürmek demekti. Ayrıca **`/curl`
+>    bu sürümde yok** (Telegram'da 4 komut: `/healthz /help /ping /start`).
+> 4. **`static.py:14` ("token ~2 dk") ve `diagnostics.py:56-67` ("yenileyin",
+>    "browser/external kalıcı çözümdür") çürütüldü** — aynı token 10 saat
+>    (önce 15 saat) çalıştı, `browser` bu hedefte çözüm değil (§3-§4).
+> 5. **"captcha" etiketi yanıltıcı olabilir:** `client.py:343`'teki işaret
+>    listesinde **`"forbidden"`** var ve `AUTH_STATUS` yalnız `{401}` (`:43`) ⇒
+>    her 403 ya captcha ya düz HTTP hatası sayılıyor; karar sırası captcha
+>    lehine (`:651-653`). **Kesin sebep için `upstream_http_error` log
+>    satırının `body=` alanına bak** (`client.py:533-537`) — sınıflandırmadan
+>    *önce* yazılır.
+> 6. **`upstream_recaptcha_rejected_body` log satırı bu sürümde YOK** (yukarıdaki
+>    tablonun 4. satırı onu işaret ediyor — bayat referans, `git grep` boş).
+> 7. **cURL'ü yalnız Google ile giriş yapılmış oturumdan al.** E-posta + şifre
+>    ile girilmiş oturumun cURL'ü `recaptcha_rejected` veriyor (`LESSONS §15.1`).
+
 ---
 
 ## 5. Zaman aşımı ve akış sorunları

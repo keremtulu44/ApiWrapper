@@ -21,6 +21,28 @@
 > `UPSTREAM_STREAM_PATH` **Render env'inde** durmalı, yoksa her restart'ta servis
 > ölür ya da her istek `400 ZodError · path ["mode"]` döner. Ayrıntı:
 > [`ROLLBACK_2026_11_16.md §6`](ROLLBACK_2026_11_16.md).
+>
+> ### ✅ Sonuç geldi: geri dönüş **çalıştı** (17 Kasım)
+>
+> Bu sürüm merge edildikten sonra **10 saat+ kesintisiz** çalıştı; sonraki
+> commit'lerde aynı koşullar 4 saat ve 2 sa 46 dk sürmüştü. Giriş yöntemi
+> confound'u da elendi (dört koşunun cURL'ü de **Google** ile alınmış).
+> Aday tek dosyaya indi: `upstream/headers.py`. Kayıt:
+> **[`ROLLBACK_2026_11_16.md §11`](ROLLBACK_2026_11_16.md)**.
+>
+> **İki yeni işletim kuralı** ([`LESSONS_2026_11_14.md §15`](LESSONS_2026_11_14.md)):
+>
+> 1. **cURL'ü yalnız Google ile giriş yapılmış oturumdan al.** E-posta + şifre
+>    ile girilmiş oturumun cURL'ü `recaptcha_rejected` veriyor.
+> 2. **`recaptcha_rejected` görürsen 10-15 dakika BEKLE.** `static` token
+>    değişmez, bu sürümde retry yok ⇒ red hedef tarafında **geçici**; ölçüldü,
+>    kendiliğinden geçti. **Taze cURL almaya kalkma** — tarayıcıya giriş sağlıklı
+>    oturumu öldürür. Belgelerdeki eski çareler (`TROUBLESHOOTING §4`,
+>    `diagnostics.py`) **çürütüldü**, öncelik `LESSONS §15`'te.
+>
+> Bu aynı zamanda **Chromium/keeper yolunun kesin olarak kapandığı** anlamına
+> geliyor: `browser_login.py:14`'teki *"(2FA/captcha yok)"* varsayımı yanlış ve
+> keeper Google akışını hiç tanımıyor (`LESSONS §15.2`).
 
 ---
 
