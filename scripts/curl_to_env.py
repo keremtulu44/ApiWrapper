@@ -44,7 +44,6 @@ from app.upstream.curl_import import (  # noqa: E402
     load_body,
     parse_curl,
 )
-from app.upstream.session_capture import inspect_cookie  # noqa: E402
 
 __all__ = [
     "CAPTCHA_FIELDS",
@@ -267,16 +266,7 @@ def merge_env(path: Path, updates: dict[str, str]) -> str:
 
 
 def update_models_yaml(path: Path, upstream_id: str) -> bool:
-    """`models.yaml` içindeki ilk `upstream_id` değerini günceller.
-
-    İlk eşleşme **belge düzeyindeki** ortak satırdır (`config/models.yaml`
-    düzeni): chat/search/image modları aynı modelAId'i miras aldığı için tek
-    satırın güncellenmesi üç modu birden tazeler.
-
-    Değer zaten aynıysa dosyaya yazılmaz ama işlem **başarılı** sayılır. Eski
-    davranış `False` döndürüp "güncellenemedi, elle yazın" uyarısı üretiyordu;
-    operatör doğru durumdaki bir dosyayı elle bozmaya yönlendiriliyordu.
-    """
+    """`models.yaml` içindeki ilk `upstream_id` değerini günceller."""
     if not path.exists():
         return False
     text = path.read_text(encoding="utf-8")
@@ -287,11 +277,10 @@ def update_models_yaml(path: Path, upstream_id: str) -> bool:
         count=1,
         flags=re.MULTILINE,
     )
-    if not count:
-        return False
-    if new_text != text:
+    if count and new_text != text:
         path.write_text(new_text, encoding="utf-8")
-    return True
+        return True
+    return False
 
 
 def main() -> int:
@@ -472,33 +461,6 @@ def main() -> int:
                 f"Bu cURL'deki modelAId={model_id})"
             )
 
-    if env.get("UPSTREAM_COOKIE"):
-        report = inspect_cookie(env["UPSTREAM_COOKIE"])
-        print("\n=== Sürdürülebilirlik & Otomatik Yenileme ===")
-        families = report.get("chunked_families")
-        if isinstance(families, dict) and families:
-            shown = ", ".join(f"{k} ({v} parça)" for k, v in families.items())
-            print(f"  Parçalı oturum çerezi : {shown}")
-        if report.get("access_token_found"):
-            rem = report.get("access_token_expires_in_seconds")
-            if isinstance(rem, int) and rem > 0:
-                print(f"  Erişim token'ı        : bulundu (≈{rem // 60} dk geçerli)")
-            elif report.get("access_token_expired"):
-                print("  Erişim token'ı        : bulundu ama SÜRESİ DOLMUŞ")
-            else:
-                print("  Erişim token'ı        : bulundu")
-        if report.get("refresh_token_found"):
-            print(
-                "  Refresh token         : ✓ VAR (wrapper her saat kendi kendine "
-                "yenileyecek)"
-            )
-        else:
-            print(
-                "  Refresh token         : ⚠ YOK (oturum ~1 saat sonra sona erebilir)"
-            )
-        for problem in report.get("problems") or []:
-            print(f"  ! {problem}")
-
     if warnings:
         print("\n=== Uyarılar ===")
         for item in warnings:
@@ -542,8 +504,7 @@ def main() -> int:
     if model_id and slot == 1:
         models_path = Path(args.models_file)
         if update_models_yaml(models_path, model_id):
-            # Değer zaten aynıysa dosyaya yazılmaz; "güncel" ikisini de karşılar.
-            print(f"{models_path} güncel (upstream_id={model_id}).")
+            print(f"{models_path} güncellendi (upstream_id={model_id}).")
         else:
             print(
                 f"UYARI: {models_path} güncellenemedi; upstream_id={model_id} "

@@ -20,12 +20,7 @@ from app.upstream.auth import (
     resolve_bearer_token,
     token_seconds_remaining,
 )
-from app.upstream.headers import (
-    build_authorization,
-    build_page_headers,
-    build_stream_headers,
-    sec_ch_ua,
-)
+from app.upstream.headers import build_authorization, build_stream_headers, sec_ch_ua
 from tests.conftest import make_settings
 
 
@@ -62,21 +57,6 @@ def test_parse_cookie_ignores_junk():
 
 def test_first_occurrence_wins():
     assert parse_cookie_header("k=first; k=second")["k"] == "first"
-
-
-def test_parse_cookie_unquotes_url_encoded_json():
-    """URL-encoded JSON çerezler (arena_acq_source vb.) çözülmeli."""
-    encoded_json = quote('{"v":1,"status":"captured","ref":null}')
-    cookies = parse_cookie_header(f"arena_acq_source={encoded_json}; other=x")
-    assert cookies["arena_acq_source"] == '{"v":1,"status":"captured","ref":null}'
-    assert cookies["other"] == "x"
-
-
-def test_parse_cookie_preserves_jwt_and_base64():
-    """JWT / base64 değerler URL-decoding'den etkilenmemeli (percent içermezler)."""
-    cookies = parse_cookie_header(f"t={TOKEN}; b=abcDEF+/==")
-    assert cookies["t"] == TOKEN
-    assert cookies["b"] == "abcDEF+/=="
 
 
 def test_merge_chunked_cookies():
@@ -306,34 +286,6 @@ def test_extra_headers_can_override_authorization():
     assert headers["authorization"] == "Bearer manual-override"
 
 
-def test_captured_mobile_fingerprint_is_not_replaced_with_desktop_chrome():
-    settings = make_settings(
-        upstream_user_agent=(
-            "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/154.0.0.0 Mobile Safari/537.36"
-        ),
-        upstream_extra_headers=(
-            '{"sec-ch-ua":"\\"Chromium\\";v=\\"154\\", \\"Lemur\\";v=\\"154\\"",'
-            '"sec-ch-ua-mobile":"?1","sec-ch-ua-platform":"\\"Android\\"",'
-            '"sec-fetch-mode":"cors","accept":"*/*"}'
-        ),
-    )
-
-    headers = build_stream_headers(settings, "chat-1")
-
-    assert headers["sec-ch-ua"] == '"Chromium";v="154", "Lemur";v="154"'
-    assert headers["sec-ch-ua-mobile"] == "?1"
-    assert headers["sec-ch-ua-platform"] == '"Android"'
-    assert headers["sec-fetch-mode"] == "cors"
-    assert headers["accept"] == "*/*"
-
-    # Aynı saklanan değerler HTML ısıtma isteğinin navigasyon kimliğini bozmamalı.
-    page = build_page_headers(settings)
-    assert page["sec-ch-ua-mobile"] == "?1"
-    assert page["sec-fetch-mode"] == "navigate"
-    assert page["accept"].startswith("text/html")
-
-
 def test_configured_cookie_name_setting_is_honoured():
     decoy = make_jwt({"sub": "decoy"})
     settings = make_settings(
@@ -518,88 +470,3 @@ def test_undecodable_session_blob_is_not_sent_as_token():
     Aksi hâlde upstream'e kilobaytlarca anlamsız bir Bearer değeri gider.
     """
     assert extract_access_token("-auth-prod-v1.0=base64-" + "Zm9vYmFy" * 600) is None
-
-
-def _chunked_session_cookie(*, chunks: int = 2) -> str:
-    import base64
-    import json
-
-    def jwt() -> str:
-        head = base64.urlsafe_b64encode(b'{"alg":"ES256"}').decode().rstrip("=")
-        body = (
-            base64.urlsafe_b64encode(json.dumps({"exp": 9999999999}).encode())
-            .decode()
-            .rstrip("=")
-        )
-        return f"{head}.{body}.sig"
-
-    payload = {"access_token": jwt(), "refresh_token": "rt-fresh", "expires_in": 3600}
-    value = "base64-" + base64.b64encode(json.dumps(payload).encode()).decode()
-    size = len(value) // chunks + 1
-    return "; ".join(
-        f"arena-auth-prod-v1.{i}={value[i * size : (i + 1) * size]}" for i in range(chunks)
-    )
-
-
-def test_merge_prefers_chunked_value_when_base_lacks_refresh_token():
-    """Eski kök çerez, yeni parçalı oturumun refresh token'ını gizlememeli.
-
-    Canlı belirti: `/tani` "Çerezde token: var" + "Refresh token: yok" diyordu;
-    otomatik yenileme bu yüzden hiç devreye girmiyordu.
-    """
-    stale_base = "base64-" + __import__("base64").b64encode(
-        b'{"access_token":"eyJhbGciOiJFUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig"}'
-    ).decode()
-    combined = f"arena-auth-prod-v1={stale_base}; {_chunked_session_cookie()}"
-
-    assert extract_refresh_token(combined) == "rt-fresh"
-    assert extract_access_token(combined) is not None
-
-
-def test_merge_keeps_base_when_it_already_has_refresh_token():
-    """Kök zaten refresh token taşıyorsa parçalı değer onu ezmez."""
-    import base64
-    import json
-
-    full = "base64-" + base64.b64encode(
-        json.dumps(
-            {"access_token": "eyJhbGciOiJFUzI1NiJ9.eyJleHAiOjk5OTk5OTk5OTl9.sig",
-             "refresh_token": "rt-from-base"}
-        ).encode()
-    ).decode()
-    combined = f"arena-auth-prod-v1={full}; {_chunked_session_cookie()}"
-
-    # Kök değer refresh token taşıdığı için parçalar onun yerine geçmez.
-    assert extract_refresh_token(combined) == "rt-from-base"
-
-
-def test_parse_cookie_header_unescapes_html_entities_before_splitting():
-    """Tarayıcı arayüzünden kopyalanan çerezde `&amp;` bölmeyi bozmamalı.
-
-    `&amp;` kendi içinde `;` taşıdığı için temizlenmezse tek çerez altı sahte
-    çereze ayrılıyordu (`_dd_s`, `rum`, `id`, `created`, `expire`, `logs`).
-    """
-    raw = (
-        "arena-auth-prod-v1=; "
-        "_dd_s=aid=abc&amp;rum=2&amp;id=sess-1&amp;created=1&amp;expire=2&amp;logs=1; "
-        "arena_visit_id=%7B%22id%22%3A%22v1%22%2C%22started%22%3A1%2C%22lastSeen%22%3A2%7D"
-    )
-    cookies = parse_cookie_header(raw)
-
-    assert set(cookies) == {"arena-auth-prod-v1", "_dd_s", "arena_visit_id"}
-    assert cookies["_dd_s"] == "aid=abc&rum=2&id=sess-1&created=1&expire=2&logs=1"
-
-
-def test_escaped_cookie_bundle_still_yields_access_and_refresh_tokens():
-    """HTML kaçışlı pakette de token çıkarımı (ve parçalı birleştirme) çalışır.
-
-    Gerçek biçim: yalnız **değer** içindeki `&` kaçışlanır; çerezleri ayıran
-    `; ` korunur. Kaçışın kendi `;` karakteri paketi bölmemelidir.
-    """
-    escaped = (
-        "_dd_s=aid=abc&amp;rum=2&amp;id=sess-1; "
-        "arena-auth-prod-v1=; "
-        + _chunked_session_cookie()
-    )
-    assert extract_access_token(escaped) is not None
-    assert extract_refresh_token(escaped) == "rt-fresh"

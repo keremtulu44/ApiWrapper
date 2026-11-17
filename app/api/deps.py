@@ -7,7 +7,6 @@ from fastapi import Request
 from app.core.config import Settings
 from app.services.completion_service import CompletionService
 from app.services.model_registry import ModelRegistry
-from app.services.project_keys import ProjectRegistry
 from app.services.recaptcha.base import RecaptchaProvider
 from app.services.session_manager import SessionManager
 from app.upstream.client import UpstreamClient
@@ -19,10 +18,6 @@ def get_settings_dep(request: Request) -> Settings:
 
 def get_registry(request: Request) -> ModelRegistry:
     return request.app.state.registry
-
-
-def get_projects(request: Request) -> ProjectRegistry:
-    return request.app.state.projects
 
 
 def get_completion_service(request: Request) -> CompletionService:

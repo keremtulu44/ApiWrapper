@@ -14,9 +14,7 @@ bu modda wrapper'a hiçbir istek gönderilmez.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import json
-import re
 from typing import Any
 
 import httpx
@@ -25,22 +23,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.diagnostics import format_failure
 from app.core.logging import configure_logging, get_logger
-from app.services.keepalive import describe_probe, last_probe
 
 logger = get_logger(__name__)
 
 _HELP = (
     "ApiWrapper test botu aktif.\n"
     "Bir metin gönderin; wrapper /v1/chat/completions üzerinden yanıt üretir.\n"
-    "Komutlar: /ping (wrapper + son upstream kontrolü), /tani (kimlik teşhisi), "
-    "/zaman (oturum olay defteri: token rotasyonu ve 401 ölçümü), /yenile (sunucu "
-    "tarayıcısıyla oturumu tazele), /cookie <çerez> ya da /curl <cURL>, /help.\n"
-    "/web <soru> = web arama modu (model=web, modality=search); düz metin = sohbet.\n"
-    "/cookie! <çerez> = kontrolü atlayıp zorla uygula, /token = erişim token'ını "
-    "yenile, /apikey [anahtar] = yenileme anon anahtarını keşfet/ayarla.\n"
-    "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz.\n"
-    "Deneysel (ana akışın dışında): /gorsel <istem> görsel üretmeyi dener ve "
-    "sonucu fotoğraf olarak gönderir — upstream bu modu 429 ile reddedebiliyor."
+    "Komutlar: /ping (wrapper health), /help.\n"
+    "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
 )
 
 
@@ -77,12 +67,6 @@ class TelegramSettings(BaseSettings):
     #: Arıza bildirimlerinin gideceği sohbet. Boşsa ilk allowlist kaydı kullanılır.
     telegram_alert_chat_id: str = ""
     telegram_model: str = "max"
-    #: `/web <soru>` komutunun kullanacağı model adı (models.yaml'da
-    #: `modality: search` taşıyan kayıt). Düz metin mesajlar `telegram_model`'de kalır.
-    telegram_web_model: str = "web"
-    #: `/gorsel <istem>` komutunun kullanacağı model adı (models.yaml'da
-    #: `modality: image` taşıyan kayıt).
-    telegram_image_model: str = "image"
     telegram_poll_timeout: int = Field(default=30, ge=1, le=50)
     telegram_request_timeout: float = Field(default=180.0, gt=0)
     telegram_max_reply_chars: int = Field(default=12000, ge=1000, le=50000)
@@ -150,25 +134,6 @@ def split_telegram_text(text: str, limit: int = 3500, max_chars: int = 12000) ->
     return chunks or ["(wrapper boş yanıt döndürdü)"]
 
 
-#: Wrapper, görsel modunu OpenAI şemasını bozmadan iletmek için içeriğe
-#: `![görsel](<adres>)` ekler (bkz. `stream_parser.media_markdown`). Telegram
-#: markdown çizmediği için bu adresler ayrıştırılıp `sendPhoto` ile gönderilir.
-_MARKDOWN_IMAGE = re.compile(r"!\[[^\]]*\]\(([^)\s]+)\)")
-
-
-def split_markdown_images(text: str) -> tuple[str, list[str]]:
-    """İçerikteki markdown görselleri ayırır: (kalan metin, adres listesi).
-
-    Adresler imzalı ve ~1 saat ömürlü (`X-Amz-Expires=3600`): yalnız bu turda
-    kullanılır, saklanmaz ve loglanmaz.
-    """
-    urls = [url.strip() for url in _MARKDOWN_IMAGE.findall(text) if url.strip()]
-    # Görsel satırı çıkarılınca kalan boş satır yığınları ikiye indirilir:
-    # kullanıcıya giden açıklama metni düzgün görünsün.
-    remaining = re.sub(r"\n{3,}", "\n\n", _MARKDOWN_IMAGE.sub("", text)).strip()
-    return remaining, urls
-
-
 def wrapper_error_code(response: httpx.Response) -> str:
     """Yalnız yapısal OpenAI hata kodunu al; ham cevabı kullanıcıya taşıma."""
     try:
@@ -194,28 +159,6 @@ class TelegramBot:
         self.settings = settings
         self.telegram = telegram
         self.wrapper = wrapper
-        #: Sohbet başına birleştirilen çerez parçaları (uzun JSON 4 KB'a sığmaz).
-        self._cookie_buffers: dict[int, list[str]] = {}
-        #: Uzun cURL için açık parça modu. Tek mesajlık mevcut `/curl <cURL>`
-        #: davranışı korunur; parametresiz `/curl` parça modunu başlatır.
-        self._curl_buffers: dict[int, list[str]] = {}
-        self._curl_chunk_mode: set[int] = set()
-
-    @staticmethod
-    def _cookie_complete(text: str) -> bool:
-        """Toplanan metin tamamlandı mı?
-
-        JSON dışa aktarımı geçerli JSON olduğunda tamamdır; `ad=değer` başlık
-        satırı tek mesajda biter (parçalı gönderimde `/cookie bitir` kullanılır).
-        """
-        stripped = text.strip()
-        if stripped.startswith("["):
-            try:
-                parsed = json.loads(stripped)
-            except json.JSONDecodeError:
-                return False
-            return isinstance(parsed, list) and bool(parsed)
-        return "=" in stripped
 
     @property
     def telegram_api_url(self) -> str:
@@ -237,24 +180,6 @@ class TelegramBot:
                     status_code=response.status_code,
                 )
 
-    async def send_photo(self, chat_id: int, url: str) -> bool:
-        """Görsel adresini Telegram'a **fotoğraf** olarak gönderir.
-
-        Adres `photo` alanıyla verilir: dosyayı Telegram sunucuları indirir,
-        wrapper üzerinden bayt taşımaya gerek kalmaz. Dönüş değeri başarısızsa
-        çağıran adresi metin olarak yedekler — görsel kaybolmasın (adres kısa
-        ömürlü olduğu için kullanıcıya hemen verilmesi gerekir).
-        """
-        response = await self.telegram.post(
-            f"{self.telegram_api_url}/sendPhoto",
-            json={"chat_id": chat_id, "photo": url},
-        )
-        if response.status_code >= 400:
-            # Hata gövdesi loglanmaz: adres imza taşıyor.
-            logger.warning("telegram_send_photo_failed", status_code=response.status_code)
-            return False
-        return True
-
     async def handle_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat")
         text = message.get("text")
@@ -263,8 +188,7 @@ class TelegramBot:
         chat_id = chat.get("id")
         if not isinstance(chat_id, int):
             return
-        raw_text = text
-        text = raw_text.strip()
+        text = text.strip()
         if not text:
             return
 
@@ -289,840 +213,27 @@ class TelegramBot:
         if command == "/ping":
             await self.ping(chat_id)
             return
-        if command in {"/zaman", "/olaylar", "/olaydefteri", "/timeline"}:
-            await self.session_timeline(chat_id)
-            return
-        if command in {"/token", "/tokeni", "/refresh-token", "/yenitoken"}:
-            await self.refresh_token(chat_id)
-            return
-        if command in {"/apikey", "/anonkey"}:
-            await self.set_refresh_apikey(chat_id, text)
-            return
-        if command in {"/tani", "/tanı", "/durum", "/status", "/diagnose"}:
-            await self.diagnose(chat_id)
-            return
-        if command in {"/invalidate", "/sifirla", "/reset-captcha", "/captcha-reset"}:
-            await self.invalidate_captcha(chat_id)
-            return
-        if command in {"/web", "/arama", "/search"}:
-            # Web arama modu: wrapper'da modu seçen şey `model` adı olduğu için
-            # burada yalnızca model değiştirilir, ayrı bir uç nokta gerekmez.
-            parts = text.split(maxsplit=1)
-            question = parts[1].strip() if len(parts) > 1 else ""
-            if not question:
-                await self.send_text(
-                    chat_id,
-                    "Kullanım: /web <soru>\n"
-                    "Web arama modunda (modality=search) yanıt üretir. Düz metin "
-                    "gönderirsen sohbet modu (chat) kullanılır.",
-                )
-                return
-            await self.ask_wrapper(
-                chat_id, question, model=self.settings.telegram_web_model
-            )
-            return
-        if command in {"/gorsel", "/görsel", "/image", "/resim", "/ciz", "/çiz"}:
-            # Görsel modu: aynı sistem — modu seçen tek şey `model` adı, ayrı
-            # uç nokta yok. Sonuç `send_photo` ile fotoğraf olarak iletilir.
-            parts = text.split(maxsplit=1)
-            prompt = parts[1].strip() if len(parts) > 1 else ""
-            if not prompt:
-                await self.send_text(
-                    chat_id,
-                    "Kullanım: /gorsel <istem>\n"
-                    "Görsel modunda (modality=image) üretim yapar; sonuç fotoğraf "
-                    "olarak gönderilir. Düz metin gönderirsen sohbet modu (chat) "
-                    "kullanılır.",
-                )
-                return
-            await self.ask_wrapper(
-                chat_id, prompt, model=self.settings.telegram_image_model
-            )
-            return
-        if command in {"/curl", "/setcurl"}:
-            # Parça sınırlarındaki boşlukları da korumak için komuta normalize
-            # edilmiş metin yerine yalnızca sol boşluğu atılan ham metni ver.
-            await self.set_upstream_curl(chat_id, raw_text.lstrip())
-            return
-        if command in {"/yenile", "/refresh", "/capture"}:
-            await self.capture_upstream_session(chat_id)
-            return
-        if command in {"/cookie", "/cerez"}:
-            await self.send_cookie(chat_id, text)
-            return
-        if command in {"/cookie!", "/cerez!", "/cookie-force", "/cerezforce"}:
-            await self.send_cookie(chat_id, text, force=True)
-            return
         if text.startswith("/"):
             await self.send_text(chat_id, "Bilinmeyen komut. /help yazın.")
             return
         await self.ask_wrapper(chat_id, text)
 
     async def ping(self, chat_id: int) -> None:
-        """`/ping`: wrapper süreci + son upstream kontrolünü birlikte raporlar.
-
-        `/healthz` upstream'e dokunmaz; süreç ayakta olsa bile oturum ölmüş
-        olabilir. Bu yüzden son keepalive sonucu da yazılır: telefondan tek
-        bakışta "gerçekten çalışıyor mu" sorusu cevaplanır.
-        """
-        lines: list[str] = []
         try:
             response = await self.wrapper.get("/healthz")
         except httpx.HTTPError as exc:
             logger.warning("telegram_wrapper_health_failed", error_type=type(exc).__name__)
-            lines.append("Wrapper health kontrolüne ulaşılamadı.")
-        else:
-            lines.append(
-                f"Wrapper /healthz: HTTP {response.status_code}"
-                + (" (hazır değil)" if response.status_code != 200 else " (çalışıyor)")
-            )
-        # Süreç ayakta olsa da upstream oturumu ölmüş olabilir.
-        lines.append(describe_probe(last_probe()))
-        await self.send_text(chat_id, "\n".join(lines))
-
-    async def session_timeline(self, chat_id: int) -> None:
-        """`/zaman`: oturum olay defterini telefondan okunur biçimde gösterir.
-
-        `/tani` **şu anki ayarı** söyler; bu komut **zaman içinde ne olduğunu**:
-        token kaç kez rotasyona girdi, rotasyon ne zaman durdu, süresi dolmuş
-        görünen bir token'la başarılı istek oldu mu, 401 geldiği anda çerezde
-        taze token var mıydı. "401 bizden mi hedeften mi" sorusunu ayırt eden
-        ölçüm budur (bkz. `docs/SESSION_FORENSICS.md`).
-        """
-        try:
-            response = await self.wrapper.get(
-                "/v1/admin/timeline", params={"limit": 0, "report_events": 12}
-            )
-            payload = response.json()
-        except (httpx.HTTPError, ValueError):
-            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; olay defteri okunamadı.")
-            return
-        if response.status_code != 200 or not isinstance(payload, dict):
-            await self.send_text(
-                chat_id,
-                f"Olay defteri alınamadı (HTTP {response.status_code}). "
-                "API anahtarını kontrol edin.",
-            )
-            return
-        report = payload.get("report")
-        await self.send_text(chat_id, str(report).strip() if report else "Olay defteri boş.")
-
-    async def refresh_token(self, chat_id: int) -> None:
-        """`/token`: erişim token'ını refresh token ile **elle** yeniler.
-
-        Arka plan döngüsü aynı işi kendiliğinden yapar; bu komut "şimdi dene"
-        düğmesidir (token değerleri hiçbir mesaja yazılmaz).
-        """
-        try:
-            response = await self.wrapper.post("/v1/admin/upstream/refresh", json={})
-            payload = response.json()
-        except (httpx.HTTPError, ValueError):
-            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; yenileme denenemedi.")
-            return
-        if not isinstance(payload, dict):
-            await self.send_text(chat_id, f"Beklenmeyen yanıt (HTTP {response.status_code}).")
-            return
-        if payload.get("status") == "refreshed":
-            expires = payload.get("expires_in")
-            detail = (
-                f"≈{int(expires) // 60} dk geçerli"
-                if isinstance(expires, int)
-                else "süre bilgisi yok"
-            )
-            await self.send_text(
-                chat_id,
-                f"✓ Token yenilendi ({detail}). Bir mesaj atarak test edin.",
-            )
+            await self.send_text(chat_id, "Wrapper health kontrolüne ulaşılamadı.")
             return
         await self.send_text(
             chat_id,
-            "⚠ Token yenilenemedi: "
-            + str(payload.get("detail") or f"HTTP {response.status_code}"),
+            f"Wrapper /healthz: HTTP {response.status_code}"
+            + (" (hazır değil)" if response.status_code != 200 else " (çalışıyor)"),
         )
 
-    async def set_refresh_apikey(self, chat_id: int, text: str) -> None:
-        """`/apikey [anahtar]`: Supabase yenileme anon anahtarını ayarlar veya keşfeder."""
-        parts = text.split(maxsplit=1)
-        body = parts[1].strip() if len(parts) > 1 else ""
-        try:
-            response = await self.wrapper.post(
-                "/v1/admin/upstream/apikey", json={"apikey": body}
-            )
-            payload = response.json()
-        except (httpx.HTTPError, ValueError):
-            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; apikey işlemi yapılamadı.")
-            return
-        if not isinstance(payload, dict) or response.status_code != 200:
-            await self.send_text(chat_id, f"Beklenmeyen yanıt (HTTP {response.status_code}).")
-            return
-        status = payload.get("status")
-        if status in {"applied", "discovered"}:
-            label = "kaydedildi" if status == "applied" else "otomatik keşfedildi"
-            lines = [
-                f"✓ Yenileme `apikey` {label} "
-                f"({payload.get('length', 0)} karakter)."
-            ]
-            # Uç nokta yenilemeyi aynı istekte deniyor: kullanıcıya "şimdi
-            # /token deneyin" demek yerine gerçek sonucu söyle.
-            if payload.get("refreshed"):
-                expires = payload.get("expires_in")
-                if isinstance(expires, int) and expires > 0:
-                    lines.append(f"✓ Token yenilendi (~{expires // 60} dk geçerli).")
-                else:
-                    lines.append("✓ Token yenilendi.")
-            else:
-                detail = str(payload.get("refresh_detail") or "").strip()
-                lines.append(
-                    "⚠ Ama token hâlâ yenilenemedi" + (f": {detail}" if detail else ".")
-                )
-                lines.append(
-                    "Yapılacak: Oturum 401'e düşmeden /cookie veya /yenile ile "
-                    "taze çerez gönderin."
-                )
-            await self.send_text(chat_id, "\n".join(lines))
-            return
-        detail = str(payload.get("detail") or "Anon anahtar bulunamadı.")
-        hint = ""
-        scripts = payload.get("scripts_fetched")
-        seen = payload.get("scripts_seen")
-        if isinstance(scripts, int) and isinstance(seen, int) and seen:
-            hint = f" (taranan JS: {scripts}/{seen})"
-        await self.send_text(
-            chat_id,
-            "⚠ " + detail + hint
-            + "\nAnahtarı biliyorsanız /apikey <anahtar> ile doğrudan verin.",
-        )
-
-    async def invalidate_captcha(self, chat_id: int) -> None:
-        """`/invalidate`: captcha önbelleğini + ısınmış tarayıcı sayfasını sıfırla."""
-        try:
-            r = await self.wrapper.post("/v1/admin/recaptcha/invalidate")
-            data = r.json()
-        except httpx.HTTPError as exc:
-            await self.send_text(
-                chat_id,
-                f"⚠ Captcha sıfırlama başarısız: {type(exc).__name__}.",
-            )
-            return
-        await self.send_text(
-            chat_id,
-            f"✅ Captcha önbelleği temizlendi (sağlayıcı: {data.get('provider','?')}). "
-            "Bir sonraki istekte yeni token üretilecek.",
-        )
-
-    async def diagnose(self, chat_id: int) -> None:
-        """`/tani`: telefonda tek mesajda "neyim eksik, ne yapayım".
-
-        `/auth` ucunun gizli değer içermeyen çıktısını okunur bir özete çevirir;
-        Network/DevTools açmadan oturumun neden çalışmadığını söyler.
-        """
-        try:
-            response = await self.wrapper.get("/v1/admin/auth")
-            payload = response.json()
-        except (httpx.HTTPError, ValueError):
-            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; teşhis yapılamadı.")
-            return
-        if response.status_code != 200 or not isinstance(payload, dict):
-            await self.send_text(
-                chat_id,
-                f"Teşhis alınamadı (HTTP {response.status_code}). API anahtarını "
-                "kontrol edin.",
-            )
-            return
-
-        lines = ["🔎 Teşhis"]
-        # Katman kararı en üstte: telefonda tek bakışta "hangi katman" cevabı.
-        verdict_raw = payload.get("verdict")
-        verdict: dict[str, Any] = verdict_raw if isinstance(verdict_raw, dict) else {}
-        if verdict.get("summary"):
-            icon = "✅" if verdict.get("layer") == "ok" else "🎯"
-            lines.append(f"{icon} {verdict.get('layer')} · {verdict.get('summary')}")
-            fixes = [
-                str(item.get("fix"))
-                for item in (verdict.get("checks") or [])
-                if isinstance(item, dict)
-                and item.get("status") in {"warn", "fail"}
-                and item.get("fix")
-            ]
-            for fix in fixes[:2]:
-                lines.append("✎ " + fix)
-        names = [str(item) for item in (payload.get("cookie_names_present") or [])]
-        shown = ", ".join(names[:8]) + (f" (+{len(names) - 8})" if len(names) > 8 else "")
-        lines.append(
-            f"Çerez: {payload.get('cookie_count', 0)} ad"
-            + (f" → {shown}" if shown else " → **hiç yok**")
-        )
-        candidates_raw = payload.get("session_cookie_candidates")
-        candidates: list[Any] = candidates_raw if isinstance(candidates_raw, list) else []
-        session_names = [
-            str(item.get("cookie"))
-            for item in candidates
-            if isinstance(item, dict) and item.get("cookie")
-        ]
-        lines.append(
-            "Oturum adayı çerez: "
-            + (", ".join(session_names[:5]) if session_names else "yok")
-        )
-        token_raw = payload.get("token")
-        token: dict[str, Any] = token_raw if isinstance(token_raw, dict) else {}
-        cookie_token_raw = payload.get("cookie_token")
-        cookie_token: dict[str, Any] = (
-            cookie_token_raw if isinstance(cookie_token_raw, dict) else {}
-        )
-        # Çerezdeki token ile **kullanılan** token ayrı gösterilir: "token yok"
-        # cümlesi, çerezde süresi dolmuş token varken yanıltıcı oluyordu.
-        if cookie_token.get("found"):
-            lines.append("Çerezde token: " + TelegramBot._describe_token(cookie_token))
-        else:
-            lines.append("Çerezde token: **yok** (değer JWT/JSON olarak okunamadı)")
-        if token.get("found"):
-            lines.append("Kullanılan token: " + TelegramBot._describe_token(token))
-        else:
-            lines.append("Kullanılan token: **yok**")
-        read_flag = payload.get("extract_from_cookie_enabled")
-        lines.append("Çerezden token okuma: " + ("açık" if read_flag else "**kapalı**"))
-        refresh = payload.get("refresh_token")
-        if isinstance(refresh, dict):
-            if refresh.get("found"):
-                lines.append(f"Refresh token: var ({refresh.get('length', 0)} karakter)")
-            else:
-                lines.append("Refresh token: **yok**")
-        inspection_raw = payload.get("cookie_inspection")
-        inspection: dict[str, Any] = (
-            inspection_raw if isinstance(inspection_raw, dict) else {}
-        )
-        families_raw = inspection.get("chunked_families")
-        families: dict[str, Any] = families_raw if isinstance(families_raw, dict) else {}
-        if families:
-            summary = ", ".join(
-                f"{name}: {count} parça" for name, count in list(families.items())[:3]
-            )
-            lines.append("Parçalı oturum: " + summary)
-        problems = inspection.get("problems") or []
-        if isinstance(problems, list):
-            for problem in problems[:3]:
-                lines.append("⚠ " + str(problem))
-        captcha_raw = payload.get("recaptcha")
-        captcha: dict[str, Any] = (
-            captcha_raw if isinstance(captcha_raw, dict) else {}
-        )
-        if captcha:
-            provider = str(captcha.get("provider") or "?")
-            site_key = captcha.get("site_key")
-            site_part = (
-                f"{str(site_key)[:6]}…{str(site_key)[-4:]}"
-                if isinstance(site_key, str) and len(site_key) > 12
-                else ("yok" if not site_key else str(site_key))
-            )
-            version = captcha.get("version")
-            lines.append(
-                f"CAPTCHA: {provider} · site key: {site_part}"
-                + (f" · {version}" if version else "")
-                + (
-                    f" · aksiyon: {captcha.get('action')}"
-                    if captcha.get("action")
-                    else ""
-                )
-            )
-            production = captcha.get("production") or {}
-            if isinstance(production, dict) and production:
-                generated = int(production.get("generated") or 0)
-                rejected = int(production.get("rejected") or 0)
-                line = f"CAPTCHA üretimi: {generated} token · {rejected} red"
-                last_error = production.get("last_error")
-                if last_error:
-                    line += f" · son hata: {str(last_error)[:60]}"
-                elif generated == 0:
-                    line += " · henüz token üretilmedi"
-                lines.append(line)
-            hint = captcha.get("hint")
-            if hint:
-                lines.append("⚠ " + str(hint))
-        auto_raw = payload.get("auto_refresh")
-        auto: dict[str, Any] = auto_raw if isinstance(auto_raw, dict) else {}
-        if auto:
-            persistence: list[str] = []
-            if auto.get("state_file_configured"):
-                # Free Render'da yerel dosya ephemeral'dır; "kalıcı disk" gibi
-                # göstermek kullanıcıyı yanıltır. Asıl kalıcı katman Render-env.
-                persistence.append("yerel-dosya")
-            if auto.get("render_sync_configured"):
-                persistence.append("Render-env")
-            persist_suffix = (
-                f" · depolama: {'+'.join(persistence)}"
-                if persistence
-                else ""
-            )
-            lines.append(
-                "Otomatik yenileme: "
-                + ("açık" if auto.get("enabled") else "**kapalı**")
-                + (
-                    " · apikey hazır"
-                    if auto.get("has_api_key")
-                    else " · apikey otomatik keşfedilecek"
-                )
-                + persist_suffix
-            )
-        lines.append(
-            "Authorization başlığı: "
-            + (
-                "gidecek"
-                if payload.get("authorization_header_will_be_sent")
-                else "**gitmeyecek**"
-            )
-        )
-        probe = describe_probe(last_probe())
-        lines.append(f"Son upstream: {probe}")
-        lines.append("→ " + self._diagnose_advice(payload, probe))
-        await self.send_text(chat_id, "\n".join(lines))
-
-    @staticmethod
-    def _describe_token(token: dict[str, Any]) -> str:
-        """Token durumunu tek parça metne çevirir (değer asla yazılmaz)."""
-        if token.get("expired"):
-            return "**süresi dolmuş**" + (" (JWT)" if token.get("is_jwt") else "")
-        remaining = token.get("expires_in_seconds")
-        if isinstance(remaining, int):
-            return f"var (≈{remaining // 60} dk kaldı)"
-        return "var (süre bilgisi yok)"
-
-    @staticmethod
-    def _diagnose_advice(payload: dict[str, Any], probe: str) -> str:
-        """Teşhis çıktısından tek bir sonraki adım seçer."""
-        token_raw = payload.get("token")
-        token: dict[str, Any] = token_raw if isinstance(token_raw, dict) else {}
-        cookie_token_raw = payload.get("cookie_token")
-        cookie_token: dict[str, Any] = (
-            cookie_token_raw if isinstance(cookie_token_raw, dict) else {}
-        )
-        refresh_raw = payload.get("refresh_token")
-        refresh: dict[str, Any] = refresh_raw if isinstance(refresh_raw, dict) else {}
-        count = int(payload.get("cookie_count") or 0)
-        candidates = payload.get("session_cookie_candidates") or []
-        if cookie_token.get("expired") and refresh.get("found"):
-            return (
-                "Erişim token'ı süresi dolmuş ama **refresh token duruyor**: sunucu "
-                "oturumu kendisi yenileyebilir (/token ile şimdi tetikleyin; "
-                "olmazsa taze çerezi /cookie ile gönderin)."
-            )
-        if cookie_token.get("expired"):
-            return (
-                "Çerezdeki token süresi dolmuş, refresh token yok: tarayıcıda "
-                "yeniden giriş → /cookie <çerez>. /yenile bunu çözmez."
-            )
-        if not count:
-            return (
-                "Elde çerez yok. Giriş yapmış tarayıcıda Cookie-Editor → Export → "
-                "Header String → /cookie <çerez>."
-            )
-        if not cookie_token.get("found") and not token.get("found"):
-            if candidates:
-                return (
-                    "Çerez var ama oturum token'ı ayıklanamadı: yukarıdaki parça "
-                    "bütünlüğü uyarıları, hangi oturum ailesinin okunamadığını gösterir."
-                )
-            return (
-                "Çerezlerde oturum izi yok (muhtemelen eksik set). Giriş yapmış "
-                "tarayıcıdan TÜM çerezleri /cookie ile gönderin."
-            )
-        if token.get("expired"):
-            return (
-                "Token süresi dolmuş: tarayıcıda yeniden giriş → /cookie <çerez>. "
-                "/yenile ölü oturumu diriltmez."
-            )
-        if "401" in probe:
-            if cookie_token.get("found") and not token.get("found"):
-                return (
-                    "Çerezdeki access token başarıyla okunabiliyor. Authorization "
-                    "kapalı olduğu için istek cookie-only gidiyor ve "
-                    "upstream onu 401 ile reddediyor."
-                )
-            return (
-                "Etkin kimlik var ama upstream 401 veriyor. Kimliğin bulunması ile "
-                "upstream'in kabul etmesi farklı durumlar; ret nedenini upstream "
-                "cevap gövdesi ve gönderilen istek karşılaştırması göstermeli."
-            )
-        if "409" in probe:
-            return "Kimlik sağlam; 409 damga eskimesi → /yenile."
-        if cookie_token.get("found") and not token.get("found"):
-            return (
-                "Çerezde token okunabiliyor; Authorization kapalı. Tarayıcı cURL'ünde "
-                "de bu başlık yoksa cookie-only yapılandırma normaldir."
-            )
-        return "Kimlik görünüşte sağlam. Test için bir mesaj gönderin."
-
-    async def send_cookie(self, chat_id: int, text: str, *, force: bool = False) -> None:
-        """Yalnızca çerez satırıyla oturumu tazeler (mobilde en kolay yol).
-
-        `force=False` iken çerez önce **uygulanmadan** incelenir: oturum çerezi
-        içermeyen bir set (ör. yalnız `__cf_bm`) çalışan oturumun üzerine
-        yazmasın. Zorlamak için `/cookie! <çerez>`.
-
-        **Parçalı yapıştırma:** Cookie-Editor JSON'u 4-10 KB olabiliyor, Telegram
-        tek mesajda ~4 KB kabul eder. Bu yüzden JSON parçaları sırayla
-        gönderilebilir; birleşim tamamlanınca otomatik uygulanır (`/cookie bitir`
-        ile elle de bitirilebilir, `/cookie iptal` temizler).
-        """
-        parts = text.split(maxsplit=1)
-        body = parts[1].strip() if len(parts) > 1 else ""
-        buffer = self._cookie_buffers.setdefault(chat_id, [])
-        lowered = body.lower()
-        if not body:
-            buffer.clear()
-            await self.send_text(
-                chat_id,
-                "Kullanım: /cookie ad=değer; ad2=değer2\n"
-                "Cookie-Editor → Export → Header String ya da JSON yapıştırın; "
-                "cURL gerekmez.\n"
-                "Uzun JSON'u parça parça gönderebilirsiniz: her parçayı /cookie "
-                "ile başlatın, bitince **/cookie bitir**. Vazgeçmek için "
-                "/cookie iptal.",
-            )
-            return
-        if lowered in {"bitir", "bitti", "tamam"}:
-            if not buffer:
-                await self.send_text(
-                    chat_id,
-                    "Bekleyen parça yok. Çerezi /cookie ile gönderin "
-                    "(uzun JSON ise parçalara bölerek).",
-                )
-                return
-            body = "".join(buffer)
-            buffer.clear()
-        elif lowered in {"iptal", "vazgec", "vazgeç"}:
-            buffer.clear()
-            await self.send_text(chat_id, "Bekleyen çerez parçaları temizlendi.")
-            return
-        else:
-            buffer.append(body)
-            joined = "".join(buffer)
-            if not self._cookie_complete(joined):
-                await self.send_text(
-                    chat_id,
-                    f"Parça alındı ({len(buffer)}). Devam edin; bitince "
-                    "/cookie bitir.",
-                )
-                return
-            body = joined
-            buffer.clear()
-        inspection: dict[str, Any] | None = None
-        if not force:
-            inspection = await self._cookie_precheck(chat_id, body)
-            if inspection is None:
-                return
-
-        try:
-            response = await self.wrapper.post(
-                "/v1/admin/upstream/cookie", json={"cookie": body}
-            )
-        except httpx.HTTPError as exc:
-            logger.warning("telegram_cookie_upload_failed", error_type=type(exc).__name__)
-            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; çerez uygulanmadı.")
-            return
-
-        payload: dict[str, Any] = {}
-        try:
-            payload = response.json()
-        except ValueError:  # pragma: no cover
-            payload = {}
-        if response.status_code != 200:
-            error = payload.get("error") if isinstance(payload, dict) else None
-            detail = (
-                str(error.get("message") or "")
-                if isinstance(error, dict)
-                else f"HTTP {response.status_code}"
-            )
-            await self.send_text(chat_id, "Çerez uygulanamadı: " + detail)
-            return
-        fields = payload.get("fields") if isinstance(payload, dict) else None
-        applied = [str(item) for item in fields] if isinstance(fields, list) else []
-        lines = [f"✓ Çerez uygulandı ({len(applied)} alan)."]
-        if "upstream_access_token" in applied:
-            lines.append("Bearer token da güncellendi.")
-        info = inspection if isinstance(inspection, dict) else {}
-        if info:
-            if info.get("access_token_found"):
-                remaining = info.get("access_token_expires_in_seconds")
-                if isinstance(remaining, int) and remaining > 0:
-                    lines.append(f"Çerezdeki token: ≈{remaining // 60} dk geçerli")
-                elif info.get("access_token_expired"):
-                    lines.append("⚠ Çerezdeki token **süresi dolmuş**")
-                else:
-                    lines.append("Çerezdeki token: var")
-            else:
-                lines.append("⚠ Çerezde okunabilir access_token yok")
-            if info.get("refresh_token_found"):
-                lines.append("Refresh token: var (otomatik yenileme mümkün)")
-            families = info.get("chunked_families")
-            if isinstance(families, dict) and families:
-                shown = ", ".join(f"{k} ({v} parça)" for k, v in families.items())
-                lines.append(f"Parçalı çerez: {shown}")
-            problems = info.get("problems")
-            if isinstance(problems, list):
-                for item in problems[:3]:
-                    lines.append(f"⚠ {item}")
-        lines.append("Şimdi bir mesaj atarak test edin.")
-        await self.send_text(chat_id, "\n".join(lines))
-
-    async def _cookie_precheck(self, chat_id: int, body: str) -> dict[str, Any] | None:
-        """Çerezi uygulamadan incele; uygunsuzsa uyarıp `None` döndürür.
-
-        Dönen değer inceleme sonucudur (uygulanabilir). Ağ hatasında engellemeyiz:
-        karar veremiyorsak kullanıcıyı kilitlemek yanlış olur.
-        """
-        try:
-            response = await self.wrapper.post(
-                "/v1/admin/upstream/cookie?dry_run=true", json={"cookie": body}
-            )
-            payload = response.json()
-        except (httpx.HTTPError, ValueError):
-            return {}
-
-        if response.status_code != 200 or not isinstance(payload, dict):
-            return {}
-
-        names = payload.get("cookie_names") or []
-        shown = ", ".join(str(name) for name in names[:8]) or "(yok)"
-        if payload.get("safe_to_apply"):
-            if payload.get("access_token_found") and payload.get("access_token_expired"):
-                await self.send_text(
-                    chat_id,
-                    "⚠ Çerezdeki token'ın süresi dolmuş görünüyor; yine de "
-                    "uygulanıyor. 401 alırsan tarayıcıda yeniden giriş yapıp "
-                    "taze çerez gönder.",
-                )
-            return payload
-
-        await self.send_text(
-            chat_id,
-            "⛔ Bu çerez uygulanmadı: içinde oturum taşıyan çerez yok "
-            f"(gelenler: {shown}).\n"
-            "Bu hâliyle uygulanırsa **çalışan oturumun üzerine yazılabilir**.\n"
-            "Giriş yapmış tarayıcıdan TÜM çerezleri aktarın (auth/session/token "
-            "adlı çerez mutlaka gelmeli).\n"
-            "Yine de zorlamak isterseniz: /cookie! <çerez>",
-        )
-        return None
-
-    async def capture_upstream_session(self, chat_id: int) -> None:
-        """Sunucudaki Chromium ile taze oturum yakalar (telefonda DevTools gerekmez)."""
-        await self.send_text(chat_id, "Oturum yakalanıyor, bu 10-40 sn sürebilir…")
-        try:
-            response = await self.wrapper.post("/v1/admin/upstream/capture", json={})
-        except httpx.HTTPError as exc:
-            logger.warning("telegram_capture_failed", error_type=type(exc).__name__)
-            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; yakalama yapılmadı.")
-            return
-
-        try:
-            payload = response.json()
-        except ValueError:
-            payload = {}
-        if response.status_code != 200:
-            error = payload.get("error") if isinstance(payload, dict) else None
-            detail = (
-                str(error.get("message") or "")
-                if isinstance(error, dict)
-                else f"HTTP {response.status_code}"
-            )
-            await self.send_text(chat_id, "Yakalama başarısız: " + detail)
-            return
-
-        fields = payload.get("fields") or []
-        lines = [
-            (
-                "⚠ Oturum yakalanamadı: bot doğrulaması."
-                if payload.get("bot_challenge_detected")
-                else (
-                    "✓ Oturum yakalandı."
-                    if payload.get("logged_in")
-                    else "⚠ Oturum yakalanamadı."
-                )
-            ),
-            f"Cookie: {'var' if payload.get('cookie_found') else 'yok'} · "
-            f"Sürüm damgası: {'var' if payload.get('deployment_found') else 'yok'} · "
-            + (
-                "cx: var"
-                if payload.get("cx_found")
-                else "cx: yok (isteğe bağlı)"
-            ),
-            (
-                "Sohbet gönderimi: denendi"
-                if payload.get("triggered_request")
-                else "Sohbet kutusu bulunamadı; istek tetiklenemedi"
-            ),
-            "Sayfa: " + str(payload.get("final_path") or "bilinmiyor"),
-            (
-                "Akış yolu: yakalandı"
-                if payload.get("stream_path_found")
-                else "Akış yolu: yakalanmadı; mevcut yol değişmedi"
-            ),
-        ]
-        injected = payload.get("injected_cookies")
-        if isinstance(injected, int):
-            # "Çerez yüklenmedi" ile "çerez yüklendi ama oturum değil" farkı,
-            # telefondan bakınca görünmeli.
-            injection_error = str(payload.get("cookie_injection_error") or "")
-            if injected:
-                detail = "(eldeki oturum çerezi bağlandı)"
-            elif injection_error == "upstream_cookie_empty":
-                detail = "(UPSTREAM_COOKIE boş)"
-            elif injection_error:
-                detail = f"(yükleme hatası: {injection_error})"
-            else:
-                detail = "(çerez yüklenmedi)"
-            lines.append(f"Tarayıcıya yüklenen çerez: {injected} {detail}")
-        status = payload.get("navigation_status")
-        lines.append(f"Sayfa HTTP: {status or 'bilinmiyor'}")
-        if payload.get("bot_challenge_detected"):
-            lines.append("Bot doğrulaması: algılandı; sohbet sayfası açılmamış olabilir")
-        names = payload.get("cookie_names") or []
-        if names and not payload.get("logged_in"):
-            # Hangi çerezlerin geldiğini göster: "oturum çerezi yok" demek,
-            # eksik çerez setini fark etmenin en hızlı yolu.
-            shown = ", ".join(str(name) for name in names[:8])
-            more = f" (+{len(names) - 8})" if len(names) > 8 else ""
-            lines.append(f"Gelen çerezler: {shown}{more}")
-            if not payload.get("session_cookie_found"):
-                lines.append(
-                    "Oturum çerezi (auth/session/token adlı) gelmedi — giriş "
-                    "yapmış tarayıcıdan TÜM çerezleri gönderin: /cookie <çerez>"
-                )
-        if fields:
-            lines.append("Güncellenen alanlar: " + ", ".join(fields))
-        lines.append(str(payload.get("next") or "Bir mesaj atarak test edin."))
-        await self.send_text(chat_id, "\n".join(lines))
-
-    async def set_upstream_curl(self, chat_id: int, text: str) -> None:
-        """Taze cURL'ü çalışan servise uygular — Render'da yeniden deploy gerekmez.
-
-        Oturum düştüğünde (401 "User not found") veya sürüm damgası eskidiğinde
-        tek gereken şey yeni bir cURL'dir. Kullanım: `/curl <cURL metni>`.
-        Ham cURL hiçbir log/yanıt içine yazılmaz.
-        """
-        parts = text.split(maxsplit=1)
-        raw_body = parts[1] if len(parts) > 1 else ""
-        body = raw_body.strip()
-        lowered = body.lower()
-        buffer = self._curl_buffers.setdefault(chat_id, [])
-        if not body:
-            buffer.clear()
-            self._curl_chunk_mode.add(chat_id)
-            await self.send_text(
-                chat_id,
-                "Kullanım: /curl <cURL>\n"
-                "Uzun cURL için önce bu parametresiz komutla parça modunu açın; "
-                "ardından her parçayı `/curl <parça>` ile gönderin. Tamamını "
-                "gönderince **/curl bitir**, vazgeçmek için **/curl iptal** "
-                "yazın. Parçalar birleştirilmeden servise uygulanmaz.\n"
-                "Tek mesaja sığan cURL'ü doğrudan `/curl <cURL>` ile gönderebilirsiniz.",
-            )
-            return
-        if lowered in {"iptal", "vazgec", "vazgeç"}:
-            buffer.clear()
-            self._curl_chunk_mode.discard(chat_id)
-            await self.send_text(chat_id, "Bekleyen cURL parçaları temizlendi.")
-            return
-        if lowered in {"bitir", "bitti", "tamam"}:
-            if not buffer:
-                await self.send_text(chat_id, "Bekleyen cURL parçası yok.")
-                return
-            body = "".join(buffer)
-            buffer.clear()
-            self._curl_chunk_mode.discard(chat_id)
-        elif chat_id in self._curl_chunk_mode:
-            buffer.append(raw_body)
-            await self.send_text(
-                chat_id,
-                f"cURL parçası alındı ({len(buffer)}). Servise henüz uygulanmadı; "
-                "tamamı bitince /curl bitir yazın.",
-            )
-            return
-        if "curl" not in body.lower():
-            await self.send_text(
-                chat_id,
-                "Gönderilen metin bir cURL gibi görünmüyor. "
-                "Network sekmesinden create-evaluation isteğini "
-                "'Copy as cURL' ile kopyalayın.",
-            )
-            return
-        if len(body) > 30000:
-            await self.send_text(
-                chat_id,
-                f"cURL çok uzun ({len(body)} karakter). Gereksiz başlıkları "
-                "(-H) çıkarıp tekrar deneyin.",
-            )
-            return
-
-        try:
-            response = await self.wrapper.post(
-                "/v1/admin/upstream/curl", json={"curl": body}
-            )
-        except httpx.HTTPError as exc:
-            logger.warning("telegram_curl_upload_failed", error_type=type(exc).__name__)
-            await self.send_text(chat_id, "Wrapper'a ulaşılamadı; cURL uygulanmadı.")
-            return
-
-        if response.status_code != 200:
-            detail = ""
-            try:
-                payload = response.json()
-            except ValueError:
-                payload = {}
-            error = payload.get("error") if isinstance(payload, dict) else None
-            if isinstance(error, dict):
-                detail = str(error.get("message") or "")
-            await self.send_text(
-                chat_id,
-                "cURL uygulanamadı: "
-                + (detail or f"HTTP {response.status_code}")
-                + "\nÖrnek geçerli biçim: /curl curl 'https://...' -H 'cookie: ...'",
-            )
-            return
-
-        payload = {}
-        try:
-            payload = response.json()
-        except ValueError:  # pragma: no cover - sözleşme her zaman JSON
-            payload = {}
-        fields = payload.get("fields") or []
-        accounts = payload.get("accounts_updated") or {}
-        if fields:
-            lines = [
-                f"✓ cURL uygulandı: {len(fields)} alan güncellendi.",
-                "Hesap: " + (", ".join(sorted(accounts)) if accounts else "mevcut hesap"),
-            ]
-        else:
-            lines = [
-                "✓ cURL alındı: çıkarılan ayarlar zaten yüklü; 0 alan değişti.",
-                "Hesap: mevcut kimlik korundu. Aynı cURL'ü tekrar gönderdiyseniz "
-                "bu normaldir; 401 sürüyorsa yeni tarayıcı oturumundan cURL gerekir.",
-            ]
-        if payload.get("upstream_model"):
-            lines.append(f"Upstream model: {payload['upstream_model']}")
-        lines.append(
-            "Değişiklik uygulandı; yerel durum dosyasına ve yapılandırılmışsa "
-            "Render env'e kaydedildi. UPSTREAM_CURL'ü de güncellemeniz önerilir."
-        )
-        warnings = payload.get("warnings") or []
-        if isinstance(warnings, list):
-            for item in warnings[:3]:
-                lines.append(f"⚠ {item}")
-        lines.append("Şimdi bir mesaj atarak test edin.")
-        await self.send_text(chat_id, "\n".join(lines))
-
-    async def ask_wrapper(
-        self, chat_id: int, prompt: str, model: str | None = None
-    ) -> None:
-        """Mesajı wrapper'a non-stream completion olarak sorar.
-
-        `model` verilirse o mod kullanılır (`/web` → `telegram_web_model`,
-        `/gorsel` → `telegram_image_model`); verilmezse `telegram_model` (chat)
-        geçerlidir. Mod seçimi buradan yapılır çünkü wrapper tarafında modu
-        belirleyen tek şey `model` adıdır.
-        """
+    async def ask_wrapper(self, chat_id: int, prompt: str) -> None:
         payload = {
-            "model": (model or self.settings.telegram_model),
+            "model": self.settings.telegram_model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
         }
@@ -1157,21 +268,7 @@ class TelegramBot:
         if not isinstance(content, str):
             await self.send_text(chat_id, "Wrapper metin yerine beklenmeyen içerik döndürdü.")
             return
-        # Görsel modunda wrapper içeriğe `![görsel](<imzalı adres>)` ekler;
-        # Telegram markdown çizmediği için adresler fotoğrafa çevrilir.
-        remaining, image_urls = split_markdown_images(content)
-        failed: list[str] = []
-        for url in image_urls:
-            if not await self.send_photo(chat_id, url):
-                failed.append(url)
-        if failed:
-            # Fotoğraf gönderilemediyse adres metin olarak verilsin: görsel
-            # kaybolmasın, adres ~1 saat geçerli.
-            fallback = "\n".join(f"Görsel (≈1 saat geçerli): {url}" for url in failed)
-            remaining = f"{remaining}\n\n{fallback}" if remaining else fallback
-        if remaining or not image_urls:
-            # İçerik boş ve görsel de yoksa mevcut "(boş yanıt)" mesajı gider.
-            await self.send_text(chat_id, remaining)
+        await self.send_text(chat_id, content)
 
     async def poll_once(self, offset: int | None) -> int | None:
         payload: dict[str, Any] = {
@@ -1183,12 +280,6 @@ class TelegramBot:
         response = await self.telegram.post(
             f"{self.telegram_api_url}/getUpdates", json=payload
         )
-        if response.status_code == 409 and "webhook" in (response.text or "").lower():
-            with contextlib.suppress(Exception):
-                await self.telegram.post(
-                    f"{self.telegram_api_url}/deleteWebhook",
-                    json={"drop_pending_updates": False},
-                )
         if response.status_code >= 400:
             logger.warning("telegram_poll_rejected", status_code=response.status_code)
             raise RuntimeError("Telegram getUpdates rejected")

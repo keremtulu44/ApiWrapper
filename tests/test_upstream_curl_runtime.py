@@ -62,7 +62,6 @@ def test_runtime_curl_replaces_upstream_fields_and_preserves_browser_captcha():
         target_domain="old.test",
         upstream_cookie="old-cookie",
         upstream_access_token="old-token",
-        upstream_refresh_token="stale-refresh",
         upstream_cookie_2="stale-cookie-2",
         upstream_access_token_3="stale-token-3",
         upstream_account_2_name="eski-hesap",
@@ -80,7 +79,6 @@ def test_runtime_curl_replaces_upstream_fields_and_preserves_browser_captcha():
     assert updated.upstream_mode == "direct-battle"
     assert updated.upstream_cookie == "sb-auth-token=test-cookie-secret"
     assert updated.upstream_access_token == ""
-    assert updated.upstream_refresh_token == ""
     assert updated.upstream_auth_from_cookie is False
     assert updated.upstream_user_agent == "RuntimeTest/1.0"
     assert updated.upstream_accept_language == "tr-TR,tr;q=0.9"
@@ -100,15 +98,12 @@ def test_runtime_curl_replaces_upstream_fields_and_preserves_browser_captcha():
 
 def test_runtime_curl_accepts_authorization_only_and_validates_boolean():
     settings = make_settings(
-        upstream_curl=_curl(cookie=None, authorization="Bearer test-access-token"),
-        upstream_cookie="session=previous-account",
-        upstream_refresh_token="previous-account-refresh",
+        upstream_curl=_curl(cookie=None, authorization="Bearer test-access-token")
     )
 
     updated, _ = apply_upstream_curl(settings)
 
     assert updated.upstream_cookie == ""
-    assert updated.upstream_refresh_token == "", "önceki hesabın refresh'i karışmamalı"
     assert updated.upstream_access_token == "test-access-token"
     assert updated.upstream_auth_scheme == "Bearer"
     assert updated.upstream_auth_from_cookie is False
@@ -141,19 +136,10 @@ def test_missing_optional_curl_fields_do_not_reuse_old_custom_values():
 
     updated, _ = apply_upstream_curl(settings)
 
-    # `UPSTREAM_MODE` bilinçli istisnadır (15 Kasım canlı arızası): `mode`
-    # hedefin **zorunlu** alanı. Gövdesinde `mode` olmayan bir cURL uygulandığında
-    # buradaki sıfırlama ayarı "" yapıyor, `to_wire` boş değeri düşürüyor ve hedef
-    # her isteği `400 ZodError · mode Required` ile reddediyordu — sohbet tamamen
-    # kapandı. cURL'de görünmemesi, operatörün değerini silmek için gerekçe değil.
-    assert updated.upstream_mode == "old-mode"
+    assert updated.upstream_mode == ""
     assert updated.upstream_referer_path == "/c/{chat_id}"
     assert updated.upstream_user_agent != "OldAgent/1.0"
-    # `RECAPTCHA_STATIC_TOKEN` bilinçli istisnadır: gövdede captcha alanı yoksa
-    # operatörün elle girdiği statik token korunur. Silinmesi, statik kipte her
-    # isteği `recaptcha_rejected` ile düşürüyordu (canlı arıza). Ölçümde statik
-    # token 2+ saat geçerli; bu hedefte browser sağlayıcı çözüm değil (403 alıyor).
-    assert updated.recaptcha_static_token == "old-captcha"
+    assert updated.recaptcha_static_token == ""
 
 
 def test_app_lifespan_uses_curl_model_id_for_default_max_model():
@@ -168,12 +154,6 @@ def test_app_lifespan_uses_curl_model_id_for_default_max_model():
     with TestClient(app):
         assert app.state.settings.target_domain == "upstream.test"
         assert app.state.registry.resolve(None).id == "max"
-        # cURL'deki modelAId üç modun hepsine işlenir: depoyla gelen
-        # models.yaml ortak kimliği belge düzeyinde taşır, kayıtlar miras alır.
-        # Yalnız varsayılan kayıt güncellenirse web/image bayat id gönderir.
-        registry = app.state.registry
-        for name in ("max", "web", "image"):
-            assert registry.resolve(name).upstream_id == MODEL_ID, name
         assert app.state.registry.resolve(None).upstream_id == MODEL_ID
 
 
@@ -191,110 +171,3 @@ def test_runtime_logs_do_not_contain_raw_curl_secrets(capfd):
     assert "test-cookie-secret" not in output
     assert "short-lived-captcha-token" not in output
     assert "sb-auth-token=test" not in output
-
-
-def test_cookie_only_curl_enables_cookie_token_extraction():
-    """Çerez-only cURL'de oturum JWT'si varsa Authorization çerezden üretilmeli.
-
-    Canlı belirti: `/tani` "Çerezden token okuma: kapalı" diyordu; çerezde taze
-    oturum olmasına rağmen istek Authorization başlığı olmadan gidiyordu.
-    """
-    import base64
-    import json
-
-    head = base64.urlsafe_b64encode(b'{"alg":"ES256"}').decode().rstrip("=")
-    body = base64.urlsafe_b64encode(json.dumps({"exp": 9999999999}).encode()).decode()
-    session = {
-        "access_token": f"{head}.{body.rstrip('=')}.sig",
-        "refresh_token": "rt-cookie-only",
-    }
-    value = "base64-" + base64.b64encode(json.dumps(session).encode()).decode()
-    settings = make_settings(
-        upstream_curl=_curl(cookie=f"arena-auth-prod-v1={value}"),
-        upstream_auth_from_cookie=False,
-    )
-
-    updated, _ = apply_upstream_curl(settings)
-
-    assert updated.upstream_auth_from_cookie is True
-    assert updated.upstream_refresh_token == "rt-cookie-only"
-
-
-def test_cookie_only_curl_leaves_opaque_cookie_untouched():
-    """`session=opaque` gibi JWT olmayan çerezde bayrak açılmamalı."""
-    settings = make_settings(
-        upstream_curl=_curl(cookie="session=opaque-value"),
-        upstream_auth_from_cookie=False,
-    )
-
-    updated, _ = apply_upstream_curl(settings)
-
-    assert updated.upstream_auth_from_cookie is False
-    assert updated.upstream_access_token == ""
-
-
-def test_curl_without_captcha_field_keeps_manually_configured_static_token():
-    """Yeni cURL, elle girilen statik CAPTCHA token'ını silmemeli.
-
-    Canlı belirti: yeni cURL yapıştırıldıktan sonra her istek
-    `recaptcha_rejected` (HTTP 503) dönüyordu; sebep token'ın içe aktarma
-    sırasında boşaltılmasıydı.
-    """
-    settings = make_settings(
-        upstream_curl=_curl(include_captcha=False),
-        recaptcha_provider="static",
-        recaptcha_static_token="manual-static-token",
-    )
-
-    updated, _ = apply_upstream_curl(settings)
-
-    assert updated.recaptcha_provider == "static"
-    assert updated.recaptcha_static_token == "manual-static-token"
-
-
-def test_curl_with_captcha_field_updates_static_token():
-    """cURL gerçekten captcha değeri taşıyorsa token ondan yenilenir."""
-    settings = make_settings(
-        upstream_curl=_curl(include_captcha=True),
-        recaptcha_provider="static",
-        recaptcha_static_token="old-static-token",
-    )
-
-    updated, _ = apply_upstream_curl(settings)
-
-    assert updated.recaptcha_provider == "static"
-    assert updated.recaptcha_static_token == "short-lived-captcha-token"
-
-
-def test_curl_with_captcha_switches_noop_to_static():
-    """noop kipteyken cURL captcha token'ı içeriyorsa static'e dönmeli.
-
-    Canlı arıza: `RECAPTCHA_PROVIDER=noop` iken yeni cURL yapıştırıldığında kod
-    noop'u koruyup token'ı boşaltıyor, böylece her istek boş captcha ile
-    gönderilip `recaptcha_rejected` ile düşüyordu. Kullanıcı cURL'ü kopyaladığında
-    captcha alanı gövde de varsa hedef kesinlikle captcha doğruluyor demektir;
-    noop'tan static'e geçip token'ı kullanmalı.
-    """
-    settings = make_settings(
-        upstream_curl=_curl(include_captcha=True),
-        recaptcha_provider="noop",
-        recaptcha_static_token="",
-    )
-
-    updated, _ = apply_upstream_curl(settings)
-
-    assert updated.recaptcha_provider == "static"
-    assert updated.recaptcha_static_token == "short-lived-captcha-token"
-
-
-def test_curl_with_captcha_preserves_browser_and_external_providers():
-    """browser/external sağlayıcılar korumalır; cURL token'ı onların yerine geçmez."""
-    for provider in ("browser", "external"):
-        settings = make_settings(
-            upstream_curl=_curl(include_captcha=True),
-            recaptcha_provider=provider,
-            recaptcha_static_token="old",
-        )
-        updated, _ = apply_upstream_curl(settings)
-        assert updated.recaptcha_provider == provider
-        assert updated.recaptcha_static_token == ""

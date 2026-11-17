@@ -9,6 +9,47 @@ OpenAI-compatible istemcilerle çalışır.
         ◀──(SSE chat.completion.chunk)──          ◀──(AI SDK data-stream)──
 ```
 
+> ## 🔙 SÜRÜM NOTU — 16/17 Kasım 2026: bu bir **geri dönüş** sürümüdür
+>
+> Bu ağaç **`e1e8d5a`**'ye (14 Kasım 16:42 UTC) geri sarıldı. Gerekçe: kesintisiz
+> **15 saat** çalıştığı ölçülen tek sürüm buydu; sonraki 6 merge (#49–#54) boyunca
+> oturum ömrü 3-4 saate indi.
+>
+> **Aşağıdaki bölümlerin bir kısmı bu sürümde OLMAYAN özellikleri anlatıyor.**
+> Dokümanlar bilerek eksiltilmedi (kayıt değeri taşısınlar diye), o yüzden
+> okurken şu tabloyu kullan:
+>
+> | Aşağıda anlatılan | Bu sürümde |
+> |---|---|
+> | Web arama modu (`model=web`), görsel mod (`model=image`) | ❌ **yok** — kayıt defterinde yalnız `max` var |
+> | `Kaynaklar:` bloğu / `extract_citations` | ❌ yok |
+> | `/zaman`, olay defteri, forensic retry, `identity_forensics` | ❌ yok |
+> | Proje anahtarları (`/v1/admin/keys`), `ADMIN_API_KEYS`, `API_KEY_LABELS` | ❌ yok (admin katmanı bu sürümde hiç yok) |
+> | Çalışma-zamanı durum dosyası + **Render env sync** | ❌ yok — bkz. aşağıdaki işletim kuralı |
+> | Telegram komutları | ⚠️ **33 → 4:** yalnız `/healthz`, `/help`, `/ping`, `/start` |
+> | `docs/` içeriği, CI (`.github/`), Chromium (`browser_login.py`), `Dockerfile` | ✅ aynen korundu |
+>
+> ### ⚠️ Bu sürümün işletim kuralı (kalıcılık katmanı YOK)
+>
+> Render free tier'da kalıcı disk yok ve bu sürüm çerezi **hiçbir yere yazmıyor**.
+> Dönen çerez/token yalnız bellekte yaşar. Ayakta kalmanın tek yolu açılışta
+> `UPSTREAM_CURL`'ün env'de dolu olması:
+>
+> 1. **`UPSTREAM_CURL`** → Render env'inde her zaman taze dursun. Açılışta
+>    `apply_upstream_curl()` uygulanır (`main.py:226`).
+> 2. **`UPSTREAM_MODE=direct-battle`** → Render env'ine **elle gir.** Bu sürümün
+>    `render.yaml`'ında tanımlı değil; boş kalırsa `mode` gövdeden düşer ve
+>    **her istek `400 ZodError · path ["mode"]`** döner.
+> 3. **`UPSTREAM_STREAM_PATH`** → env'de tut. Varsayılan (`post-to-evaluation`)
+>    bayat; 15 Kasım ölçümüne göre canlı uç `create-evaluation`.
+> 4. **Her deploy/restart'tan sonra `/ping` çek.** Çalışmıyorsa `UPSTREAM_CURL`'ü
+>    tazele ve yeniden deploy et. **Telefondan `/curl` YOK** — cURL güncellemek
+>    Render panosu ister.
+> 5. cURL'ü aldıktan sonra **tarayıcıdan çıkış yap** (aşağıdaki 1. kural değişmedi).
+>
+> Tam kayıt, ölçümler, kaldırılanların listesi ve ileri dönüş tarifi:
+> **[`docs/ROLLBACK_2026_11_16.md`](docs/ROLLBACK_2026_11_16.md)**
+
 > ## ⚠️ Önce oku (en sık yapılan 3 hata)
 >
 > **1. Çerezi öldüren şey zaman değil, çakışma.** Çerez **15+ saat** yaşar
@@ -800,6 +841,108 @@ parametrelerin davranışını belirler:
 | 5 | 2-14 Kasım arası değişiklikleri suçlamak | 1 Kasım sürümü **de** aynı `recaptcha validation failed` hatasını veriyor. Sorun kodda değil |
 | 6 | Docker build'inde `playwright install --with-deps` | `libatomic.so.1` eksikliği → **`exit 127`**. Bugünkü Dockerfile kullanılır |
 | 7 | "Token 20 dakikada ölür" bilgisine güvenmek | **Eski/yanlış bilgi.** Ölçüm: reCAPTCHA token 2+ saat, çerez 15+ saat |
+
+---
+
+## Kayıt: web arama modu nasıl kodlanmıştı (bu sürümde **yok**)
+
+> **Durum:** PR #49 (`e498149`, 15 Kasım 15:21 UTC) ile eklendi, **canlıda çalıştı**,
+> 16/17 Kasım geri dönüşünde kaldırıldı. Bu bölüm bilerek silinmedi: hem "böyle
+> kodladık, çalıştı" kaydı olsun, hem ileri dönüşte buradan kurulsun diye.
+> Ayrıntılı sürüm: [`docs/ROLLBACK_2026_11_16.md §7.1`](docs/ROLLBACK_2026_11_16.md).
+
+### Dayandığı ölçüm (15 Kasım)
+
+chat, web arama ve görsel istekleri **aynı uca** (`create-evaluation`), **aynı
+çerez**, **aynı `mode`** (`direct-battle`) ve **aynı `modelAId`** ile gidiyordu.
+Aradaki tek fark gövdedeki **`modality`** ve başlıktaki **`referer`**:
+
+```
+chat   → modality: chat    · referer: cURL'den gelen (UPSTREAM_REFERER_PATH, ör. /c/{chat_id})
+web    → modality: search  · referer: /search/direct
+görsel → modality: image   · referer: /image/direct
+```
+
+Bu yüzden **üç ayrı cURL gerekmiyordu**; tek `UPSTREAM_CURL` üç modu da taşıyordu.
+İstemci modu OpenAI şemasını bozmadan **`model` alanıyla** seçiyordu: `model=web`.
+
+### Kod
+
+**`config/models.yaml`** — `modelAId` belge düzeyinde bir kez yazılır, kayıtlar
+miras alır (tek satır güncellenince üç mod birden tazelenir):
+
+```yaml
+default: max
+upstream_id: 019b24bb-5caf-71c3-b854-37d0c7086f21
+
+models:
+  - id: max
+    owned_by: arena
+    modality: chat
+    # referer_path bilerek YOK — bkz. aşağıdaki "pinleme" kuralı
+    aliases: [max-auto, chat]
+
+  - id: web
+    owned_by: arena
+    modality: search
+    referer_path: /search/direct
+    description: Web arama modu — gövdede modality=search ile çağrılır.
+    aliases: [search, web-search, ara]
+```
+
+**`app/services/model_registry.py`** — `ModelEntry`'ye üç alan:
+
+```python
+modality: str = DEFAULT_MODALITY   # gövdedeki `modality`
+referer_path: str = ""             # boşsa UPSTREAM_REFERER_PATH kullanılır
+listed: bool = True                # False → vitrinden düşer ama çalışmaya devam eder
+```
+
+**`app/upstream/headers.py`** — referer mod başına:
+
+```python
+"referer": settings.referer_url(chat_id, referer_path)
+```
+
+**`app/adapters/openai_to_upstream.py`** — gövdeye yazım:
+
+```python
+modality=resolved_modality,
+referer_path=(referer_path or "").strip(),
+```
+
+**`app/upstream/stream_parser.py`** — kaynaklar:
+
+```python
+_SOURCE_LABEL_KEYS = ("title", "organization", "name", "source", "site", "publisher")
+_SOURCE_URL_KEYS   = ("url", "uri", "link", "href")
+
+extract_citations(data) -> list[Citation]   # görsel ve heartbeat parçaları elenir
+render_sources(citations, heading="Kaynaklar") -> str
+```
+
+Blok **yalnız `modality=search`** yanıtının sonuna ekleniyordu
+(`Kaynaklar:\n- Google\n- YouTube\n`). Sohbet çıktısı **bayt-özdeş** kalıyor, ama
+kaynaklar her modda **sayılıp** `sources_seen` olarak loglanıyordu. Ölçülen gerçek:
+hedef yalnız kaynak **adı** gönderiyordu (alan `organization`); `url` gelirse biçim
+kendiliğinden markdown bağlantısına zenginleşecekti. OpenAI şeması hiç değişmedi.
+
+### Bu işten çıkan iki kural
+
+1. **Kanıtlanmış değeri pinleme, cURL'den gelsin.** Sohbet kaydına
+   `referer_path: /text/direct` yazmak, kayıt düzeyinde env'i ezdiği için
+   **7/24 çalışan sohbeti 403'e düşürdü** (PR #50 bunu geri aldı). Arama ve
+   görsel için elimizde çalışan bir temel yoktu; o yollar doğrudan ölçümden geldi.
+2. **Hedef bir modu reddediyorsa modu silme, vitrinden indir.** Görsel mod
+   `429 {"error":"prompt failed"}` almaya başlayınca `listed: false` yapıldı;
+   `model=image` açıkça istendiğinde ve Telegram `/gorsel` ile çalışmaya devam etti.
+
+### Açık kalan
+
+`a2` kanalında `organization:str(6)|str(7)|str(9)` biçiminde 3-5 parça, `ag`
+kanalında `str(3..10)` biçiminde **22-33 parça** ölçüldü; `ag` **sınıflandırılmadı**.
+Sohbet modunda bile `sources_seen=2` görüldü — yani kaynak üretimi moddan
+bağımsız çalışıyordu, yalnız iletimi moda bağlıydı.
 
 ---
 

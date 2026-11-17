@@ -1,10 +1,10 @@
-# Render Blueprint: tek instance, ücretsiz Docker Web Service.
+# Render Blueprint: tek instance, sleep etmeyen Docker Web Service.
 # Gizli değerler depoya yazılmaz; Blueprint oluşturulurken Render sorar.
 services:
   - type: web
     name: apiwrapper
     runtime: docker
-    plan: free
+    plan: starter
     dockerfilePath: ./Dockerfile
     dockerContext: .
     numInstances: 1
@@ -14,42 +14,19 @@ services:
     envVars:
       - key: API_KEYS
         sync: false
-      # Tüketici (proje) anahtarlarının etiketleri. `POST /v1/admin/keys` hem
-      # API_KEYS hem bu alanı çalışma sırasında Render env'ine yazar; blueprint
-      # bu değerleri **yönetmez** (sync: false), yoksa her deploy üretilmiş
-      # anahtarları ve etiketlerini eski değerine döndürürdü.
-      - key: API_KEY_LABELS
-        sync: false
-      # Free planda kalıcı disk yoktur. Dönen refresh token/çerezlerin restart
-      # sonrası korunması için Render API key'i girin. RENDER_SERVICE_ID,
-      # Render tarafından otomatik sağlanır; ayrıca yazılmaz. Env güncellemesi
-      # deploy tetiklemez ve ek ücretli kaynak oluşturmaz.
-      - key: RENDER_API_KEY
-        sync: false
       # Network'teki tamamlanmış create-evaluation isteğini normal cURL olarak
       # yapıştırın. Domain, yol, mode, cookie/token ve tarayıcı header'ları
       # başlangıçta bundan çıkarılır; ham değer loglanmaz.
       - key: UPSTREAM_CURL
         sync: false
-      # Hedef gövdedeki `mode` alanını **zorunlu** tutuyor: boş/eksik gönderilince
-      # `400 ZodError · path ["mode"] · Required` dönüyor (15 Kasım canlı arızası).
-      # Değer normalde cURL tohumundan çıkarılır; tohumda `mode` yoksa boş kalırdı.
-      # Kod artık boş değerde direct-battle'a düşüyor, ama Free planda kalıcı disk
-      # olmadığı için blueprint'te açıkça tanımlamak en sağlam garantidir.
-      - key: UPSTREAM_MODE
-        value: direct-battle
       - key: LOG_LEVEL
         value: INFO
       - key: LOG_JSON
         value: "true"
       - key: AUTH_DISABLED
         value: "false"
-      # KALICI değer `static`. Sunucudaki Chromium'un ürettiği token hedefte
-      # `403 recaptcha validation failed` alıyor (14 Kasım ölçümü); aynı
-      # çerez/gövde ile gerçek tarayıcıdan alınmış statik token çalışıyor.
-      # `browser` seçilirse token üretimi 20-30 sn sürer ve yine reddedilir.
       - key: RECAPTCHA_PROVIDER
-        value: static
+        value: browser
       # reCAPTCHA site key public'tir; cookie/token değildir.
       - key: RECAPTCHA_SITE_KEY
         value: 6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0
@@ -59,7 +36,3 @@ services:
         value: chat_submit
       - key: RECAPTCHA_BROWSER_TIMEOUT
         value: "45"
-      # KALICI değer `false`. Yenileme ucu Supabase `apikey` istiyor; o anahtar
-      # elde edilemiyor. `true` yapmak denenmeye değer bir yol değildir.
-      - key: UPSTREAM_REFRESH_ENABLED
-        value: "false"

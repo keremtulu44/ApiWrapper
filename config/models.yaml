@@ -1,84 +1,22 @@
 # Model kayıt defteri.
 #
-# id             → istemcinin "model" alanında göndereceği ad (OpenAI tarafı)
-# upstream_id    → upstream gövdesindeki modelAId değeri
-# aliases        → aynı modele işaret eden alternatif adlar (opsiyonel)
-# modality       → gövdedeki `modality` alanı: chat | search | image
-# referer_path   → o modun tarayıcı referer yolu (gövdeyle tutarlı olmalı)
-# listed         → false ise mod `/v1/models` listesinde GÖRÜNMEZ ama çalışmaya
-#                  devam eder (ikincil/deneysel modlar için; bkz. `image` kaydı)
-#
-# MOD MANTIĞI (15 Kasım ölçümü): chat, web arama ve görsel istekleri AYNI uca
-# (`create-evaluation`), AYNI çerez, AYNI `mode` (`direct-battle`) ve AYNI
-# `modelAId` ile gidiyor. Aradaki tek fark gövdedeki `modality` ve başlıktaki
-# `referer`:
-#
-#   chat  → modality: chat   · referer: cURL'den gelen (UPSTREAM_REFERER_PATH)
-#   web   → modality: search · referer: /search/direct
-#   görsel→ modality: image  · referer: /image/direct
-#
-# Sohbet kaydına referer **yazılmaz** (15 Kasım düzeltmesi): operatörün cURL'ü
-# gerçek bir sohbet sayfasından kopyalandığında `extract_referer_path` onu
-# `/c/{chat_id}` şablonuna çevirir ve sohbet o refererla kesintisiz çalışıyordu.
-# Buraya `/text/direct` yazmak kayıt düzeyinde env'i ezdiği için çalışan sohbeti
-# bozdu (403). Kural: **kanıtlanmış değeri pinleme**, cURL'den gelsin. Arama ve
-# görsel için elimizde çalışan bir temel yok; o yollar doğrudan ölçümden geldi.
-#
-# Bu yüzden üç ayrı cURL gerekmez; tek `UPSTREAM_CURL` üç modu da taşır. İstemci
-# modu OpenAI şemasını bozmadan `model` alanıyla seçer: model=web / model=image.
-#
-# modelAId üç modda da aynı olduğu için BELGE DÜZEYİNDE bir kez yazılır ve
-# kayıtlara miras kalır; böylece `scripts/curl_to_env.py` tek satırı güncellediğinde
-# üç mod birden tazelenir. Bir gün modlardan biri farklı bir modelAId isterse o
-# kayda kendi `upstream_id` satırını yaz — kayıt düzeyindeki değer önceliklidir.
+# id           → istemcinin "model" alanında göndereceği ad (OpenAI tarafı)
+# upstream_id  → upstream gövdesindeki modelAId değeri
+# aliases      → aynı modele işaret eden alternatif adlar (opsiyonel)
 #
 # Max seçiliyken alınan art arda yeni sohbet isteklerinde aynı modelAId görüldü.
 # Bu kimlik Max yönlendirmesinin sabit istek değeridir; cevap içinde seçilen gerçek
 # model değişse bile OpenAI tarafındaki istek "max" olarak kalır.
 #
 # Başka bir model eklenecekse gerçek modelAId değeri hedefin ağ trafiğinden alınır.
+# curl_to_env.py bu dosyadaki İLK upstream_id satırını günceller.
 
 default: max
 
-# Üç modun paylaştığı modelAId (kayıtlar bunu miras alır).
-upstream_id: 019b24bb-5caf-71c3-b854-37d0c7086f21
-
 models:
   - id: max
+    upstream_id: 019b24bb-5caf-71c3-b854-37d0c7086f21
     owned_by: arena
-    modality: chat
-    # referer_path bilerek YOK: sohbet, cURL'den içe aktarılan
-    # UPSTREAM_REFERER_PATH değerini kullanır (ör. /c/{chat_id}). Sabitlemek
-    # 7/24 çalışan sohbeti bozdu — bkz. dosya başındaki not.
-    description: Max — upstream tarafında otomatik model seçimi (sohbet modu).
+    description: Max — upstream tarafında otomatik model seçimi.
     aliases:
       - max-auto
-      - chat
-
-  - id: web
-    owned_by: arena
-    modality: search
-    referer_path: /search/direct
-    description: Web arama modu — gövdede modality=search ile çağrılır.
-    aliases:
-      - search
-      - web-search
-      - ara
-
-  # İKİNCİL MOD — vitrin dışında ama silinmedi.
-  # `listed: false` yalnız `GET /v1/models` listesinden düşürür; `model=image`
-  # açıkça istendiğinde mod çözülür ve çalışır (Telegram `/gorsel` de öyle).
-  # Sebep (15 Kasım canlı ölçümü): görsel akışı düzeltildikten sonra upstream bu
-  # modu üç denemede de `429 {"error":"prompt failed"}` ile reddetti — tek
-  # kimlikle görsel üretimi kota/izin tarafında kapalı görünüyor. Sohbet ve web
-  # arama aynı kimlikle çalışmaya devam etti. Durum değişirse `listed: true` yap.
-  - id: image
-    owned_by: arena
-    modality: image
-    referer_path: /image/direct
-    listed: false
-    description: Görsel üretim modu (deneysel) — gövdede modality=image ile çağrılır.
-    aliases:
-      - gorsel
-      - görsel
-      - img

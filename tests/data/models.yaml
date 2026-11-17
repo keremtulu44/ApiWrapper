@@ -5,9 +5,5 @@ models:
     owned_by: test
     aliases:
       - alias-model
-  # `modality`/`referer_path` yazılmayan kayıt eski davranışta kalır: chat +
-  # ayarlardaki UPSTREAM_REFERER_PATH. Testler bu varsayılanı doğrular.
   - id: second-model
     upstream_id: upstream-model-b
-    modality: search
-    referer_path: /search/direct

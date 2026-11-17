@@ -8,7 +8,6 @@ from app.adapters.openai_to_upstream import build_upstream_request, validate_req
 from app.adapters.prompt_builder import build_prompt, collect_attachments
 from app.core.errors import InvalidRequestError, PayloadTooLargeError
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
-from app.schemas.upstream import DEFAULT_UPSTREAM_MODE
 from tests.conftest import make_settings
 
 
@@ -54,62 +53,6 @@ def test_collect_attachments_from_last_user_message():
     ]
     attachments = collect_attachments([msg("user", content)])
     assert len(attachments) == 1
-    assert attachments[0]["contentType"] == "image/jpeg"
-
-
-def test_collect_attachments_preserves_images_from_earlier_turns():
-    """Çok turlu sohbette önceki kullanıcı mesajlarındaki görseller kaybolmamalı."""
-    img1 = [
-        {"type": "text", "text": "ilk görsel"},
-        {"type": "image_url", "image_url": {"url": "https://x.test/first.png"}},
-    ]
-    img2 = [
-        {"type": "text", "text": "ikinci görsel"},
-        {"type": "image_url", "image_url": {"url": "https://x.test/second.jpg"}},
-    ]
-    attachments = collect_attachments(
-        [
-            msg("user", img1),
-            msg("assistant", "İlk görseli gördüm."),
-            msg("user", img2),
-        ]
-    )
-    assert len(attachments) == 2
-    assert attachments[0]["url"] == "https://x.test/first.png"
-    assert attachments[1]["url"] == "https://x.test/second.jpg"
-
-
-def test_collect_attachments_deduplicates_same_url():
-    """Aynı görsel birden çok turda tekrar edilirse mükerrer eklenmez."""
-    content = [
-        {"type": "image_url", "image_url": {"url": "https://x.test/a.png"}},
-    ]
-    attachments = collect_attachments(
-        [
-            msg("user", content),
-            msg("assistant", "?"),
-            msg("user", content),
-        ]
-    )
-    assert len(attachments) == 1
-
-
-def test_attachment_name_extracted_from_url():
-    content = [
-        {"type": "image_url", "image_url": {"url": "https://cdn.test/photos/kedi.jpg?w=800"}},
-    ]
-    attachments = msg("user", content).attachments()
-    assert len(attachments) == 1
-    assert attachments[0]["name"] == "kedi.jpg"
-
-
-def test_attachment_name_from_data_uri():
-    content = [
-        {"type": "image_url", "image_url": {"url": "data:image/jpeg;base64,AAA"}},
-    ]
-    attachments = msg("user", content).attachments()
-    assert len(attachments) == 1
-    assert attachments[0]["name"] == "image-1.jpg"
     assert attachments[0]["contentType"] == "image/jpeg"
 
 
@@ -184,7 +127,6 @@ def test_built_payload_matches_target_wire_format():
         "modelAMessageId",
         "userMessage",
         "modality",
-        "mode",
         "recaptchaV3Token",
     }
     assert wire["id"] == "chat-1"
@@ -194,29 +136,7 @@ def test_built_payload_matches_target_wire_format():
     assert wire["userMessage"]["content"] == "Merhaba"
     assert wire["userMessage"]["experimental_attachments"] == []
     assert wire["userMessage"]["metadata"] == {}
-    # `UPSTREAM_MODE` boşken bile alan gönderilir: hedef `mode`'u zorunlu tutuyor
-    # (400 ZodError · mode Required). Eski davranış alanı düşürüyordu.
-    assert wire["mode"] == "direct-battle"
-
-
-def test_mode_field_is_never_dropped_when_setting_is_empty():
-    """Boş `UPSTREAM_MODE` isteği öldürmez — yedek değer gönderilir.
-
-    15 Kasım canlı arızası: gövdesinde `mode` olmayan bir cURL uygulandığında
-    ayar boşalıyor, `to_wire(exclude_none=True)` alanı düşürüyor ve hedef her
-    isteği `400 · path ["mode"] · Required` ile reddediyordu. Sohbet tamamen
-    kapalıydı.
-    """
-    settings = make_settings(upstream_mode="   ")
-    request = ChatCompletionRequest(model="test-model", messages=[msg("user", "hi")])
-    wire = build_upstream_request(
-        request,
-        settings=settings,
-        upstream_model_id="u1",
-        chat_id="c1",
-        recaptcha_token="",
-    ).payload.to_wire()
-    assert wire["mode"] == DEFAULT_UPSTREAM_MODE
+    assert "mode" not in wire
 
 
 def test_built_payload_includes_mode_when_configured():
