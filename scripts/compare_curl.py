@@ -17,7 +17,6 @@ from urllib.parse import urlsplit
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from app.core.config import Settings  # noqa: E402
-from app.services.model_registry import ModelEntry, ModelRegistry  # noqa: E402
 from app.upstream.curl_import import (  # noqa: E402
     load_body,
     normalize_curl,
@@ -39,28 +38,6 @@ GREEN, RED, YELLOW, DIM, RESET = (
 IGNORED_HEADERS = {"content-length", "host", "connection", "accept-encoding"}
 
 
-def entry_for_modality(settings: Settings, modality: str) -> ModelEntry | None:
-    """Tarayıcının `modality` değerini karşılayan models.yaml kaydını bulur.
-
-    Modality artık model kaydından geliyor; bu yüzden karşılaştırma "bizim
-    gövdemizde modality alanı var mı"dan ibaret olamaz. Alan adı her üç modda da
-    aynı (`modality`), farkı **değeri** belirliyor: chat/search/image. Değere
-    bakmayan bir karşılaştırma, yanlış modla giden isteği yeşil diye geçirir.
-    Kayıt bulunamazsa `None` döner (dosya yoksa da `None`).
-    """
-    wanted = (modality or "").strip().lower()
-    if not wanted:
-        return None
-    try:
-        registry = ModelRegistry.from_file(Path(settings.models_file))
-    except (FileNotFoundError, ValueError):
-        return None
-    for entry in registry.list_models():
-        if entry.modality == wanted:
-            return entry
-    return None
-
-
 def main() -> int:
     if len(sys.argv) < 2:
         print(__doc__)
@@ -72,14 +49,7 @@ def main() -> int:
 
     settings = Settings()
     chat_id = str(ref_body.get("id") or "CHAT_ID")
-    ref_modality = str(ref_body.get("modality") or "").strip()
-    entry = entry_for_modality(settings, ref_modality)
-    # Referer modality'ye bağlıdır (chat → /text/direct, search → /search/direct,
-    # image → /image/direct). Kayıt bulunursa onun yolu kullanılır; bulunamazsa
-    # ayarlardaki UPSTREAM_REFERER_PATH geçerli kalır.
-    ours = build_stream_headers(
-        settings, chat_id, referer_path=entry.referer_path if entry else None
-    )
+    ours = build_stream_headers(settings, chat_id)
     ours = {k.lower(): v for k, v in ours.items()}
     problems = 0
 
@@ -149,95 +119,6 @@ def main() -> int:
             else:
                 print(f"{YELLOW}  FAZLA   {RESET}{field}  <-- tarayıcı göndermiyor")
                 problems += 1
-
-        # --- DEĞER karşılaştırması (yalnız alan adı değil) ---
-        # `modality` ve `mode` üç modda da aynı ADLA gider; yanlış modu ele veren
-        # şey değerleridir. Yalnız ada bakmak chat/search/image farkını "EŞLEŞTİ"
-        # diye yeşil geçiyordu (15 Kasım: görsel isteği chat modunda gidiyordu).
-        if ref_modality:
-            if entry is None:
-                print(
-                    f"{RED}  FARKLI  modality={ref_modality} — models.yaml'da bu modu "
-                    f"taşıyan kayıt yok (veya dosya okunamadı){RESET}"
-                )
-                print(
-                    f"     Bir kayda `modality: {ref_modality}` ve kendi "
-                    "`referer_path` değerini ekle; istemci modu `model` adıyla seçer."
-                )
-                problems += 1
-            else:
-                print(
-                    f"{GREEN}  EŞLEŞTİ modality={ref_modality} → models.yaml kaydı "
-                    f"'{entry.id}' (referer: {entry.referer_path or 'ayarlardan'}){RESET}"
-                )
-        ref_mode = str(ref_body.get("mode") or "").strip()
-        our_mode = settings.upstream_mode.strip()
-        if ref_mode and ref_mode != our_mode:
-            print(f"{RED}  FARKLI  mode{RESET}")
-            print(f"{DIM}      tarayıcı: {ref_mode}{RESET}")
-            print(f"{DIM}      bizim   : {our_mode or '(gönderilmiyor)'}{RESET}")
-            print(f"     .env içine yazın: UPSTREAM_MODE={ref_mode}")
-            problems += 1
-        elif ref_mode:
-            print(f"{GREEN}  EŞLEŞTİ mode={ref_mode}{RESET}")
-
-        # --- modelAId DEĞERİ: mod başına farklı bir model olabilir ---
-        # 15 Kasım canlı ölçümü: görsel isteği 200 + `finish_reason: stop` döndü
-        # ama akışta ne metin ne görsel vardı (content_chars=0, yalnız `a2` atıf
-        # parçaları). İstek kabul edildi, hedef hiçbir şey üretmedi. İlk şüpheli
-        # bu modun **farklı bir modelAId** istemesi. Alan ADI üç modda da aynı
-        # olduğu için ad karşılaştırması bunu asla yakalamaz.
-        ref_model = str(ref_body.get("modelAId") or "").strip()
-        our_model = (entry.upstream_id if entry is not None else "").strip()
-        if entry is not None and ref_model and our_model:
-            if ref_model != our_model:
-                print(f"{RED}  FARKLI  modelAId{RESET}")
-                print(f"{DIM}      tarayıcı: {ref_model}{RESET}")
-                print(f"{DIM}      bizim   : {our_model}{RESET}")
-                print(
-                    f"     config/models.yaml → '{entry.id}' kaydına kendi satırını ekle: "
-                    f"`upstream_id: {ref_model}`"
-                )
-                print(
-                    "     Kayıt düzeyi değer belge düzeyindeki ortak kimliği ezer; "
-                    "diğer modlar etkilenmez."
-                )
-                problems += 1
-            else:
-                print(
-                    f"{GREEN}  EŞLEŞTİ modelAId → '{entry.id}' kaydıyla aynı{RESET}"
-                )
-
-        # --- cx: ölçümde her istekte ve modda farklı; değer loglanmaz ---
-        ref_cx = str(ref_body.get("cx") or "").strip()
-        our_cx = settings.upstream_cx.strip() if settings.upstream_cx_send else ""
-        if ref_cx and not our_cx:
-            print(
-                f"{YELLOW}  EKSİK   cx — tarayıcı {len(ref_cx)} karakter gönderiyor, "
-                f"biz hiç göndermiyoruz{RESET}"
-            )
-            print(
-                "     Değer her istekte değiştiği için sabitlemek önerilmez "
-                "(layer_verdict uyarısı); hedef bu modda cx'i zorunlu tutuyorsa "
-                "mod başına cx alanı gerekir."
-            )
-        elif ref_cx and our_cx and len(ref_cx) != len(our_cx):
-            print(
-                f"{YELLOW}  FARKLI  cx uzunluğu — tarayıcı {len(ref_cx)}, bizim "
-                f"{len(our_cx)} (sabitlenmiş){RESET}"
-            )
-            print(
-                "     cx moda göre değişiyor: bu modun kendi cx'i değilse hedef "
-                "isteği kabul edip boş cevap verebilir."
-            )
-        elif ref_cx and our_cx:
-            print(f"{GREEN}  EŞLEŞTİ cx uzunluğu ({len(ref_cx)}){RESET}")
-        elif our_cx and not ref_cx:
-            print(
-                f"{YELLOW}  FAZLA   cx — tarayıcı göndermiyor, biz {len(our_cx)} "
-                f"karakter gönderiyoruz{RESET}"
-            )
-            problems += 1
 
         captcha_fields = [f for f in expected_fields if "recaptcha" in f.lower()]
         if captcha_fields and captcha_fields[0] != settings.upstream_recaptcha_field:

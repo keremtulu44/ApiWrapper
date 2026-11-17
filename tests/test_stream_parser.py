@@ -6,16 +6,11 @@ import pytest
 
 from app.schemas.upstream import EventType
 from app.upstream.stream_parser import (
-    Citation,
     StreamDecoder,
-    extract_citations,
-    extract_media_parts,
-    media_markdown,
     normalize_finish_reason,
     normalize_usage,
     parse_line,
     parse_stream,
-    render_sources,
 )
 
 
@@ -147,100 +142,3 @@ async def test_parse_stream_end_to_end():
     texts = [e.text for e in events if e.type is EventType.TEXT]
     assert texts == ["Hello", " world"]
     assert events[-1].type is EventType.FINISH
-
-
-# ------------------------------------------------------------------ görsel parçaları
-_MEASURED_IMAGE = {
-    "type": "image",
-    "image": "https://hedef.test/r2/1-uuid.jpeg?X-Amz-Expires=3600&amp;X-Amz-Signature=x",
-    "mimeType": "image/jpeg",
-}
-
-
-def test_extracts_the_measured_image_part():
-    """15 Kasım canlı ölçümü: görsel `a2` kanalında imzalı R2 adresiyle geliyor."""
-    parts = extract_media_parts([{"type": "heartbeat"}, _MEASURED_IMAGE])
-    assert len(parts) == 1
-    # `&amp;` çözülür: kaçışlı sorgu imzayı bozar, adres 403 verir.
-    assert parts[0].url == (
-        "https://hedef.test/r2/1-uuid.jpeg?X-Amz-Expires=3600&X-Amz-Signature=x"
-    )
-    assert parts[0].mime == "image/jpeg"
-    assert parts[0].kind == "image"
-
-
-@pytest.mark.parametrize(
-    "data",
-    [
-        [{"type": "heartbeat"}],                       # adres alanı yok
-        [{"type": "citation", "organization": "X"}],    # sohbet atfı (aynı kod!)
-        {"type": "image"},                              # adres yok
-        [{"type": "image", "image": "   "}],            # boş adres
-        [{"type": "video", "url": "https://h/v.mp4", "mimeType": "video/mp4"}],
-        "düz metin",
-        None,
-        [],
-    ],
-)
-def test_non_image_payloads_yield_nothing(data):
-    assert extract_media_parts(data) == []
-
-
-def test_bare_dict_and_base64_payloads():
-    assert extract_media_parts({"type": "image", "url": "https://h/a.png"})[0].url == (
-        "https://h/a.png"
-    )
-    part = extract_media_parts([{"image": "QUJD", "mimeType": "image/png"}])[0]
-    # Adres değil ham veri → data URI (istemci çizebilsin).
-    assert part.url == "data:image/png;base64,QUJD"
-
-
-def test_duplicate_urls_are_collapsed():
-    parts = extract_media_parts([_MEASURED_IMAGE, dict(_MEASURED_IMAGE)])
-    assert len(parts) == 1
-
-
-def test_media_markdown_is_a_plain_image_tag():
-    part = extract_media_parts([_MEASURED_IMAGE])[0]
-    assert media_markdown(part) == f"\n\n![görsel]({part.url})\n\n"
-
-
-# ---------------------------------------------------------------- kaynak parçaları
-#: 15 Kasım canlı ölçümü: atıf `a2` kanalında `{type, organization}` olarak gelir
-#: (şekil özeti: `list(1)[dict(2){type:str(12),organization:str(6)}]`).
-_MEASURED_CITATION = {"type": "organization", "organization": "Google"}
-
-
-def test_extracts_the_measured_citation_part():
-    parts = extract_citations([{"type": "heartbeat"}, _MEASURED_CITATION])
-    assert parts == [Citation(label="Google")]
-
-
-def test_citation_with_url_renders_as_a_link():
-    parts = extract_citations([{"title": "Haber", "url": "https://kaynak.test/h"}])
-    assert parts == [Citation(label="Haber", url="https://kaynak.test/h")]
-    assert render_sources(parts) == "\n\nKaynaklar:\n- [Haber](https://kaynak.test/h)\n"
-
-
-def test_image_parts_are_not_counted_as_sources():
-    """Aynı parça hem görsel hem kaynak sayılıp iki kez istemciye gitmesin."""
-    assert extract_citations([_MEASURED_IMAGE]) == []
-
-
-def test_duplicate_sources_collapse_and_order_is_kept():
-    parts = extract_citations(
-        [_MEASURED_CITATION, {"organization": "YouTube"}, dict(_MEASURED_CITATION)]
-    )
-    assert [part.label for part in parts] == ["Google", "YouTube"]
-
-
-@pytest.mark.parametrize(
-    "data",
-    [[{"type": "heartbeat"}], "düz metin", None, [], [{"a": 1}], {"type": "image"}],
-)
-def test_payloads_without_source_fields_yield_no_citation(data):
-    assert extract_citations(data) == []
-
-
-def test_render_sources_is_empty_without_citations():
-    assert render_sources([]) == ""

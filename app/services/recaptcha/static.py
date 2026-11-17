@@ -12,10 +12,7 @@ logger = get_logger(__name__)
 class StaticRecaptchaProvider(RecaptchaProvider):
     """`.env` içindeki `RECAPTCHA_STATIC_TOKEN` değerini döndürür.
 
-    Token gerçek bir tarayıcı oturumundan alınır; ölçümde **2+ saat** geçerli
-    kaldı ve hedef token yaşını denetlemiyor (`docs/LESSONS_2026_11_14.md` §2).
-    Reddedilmenin sebebi yaş değil, token'ın yanlış/eksik olması ya da gövdedeki
-    alan adının (`UPSTREAM_RECAPTCHA_FIELD`) tarayıcıyla eşleşmemesidir.
+    Token kısa ömürlüdür (~2 dk); reddedilirse anlamlı bir hata üretilir.
     """
 
     name = "static"
@@ -43,7 +40,7 @@ class StaticRecaptchaProvider(RecaptchaProvider):
 
 
 class NoopRecaptchaProvider(RecaptchaProvider):
-    """CAPTCHA alanını hiç göndermez (hedef doğrulamıyorsa veya testlerde)."""
+    """Boş token gönderir (upstream doğrulamıyorsa veya testlerde)."""
 
     name = "noop"
 
@@ -52,7 +49,3 @@ class NoopRecaptchaProvider(RecaptchaProvider):
 
     async def get_token(self) -> str:
         return ""
-
-    def invalidate(self) -> None:
-        """Token yok; "red" sayacı artmamalı — reddedilecek bir şey yoktu."""
-        return None

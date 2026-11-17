@@ -1,6 +1,26 @@
 # ApiWrapper — Doküman Rehberi
 
-**Buradan başla.** 17 doküman var; burada hangisini ne zaman okuyacağın yazıyor.
+**Buradan başla.** 18 doküman var; burada hangisini ne zaman okuyacağın yazıyor.
+
+> ## 🔙 Bu ağaç bir **geri dönüş** sürümüdür (16/17 Kasım 2026)
+>
+> Kod **`e1e8d5a`**'ye (14 Kasım 16:42 UTC) geri sarıldı — kesintisiz **15 saat**
+> çalıştığı ölçülen tek sürüm. **`docs/` bilerek eksiltilmedi**, o yüzden aşağıdaki
+> dokümanların bir kısmı bu sürümde **olmayan** özellikleri anlatıyor:
+>
+> | Doküman | Bu sürümdeki durumu |
+> |---|---|
+> | `SESSION_FORENSICS.md` | ⚠️ **Tarihsel.** `/zaman`, olay defteri ve forensic retry bu sürümde **yok** |
+> | `CONSUMERS.md` | ⚠️ **Kısmen tarihsel.** Proje anahtarı üretimi (`/v1/admin/keys`) ve `web`/`image` modelleri **yok**; OpenAI şeması, hata kodları ve hız sınırı geçerli |
+> | `ENV_FULL.md`, `env.mobile.example` | ⚠️ Anahtarların bir kısmı bu sürümün `Settings`'inde yok (üreticileri `scripts/env_template.py` de kaldırıldı) |
+> | `ROLLBACK_2026_11_16.md` | ✅ **Bu sürümün kaydı — önce bunu oku** |
+> | Diğerleri | ✅ Geçerli |
+>
+> **Bu sürümün işletim kuralı:** kalıcılık katmanı yok (`state_store.py` bu
+> sürümde mevcut değil). `UPSTREAM_CURL`, `UPSTREAM_MODE=direct-battle` ve
+> `UPSTREAM_STREAM_PATH` **Render env'inde** durmalı, yoksa her restart'ta servis
+> ölür ya da her istek `400 ZodError · path ["mode"]` döner. Ayrıntı:
+> [`ROLLBACK_2026_11_16.md §6`](ROLLBACK_2026_11_16.md).
 
 ---
 
@@ -38,6 +58,7 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 ### Sistemi anlamak
 | Doküman | Ne anlatıyor | Ne zaman |
 |---|---|---|
+| [`ROLLBACK_2026_11_16.md`](ROLLBACK_2026_11_16.md) | **Bu sürümün kaydı.** Neden `e1e8d5a`'ye dönüldü, ölçülen oturum ömürleri, 16 Kasım ölümünün olay defteri, tarayıcı bulgusu, kaldırılanların listesi, işletim kuralı, ileri dönüş tarifi | **Önce bu** |
 | [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) | **Ölçülmüş gerçekler.** Çerez/token ömrü, çakışma modeli, static vs browser | **İlk bu** |
 | [`BIG_PICTURE.md`](BIG_PICTURE.md) | Büyük resim, 3 çerez katmanı | Sistemi kavramak için |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Modül yapısı, istek akışı | Koda girmeden önce |

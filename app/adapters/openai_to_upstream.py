@@ -9,7 +9,7 @@ from app.adapters.prompt_builder import build_prompt, collect_attachments
 from app.core.config import Settings
 from app.core.errors import InvalidRequestError, PayloadTooLargeError
 from app.schemas.openai import ChatCompletionRequest
-from app.schemas.upstream import DEFAULT_UPSTREAM_MODE, UpstreamPayload, UserMessage
+from app.schemas.upstream import UpstreamPayload, UserMessage
 from app.utils.ids import new_message_id
 
 #: Upstream'in desteklemediği ve politikaya tabi parametreler.
@@ -37,10 +37,6 @@ class BuiltRequest:
     user_message_id: str
     model_message_id: str
     upstream_model_id: str
-    #: Model kaydından gelen mod (gövdeye yazıldı; teşhis/log için de taşınır).
-    modality: str = "chat"
-    #: Model kaydına ait referer yolu; boşsa ayarlardaki değer kullanılır.
-    referer_path: str = ""
 
 
 def _requested_unsupported(request: ChatCompletionRequest) -> list[str]:
@@ -92,15 +88,8 @@ def build_upstream_request(
     upstream_model_id: str,
     chat_id: str,
     recaptcha_token: str,
-    modality: str = "chat",
-    referer_path: str = "",
 ) -> BuiltRequest:
-    """OpenAI isteğinden `UpstreamPayload` üretir.
-
-    `modality` model kaydından gelir (`chat` · `search` · `image`). Gövdede
-    **birebir** bu adla gönderilir: hedef modu bu alandan okur, referer yolundan
-    değil. İkisi birlikte tutarlı olmalıdır (örn. `search` + `/search/direct`).
-    """
+    """OpenAI isteğinden `UpstreamPayload` üretir."""
     validate_request(request, settings)
 
     include_hints = settings.unsupported_params == "hint"
@@ -131,9 +120,6 @@ def build_upstream_request(
 
     user_message_id = new_message_id()
     model_message_id = new_message_id()
-    # Normalizasyon tek yerde: hem gövdeye yazılan değer hem teşhis/log için
-    # döndürülen değer aynı olsun (boş/ büyük harfli yazım upstream'e sızmasın).
-    resolved_modality = (modality or "").strip().lower() or "chat"
 
     payload = UpstreamPayload(
         id=chat_id,
@@ -145,15 +131,9 @@ def build_upstream_request(
             experimental_attachments=collect_attachments(request.messages),
             metadata=metadata,
         ),
-        modality=resolved_modality,
+        modality="chat",
         recaptchaV3Token=recaptcha_token,
-        # `mode` hedefin **zorunlu** alanı: boş ayarla alanı düşürmek isteği
-        # `400 ZodError · mode Required` ile öldürüyor (15 Kasım canlı arızası).
-        # Bu yüzden boş değer varsayılana düşer, `None` olarak alanı düşürmez.
-        mode=settings.upstream_mode.strip() or DEFAULT_UPSTREAM_MODE,
-        # `cx` yalnızca açıkça istendiğinde gönderilir; varsayılan davranış
-        # (alan yok) canlıda çalıştığı gözlendi, gereksiz risk alınmaz.
-        cx=(settings.upstream_cx.strip() or None) if settings.upstream_cx_send else None,
+        mode=settings.upstream_mode.strip() or None,
     )
 
     return BuiltRequest(
@@ -163,6 +143,4 @@ def build_upstream_request(
         user_message_id=user_message_id,
         model_message_id=model_message_id,
         upstream_model_id=upstream_model_id,
-        modality=resolved_modality,
-        referer_path=(referer_path or "").strip(),
     )

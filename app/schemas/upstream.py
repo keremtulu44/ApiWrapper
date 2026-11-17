@@ -8,13 +8,6 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
-#: Hedefin gövdede **zorunlu** tuttuğu `mode` alanı için yedek değer.
-#: Ölçüm (15 Kasım, canlı 400 yanıtı): hedef `mode` yoksa isteği reddediyor —
-#: `ZodError: path ["mode"], received "undefined", message "Required"`, izin
-#: verilen değerler `'direct' | 'direct-battle' | 'side-by-side' | 'battle'`.
-#: Tarayıcı yakalamalarında görülen değer `direct-battle`'dır.
-DEFAULT_UPSTREAM_MODE = "direct-battle"
-
 
 class UserMessage(BaseModel):
     """`userMessage` alanı."""
@@ -40,13 +33,9 @@ class UpstreamPayload(BaseModel):
     user_message: UserMessage = Field(alias="userMessage")
     modality: str = "chat"
     recaptcha_v3_token: str = Field(default="", alias="recaptchaV3Token")
-    #: Hedef servisin **zorunlu** tuttuğu `mode`. `UPSTREAM_MODE` ile ezilir;
-    #: boşsa `DEFAULT_UPSTREAM_MODE` gönderilir. Alanı hiç göndermemek ölümcül:
-    #: hedef `400 ZodError · mode Required` döner (15 Kasım canlı ölçümü).
-    mode: str | None = DEFAULT_UPSTREAM_MODE
-    #: Hedef istemci bağlamı. Tarayıcı cURL'ünde gövdede gelir; boşsa alan
-    #: hiç gönderilmez (uydurulmuş bir değer göndermek isteği bozar).
-    cx: str | None = None
+    #: Hedef servisin beklediği `mode`. Tarayıcı cURL'ündeki gerçek değer
+    #: `UPSTREAM_MODE` ile ezilir; boş bırakılırsa bu varsayılan gönderilir.
+    mode: str | None = "direct-battle"
 
     def to_wire(self, recaptcha_field: str = "recaptchaV3Token") -> dict[str, Any]:
         """Upstream'in beklediği alan adlarıyla (camelCase) sözlük döndürür.
@@ -55,16 +44,9 @@ class UpstreamPayload(BaseModel):
         `recaptchaV2Token`); varsayılan alan adı buna göre yeniden adlandırılır.
         """
         data = self.model_dump(by_alias=True, exclude_none=True)
-        # Boş `cx` alanı gönderilmez: tarayıcı isteğinde değer her zaman doluydu.
-        if not str(data.get("cx") or "").strip():
-            data.pop("cx", None)
-        token = str(data.pop("recaptchaV3Token", "") or "").strip()
+        token = data.pop("recaptchaV3Token", "")
         field = (recaptcha_field or "recaptchaV3Token").strip()
-        # Boş token'ı alan olarak göndermek `""` değerini iletir; hedef bunu
-        # "geçersiz token" sayıp `recaptcha_rejected` döndürebiliyor (noop
-        # sağlayıcısında tam olarak bu oluyordu). Alan hiç gönderilmez.
-        if token:
-            data[field] = token
+        data[field] = token
         return data
 
 
