@@ -49,6 +49,11 @@ def make_settings(**overrides) -> Settings:
         "retry_max_delay": 0.02,
         "stream_idle_timeout": 5.0,
         "breaker_enabled": False,
+        # İstek sırası testlerde de AÇIK kalır (bütün testler sıradan geçer);
+        # yalnız istekler arası 5-10 sn'lik bekleme kapatılır. Aralığı sınayan
+        # testler bu iki değeri açıkça verir.
+        "request_gap_min_seconds": 0.0,
+        "request_gap_max_seconds": 0.0,
     }
     base.update(overrides)
     return Settings(_env_file=None, **base)

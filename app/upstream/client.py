@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 
 import httpx
 
@@ -76,6 +78,55 @@ AUTH_MARKERS = (
 )
 
 
+#: Uzun, boşluksuz dizeler (JWT, captcha token'ı, çerez değeri) operatöre giden
+#: özetlerde gizlenir. Hata mesajları kelimelerden oluşur; `snake_case` hata
+#: kodları da korunur (bkz. `_redact`).
+_OPAQUE_RUN = re.compile(r"[A-Za-z0-9_\-.=+/%]{40,}")
+
+
+def _redact(match: re.Match[str]) -> str:
+    run = match.group(0)
+    # Token/JWT/base64: büyük harf, küçük harf ve rakam bir arada bulunur.
+    # `daily_spend_limit_reached_for_account` gibi uzun kodlar bu kalıba uymaz.
+    looks_opaque = (
+        any(ch.isdigit() for ch in run)
+        and any(ch.islower() for ch in run)
+        and any(ch.isupper() for ch in run)
+    )
+    return "[gizlendi]" if looks_opaque else run
+
+
+def error_excerpt(text: str, limit: int = 200) -> str:
+    """Upstream hata gövdesinin tek satırlık, gizli değer taşımayan özeti."""
+    flat = " ".join((text or "").split())
+    flat = _OPAQUE_RUN.sub(_redact, flat)
+    return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
+
+
+@dataclass(frozen=True, slots=True)
+class UpstreamErrorNote:
+    """Upstream'den görülen son hatanın özeti (arıza bildirimleri için).
+
+    Bildirim katmanı "ne oldu" sorusunu etiketle değil upstream'in kendi
+    cevabıyla yanıtlayabilsin diye tutulur: 18 Kasım'da uyarı
+    `wrapper_unreachable` derken gerçek neden logdaki
+    `upstream_http_error status=429 body={"error":"daily spend limit reached"}`
+    satırındaydı.
+    """
+
+    #: `time.monotonic()` ölçeğinde görülme anı.
+    at: float
+    #: HTTP durum kodu; ağ/zaman aşımı hatasında ``None``.
+    status: int | None
+    #: Gövde özeti ya da hata türü (gizli değer içermez).
+    detail: str
+
+    def describe(self) -> str:
+        if self.status is None:
+            return f"cevap yok ({self.detail})" if self.detail else "cevap yok"
+        return f"HTTP {self.status} · {self.detail}" if self.detail else f"HTTP {self.status}"
+
+
 def _is_availability_failure(error: Exception | None) -> bool:
     """Hata gerçekten "upstream erişilemez" sınıfında mı?
 
@@ -108,6 +159,8 @@ class UpstreamClient:
         self._account_clients: dict[int, httpx.AsyncClient] = {}
         # Sürüm damgası (x-deployment-id / x-arena-web-deployment) kanaryası.
         self.deployment = DeploymentIdResolver(settings)
+        #: Upstream'den görülen son hata (bkz. `UpstreamErrorNote`).
+        self.last_error: UpstreamErrorNote | None = None
 
     # ----------------------------------------------------------- lifecycle
     async def startup(self) -> None:
@@ -189,6 +242,14 @@ class UpstreamClient:
         return client
 
     # ------------------------------------------------------------- helpers
+    def _note_error(self, status: int | None, detail: str) -> None:
+        self.last_error = UpstreamErrorNote(time.monotonic(), status, error_excerpt(detail))
+
+    def error_since(self, since: float) -> UpstreamErrorNote | None:
+        """``since`` anından (monotonic) sonra görülen son upstream hatası."""
+        note = self.last_error
+        return note if note is not None and note.at >= since else None
+
     def _log_referer_hint(self) -> None:
         """Sohbet sayfası yolunun gerçek isteklerle uyumlu olduğunu görünür kıl.
 
@@ -472,10 +533,12 @@ class UpstreamClient:
                     )
                 except httpx.TimeoutException as exc:
                     last_error = UpstreamTimeout(f"Upstream timed out: {exc}", url=url)
+                    self._note_error(None, type(exc).__name__)
                 except httpx.HTTPError as exc:
                     last_error = UpstreamNetworkError(
                         f"Upstream network error: {exc}", url=url
                     )
+                    self._note_error(None, type(exc).__name__)
                 else:
                     status = response.status_code
                     if 300 <= status < 400:
@@ -536,6 +599,7 @@ class UpstreamClient:
                         url=url,
                         body=error_body[:300],
                     )
+                    self._note_error(status, error_body)
                     if self._cx_flag(status, error_body):
                         metrics.inc(
                             "apiwrapper_upstream_cx_flags_total",

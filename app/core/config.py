@@ -134,6 +134,11 @@ class Settings(BaseSettings):
             "quota exceeded",
             "rate limit exceeded",
             "too many requests",
+            # 18 Kasım 2026'da gözlenen gövde: `{"error":"daily spend limit reached"}`.
+            # Listede olmadığı için 429 "geçici yavaşlatma" sanılıp iki kez 300 sn
+            # beklenmiş, istek 600 sn asılı kalmıştı (docs/LESSONS §16). Alt dize
+            # eşleşmesi günlük/aylık bütün "spend limit" biçimlerini kapsar.
+            "spend limit reached",
         ]
     )
     #: Yanıtın ilk kaç karakterinde düz metin kota taraması yapılsın. 0 = kapalı.
@@ -226,6 +231,46 @@ class Settings(BaseSettings):
     #: Günde bir kez `stream: true` ile gerçek akış yolunu dene (0 = kapalı).
     #: Non-stream probe, streaming ucundaki bir kırılmayı (SSE/parçalama) görmez.
     upstream_keepalive_stream_smoke_interval_seconds: float = 86400.0
+    #: True ise probe yalnız upstream **boştayken** atılır: son aralıkta gerçek bir
+    #: istek başarıyla cevaplandıysa probe, o istekten bir aralık sonraya ertelenir.
+    #: Gerçek istek oturumu zaten tazelediği için probe kotayı boşuna harcamaz.
+    upstream_keepalive_skip_when_active: bool = True
+
+    # ---------------------------------------------------------- istek sırası
+    #: Upstream'e giden tamamlamalar tek sıraya alınsın mı? Açıkken aynı anda
+    #: yalnız bir istek işlenir (dış sistem, Telegram mesajları ve probe aynı
+    #: sırayı paylaşır); diğerleri geliş sırasıyla bekler.
+    request_queue_enabled: bool = True
+    #: Bir istek bitince sıradaki, bu aralıktan rastgele seçilen süre (saniye)
+    #: kadar bekletilir. Yalnız upstream'e gerçekten gidilmiş isteklerden sonra
+    #: uygulanır; yerelde reddedilen istek sırayı bekletmez.
+    request_gap_min_seconds: float = 5.0
+    request_gap_max_seconds: float = 10.0
+    #: Aynı anda sırada bekleyebilecek en fazla istek (0 = sınırsız). Dolunca
+    #: yeni istek beklemeden reddedilir (`queue_full`).
+    request_queue_max_waiting: int = 20
+    #: Emniyet supabı: bir istek sırayı bundan uzun tutarsa (sızmış slot) sıra
+    #: kendini kurtarır ve bir sonrakine geçer.
+    request_queue_max_hold_seconds: float = 1800.0
+
+    # ----------------------------------------------- /v1/ask (otomatik sistem)
+    #: İlk "bekle" işaretinin gecikmesi (saniye). Cevap bu sürede gelirse hiç
+    #: "bekle" gönderilmez.
+    ask_first_wait_seconds: float = 30.0
+    #: İlk işaretten sonra "bekle" tekrarının aralığı (saniye).
+    ask_wait_interval_seconds: float = 15.0
+    #: **İstek başına** işlem süresi sınırı (saniye). Sıra beklemesi sayılmaz;
+    #: saat, isteğin sırası gelip upstream'e gönderildiği anda başlar.
+    ask_request_timeout_seconds: float = 180.0
+    #: Bir isteğin sırada bekleyebileceği en uzun süre (saniye, 0 = sınırsız).
+    #: Aşılırsa karşı sisteme "problem" denir ki alarm süresiz gecikmesin.
+    ask_max_queue_wait_seconds: float = 600.0
+    #: Ciddi bir arızadan sonra yeni isteklere bu süre boyunca **upstream'e
+    #: gitmeden** "problem" denir; süre dolunca tek istek deneme olarak geçer.
+    #: 0 = bekletme yok (her istek denenir).
+    ask_problem_hold_seconds: float = 300.0
+    #: `/v1/ask` isteğinde `model` verilmezse kullanılacak model (boş = varsayılan).
+    ask_default_model: str = ""
 
     # ---------------------------------------------------------------- alerts
     #: Telegram üzerinden arıza bildirimi. Bot token'ı ve bildirim sohbeti

@@ -8,16 +8,25 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_completion_service
+from app.api.disconnect import cancel_on_disconnect
+from app.api.streaming import GuardedStreamingResponse
 from app.core.errors import InvalidRequestError
 from app.core.logging import get_logger
 from app.core.security import api_key_dependency
 from app.schemas.openai import ChatCompletionRequest, ChatCompletionResponse, ChatMessage
-from app.services.completion_service import CompletionService
+from app.services.completion_service import Admission, CompletionService
+from app.services.request_queue import SOURCE_HEADER, max_queue_wait, source_label
 from app.utils.sse import SSE_HEADERS
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["chat"], dependencies=[Depends(api_key_dependency)])
+
+
+def _admission(request: Request) -> Admission:
+    """İsteğin sıra etiketi: servisin kendi probe'u/botu ya da dış API istemcisi."""
+    label = source_label(request.headers.get(SOURCE_HEADER))
+    return Admission(label=label, max_wait=max_queue_wait(label))
 
 
 @router.post(
@@ -42,15 +51,26 @@ async def create_chat_completion(
             except Exception:  # pragma: no cover - transport'a bağlı
                 return False
 
-        return StreamingResponse(
+        # Korumalı yanıt: akış yarıda biterse üretici kapatılır, sıra bırakılır.
+        return GuardedStreamingResponse(
             service.stream_completion(
-                body, is_disconnected=is_disconnected, client_identity=client_identity
+                body,
+                is_disconnected=is_disconnected,
+                client_identity=client_identity,
+                admission=_admission(request),
             ),
             media_type="text/event-stream",
             headers={k: v for k, v in SSE_HEADERS.items() if k != "Content-Type"},
         )
 
-    return await service.create_completion(body, client_identity=client_identity)
+    # İstekler tek sıradan geçer: cevabı beklemekten vazgeçmiş bir istemcinin
+    # isteği sırada kalmasın, işleniyorsa da sırayı tutmasın.
+    return await cancel_on_disconnect(
+        request,
+        service.create_completion(
+            body, client_identity=client_identity, admission=_admission(request)
+        ),
+    )
 
 
 @router.post(
@@ -88,13 +108,18 @@ async def create_text_completion(
             except Exception:  # pragma: no cover
                 return False
 
-        return StreamingResponse(
-            service.stream_completion(chat_body, is_disconnected=is_disconnected),
+        # Korumalı yanıt: akış yarıda biterse üretici kapatılır, sıra bırakılır.
+        return GuardedStreamingResponse(
+            service.stream_completion(
+                chat_body, is_disconnected=is_disconnected, admission=_admission(request)
+            ),
             media_type="text/event-stream",
             headers={k: v for k, v in SSE_HEADERS.items() if k != "Content-Type"},
         )
 
-    completion = await service.create_completion(chat_body)
+    completion = await cancel_on_disconnect(
+        request, service.create_completion(chat_body, admission=_admission(request))
+    )
     return {
         "id": completion.id.replace("chatcmpl-", "cmpl-"),
         "object": "text_completion",

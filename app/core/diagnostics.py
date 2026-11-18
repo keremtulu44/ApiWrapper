@@ -58,17 +58,23 @@ _HINTS: dict[str, FailureHint] = {
     ),
     "recaptcha_rejected": FailureHint(
         title="Upstream reCAPTCHA token'ını reddetti.",
+        # 17 Kasım 2026 ölçümü (docs/LESSONS §15): aynı statik token saatlerce
+        # çalıştıktan sonra reddedildi ve HİÇBİR ŞEYE DOKUNULMADAN düzeldi. Eski
+        # metin "token'ı yenileyin / browser sağlayıcıya geçin" diyordu; ikisi de
+        # faydasız, taze cURL için tarayıcıya girmek ise çalışan oturumu öldürür.
         action=(
-            "Token üretimini yenileyin (/v1/admin/recaptcha/invalidate); "
-            "browser/external sağlayıcıya geçmek kalıcı çözümdür."
+            "Genelde geçicidir: 2 saate kadar hiçbir şeye dokunmadan bekleyin. "
+            "Taze cURL almak için tarayıcıya giriş yapmayın (çalışan oturumu "
+            "öldürür). 2 saati aşarsa Google ile giriş yapılmış tarayıcıdan taze "
+            "cURL alıp UPSTREAM_CURL'ü güncelleyin."
         ),
-        severity="critical",
     ),
     "upstream_unauthorized": FailureHint(
-        title="Upstream oturum kimliğini reddetti (HTTP 401).",
+        title="Upstream oturum kimliğini reddetti (HTTP 401): oturum düştü.",
         action=(
-            "Cookie/token süresi dolmuş. Tarayıcıdan taze cURL alıp UPSTREAM_CURL'ü "
-            "güncelleyin; /v1/admin/auth?slot=N ile hangi hesabın düştüğünü görün."
+            "Kendiliğinden düzelmez. Google ile giriş yapılmış tarayıcıdan taze "
+            "cURL alıp UPSTREAM_CURL'ü güncelleyin ve yeniden deploy edin; "
+            "/v1/admin/auth?slot=N ile hangi hesabın düştüğünü görün."
         ),
         severity="critical",
     ),
@@ -96,12 +102,50 @@ _HINTS: dict[str, FailureHint] = {
         ),
     ),
     "upstream_timeout": FailureHint(
-        title="Upstream zaman aşımına uğradı.",
+        title="Upstream süresinde cevap vermedi (zaman aşımı).",
         action=(
-            "Akış kurulduktan sonra sessizlik sürdüyse STREAM_IDLE_TIMEOUT, "
-            "toplam süre aşıldıysa TOTAL_REQUEST_TIMEOUT değerini gözden geçirin."
+            "Genelde geçicidir: bekleyin. Live tail'de aynı dakikadaki "
+            "upstream_http_error / upstream_retry satırlarına bakın (ör. 429 "
+            "sonrası tekrar deneme bekleyişi). Sürekli olursa STREAM_IDLE_TIMEOUT, "
+            "TOTAL_REQUEST_TIMEOUT ve ASK_REQUEST_TIMEOUT_SECONDS değerlerini "
+            "gözden geçirin."
         ),
     ),
+    "upstream_rate_limited": FailureHint(
+        title="Upstream isteği geçici olarak yavaşlattı (HTTP 429, kota işareti yok).",
+        action=(
+            "Bekleyin; kendiliğinden açılır. Gövde bir kota mesajı taşıyorsa "
+            "(live tail: upstream_http_error body=...) o ifadeyi "
+            "UPSTREAM_LIMIT_MARKERS listesine ekleyin ki boşuna tekrar denenmesin."
+        ),
+    ),
+    "empty_response": FailureHint(
+        title="Upstream boş cevap döndürdü.",
+        action=(
+            "Tek seferlikse yok sayın. Tekrarlıyorsa akış biçimi değişmiş olabilir: "
+            "live tail'de completion_completed content_chars=0 satırına bakın."
+        ),
+    ),
+    "queue_full": FailureHint(
+        title="İstek sırası dolu: yeni istek beklemeye alınmadı.",
+        action=(
+            "Aynı anda çok istek geldi ya da öndeki istekler yavaş. Sık oluyorsa "
+            "REQUEST_QUEUE_MAX_WAITING değerini artırın veya istekler arası "
+            "beklemeyi (REQUEST_GAP_MIN/MAX_SECONDS) kısaltın."
+        ),
+    ),
+    "queue_timeout": FailureHint(
+        title="İstek sırada izin verilen süreden uzun bekledi.",
+        action=(
+            "Öndeki istekler yavaş ilerliyor. Sık oluyorsa ASK_MAX_QUEUE_WAIT_SECONDS "
+            "değerini artırın ya da istekler arası beklemeyi kısaltın; live "
+            "tail'de request_queued / request_dequeued satırlarına bakın."
+        ),
+    ),
+    # Yalnız BAĞLANTI kurulamadığında üretilir. Cevap gecikmesi (ReadTimeout)
+    # artık `upstream_timeout` olarak bildirilir: 18 Kasım'da 429 tekrar
+    # denemeleri yüzünden geciken probe bu etiketle "PORT doğru mu" diye
+    # bildirilmiş ve yanlış yöne bakılmıştı (docs/LESSONS §16).
     "wrapper_unreachable": FailureHint(
         title="Servis kendi API'sine ulaşamadı (loopback bağlantısı kurulamadı).",
         action=(

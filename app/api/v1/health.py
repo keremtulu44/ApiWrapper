@@ -150,6 +150,7 @@ async def index(settings: Settings = Depends(get_settings_dep)) -> dict[str, Any
         "endpoints": [
             "/v1/chat/completions",
             "/v1/completions",
+            "/v1/ask",
             "/v1/models",
             "/health",
             "/readyz",

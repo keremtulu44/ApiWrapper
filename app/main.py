@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from app.api.v1 import admin, chat, health, models
+from app.api.v1 import admin, ask, chat, health, models
 from app.core.config import Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
@@ -27,11 +27,14 @@ from app.services.completion_service import CompletionService
 from app.services.keepalive import run_upstream_keepalive
 from app.services.model_registry import ModelEntry, ModelRegistry
 from app.services.recaptcha import create_recaptcha_provider
+from app.services.request_queue import RequestQueue
 from app.services.session_manager import SessionManager
+from app.services.upstream_health import UpstreamHealth
 from app.telegram.bot import TelegramSettings, run_from_settings
 from app.upstream.browser_login import SessionKeeper, login_configured, run_session_keeper
 from app.upstream.client import UpstreamClient
 from app.upstream.curl_runtime import apply_upstream_curl
+from app.utils.tasks import TaskRegistry
 
 logger = get_logger(__name__)
 
@@ -40,6 +43,7 @@ OpenAI uyumlu bir REST cephesi üzerinden harici bir Web LLM servisine erişim.
 
 * `POST /v1/chat/completions` — streaming (SSE) ve non-streaming
 * `POST /v1/completions` — eski metin tamamlama biçimi
+* `POST /v1/ask` — otomatik sistemler için: `wait` / `done` / `problem` satırları
 * `GET  /v1/models` — yapılandırılmış modeller
 * `GET  /health`, `GET /metrics` — işletim uç noktaları
 """
@@ -138,12 +142,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         entry.upstream_id = model_id
         logger.info("upstream_curl_model_loaded", model=entry.id)
     accounts = build_account_pool(settings)
+    # Bütün tamamlamalar tek sıradan geçer; sonuçları tek sağlık kaydına işlenir.
+    queue = RequestQueue.from_settings(settings)
+    upstream_health = UpstreamHealth(settings.ask_problem_hold_seconds)
+    # Tek bildirimci: probe ve `/v1/ask` aynı arıza kaydını paylaşır ki aynı
+    # arıza iki kaynaktan iki ayrı mesaj üretmesin.
+    alerter = build_alerter(settings)
+    tasks = TaskRegistry()
 
     app.state.upstream = upstream
     app.state.recaptcha = recaptcha
     app.state.sessions = sessions
     app.state.registry = registry
     app.state.accounts = accounts
+    app.state.queue = queue
+    app.state.upstream_health = upstream_health
+    app.state.alerter = alerter
+    app.state.tasks = tasks
     app.state.completion_service = CompletionService(
         settings=settings,
         upstream=upstream,
@@ -151,6 +166,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         sessions=sessions,
         recaptcha=recaptcha,
         accounts=accounts,
+        queue=queue,
+        health=upstream_health,
     )
 
     telegram_task: asyncio.Task[None] | None = None
@@ -183,7 +200,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     if settings.upstream_keepalive_interval_seconds > 0:
         # Aynı görev hem canlılık denemesi hem teşhis/bildirim kaynağıdır.
         keepalive_task = asyncio.create_task(
-            run_upstream_keepalive(settings, alerter=build_alerter(settings)),
+            run_upstream_keepalive(
+                settings, alerter=alerter, health=upstream_health, queue=queue
+            ),
             name="upstream-keepalive",
         )
 
@@ -212,6 +231,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             telegram_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await telegram_task
+        # Süren `/v1/ask` işleri ve gönderilmekte olan bildirimler.
+        await tasks.shutdown()
         with contextlib.suppress(Exception):
             await recaptcha.shutdown()
         with contextlib.suppress(Exception):
@@ -258,6 +279,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(chat.router, prefix="/v1")
+    app.include_router(ask.router, prefix="/v1")
     app.include_router(models.router, prefix="/v1")
     app.include_router(admin.router, prefix="/v1")
     # OpenAI SDK `base_url` bazen `/v1` olmadan verilir; aksi halde /chat/completions 404 olur.

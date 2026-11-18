@@ -57,7 +57,9 @@ async def test_keepalive_posts_short_nonstream_completion_to_loopback(monkeypatc
     assert calls
     request = calls[0]
     assert request["url"] == "/v1/chat/completions"
-    assert request["headers"] == {"Authorization": "Bearer sk-test-key"}
+    assert request["headers"]["Authorization"] == "Bearer sk-test-key"
+    # Probe, istek sırasında tanınabilsin diye kaynağını bildirir.
+    assert request["headers"]["x-apiwrapper-source"] == "keepalive"
     assert request["json"]["model"] == "max"
     assert request["json"]["stream"] is False
     assert request["json"]["messages"][0]["role"] == "user"
@@ -68,9 +70,12 @@ def test_keepalive_starts_and_stops_with_web_service(monkeypatch):
     stopped = threading.Event()
     seen: dict[str, float] = {}
 
-    async def fake_run(settings, alerter=None):
+    async def fake_run(settings, alerter=None, **wiring):
         seen["interval"] = settings.upstream_keepalive_interval_seconds
         seen["alerter"] = 1.0 if alerter is not None else 0.0
+        # Probe, servisle aynı sırayı ve sağlık kaydını paylaşmalı.
+        seen["shared_queue"] = 1.0 if wiring["queue"] is app.state.queue else 0.0
+        seen["shared_health"] = 1.0 if wiring["health"] is app.state.upstream_health else 0.0
         started.set()
         try:
             await asyncio.Future()
@@ -85,3 +90,5 @@ def test_keepalive_starts_and_stops_with_web_service(monkeypatch):
         assert client.get("/healthz").status_code == 200
     assert stopped.wait(2)
     assert seen["interval"] == 10800
+    assert seen["shared_queue"] == 1.0
+    assert seen["shared_health"] == 1.0

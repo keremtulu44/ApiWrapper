@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import time
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable, Coroutine
+from dataclasses import dataclass
+from typing import Any, TypeVar
 
 from app.adapters.openai_to_upstream import build_upstream_request, validate_request
 from app.adapters.prompt_builder import build_prompt
@@ -19,6 +22,8 @@ from app.adapters.upstream_to_openai import (
 from app.core.config import Settings
 from app.core.errors import (
     APIWrapperError,
+    QueueFullError,
+    QueueTimeoutError,
     RecaptchaError,
     UpstreamError,
     UpstreamQuotaError,
@@ -32,7 +37,9 @@ from app.schemas.upstream import EventType, StreamEvent
 from app.services.account import Account, AccountPool
 from app.services.model_registry import ModelRegistry
 from app.services.recaptcha.base import RecaptchaProvider
+from app.services.request_queue import QueueFull, QueueTimeout, RequestQueue, Ticket
 from app.services.session_manager import SessionManager
+from app.services.upstream_health import UpstreamHealth
 from app.upstream.client import UpstreamClient
 from app.upstream.exceptions import (
     CircuitOpen,
@@ -49,9 +56,54 @@ from app.upstream.quota import QuotaTextScanner, find_quota_marker, quota_error_
 from app.upstream.stream_parser import parse_stream
 from app.utils.ids import new_completion_id, now_ts
 from app.utils.sse import sse_done, sse_event
+from app.utils.text import SurrogateJoiner, repair_surrogates
 from app.utils.tokens import count_tokens, tiktoken_available
 
 logger = get_logger(__name__)
+
+T = TypeVar("T")
+
+#: Upstream hakkında bir şey söylemeyen (wrapper'ın kendi) hata kodları.
+_LOCAL_ERROR_CODES = frozenset({"queue_full", "queue_timeout", "client_closed_request"})
+
+
+@dataclass(slots=True)
+class Admission:
+    """Bir isteğin sıraya giriş koşulları ve (çıkışta) ölçülen süreleri."""
+
+    #: Loglarda ve yönetim ucunda görünen kaynak ("api", "ask", "keepalive", "telegram").
+    label: str = "api"
+    #: Sırada en fazla bekleme (saniye). ``None``/0 = sınırsız.
+    max_wait: float | None = None
+    #: Sıra geldikten **sonraki** işlem süresi sınırı (saniye). ``None``/0 = yalnız
+    #: upstream toplam sınırı (`TOTAL_REQUEST_TIMEOUT`) geçerli.
+    deadline: float | None = None
+    #: True dönerse istek sıradan çıkar (`QueueAbandoned`); örn. arıza öğrenildi.
+    should_leave: Callable[[], bool] | None = None
+    #: Servis doldurur: sırada (aralık dahil) beklenen süre.
+    waited: float = 0.0
+    #: Servis doldurur: işlemin başladığı an (`time.monotonic()`); 0 = hiç başlamadı.
+    started_at: float = 0.0
+    #: Servis doldurur: işlemde geçen süre.
+    duration: float = 0.0
+
+
+def _retry_after_seconds(error: APIWrapperError) -> float | None:
+    """Hatanın `Retry-After` başlığını saniyeye çevirir (yoksa ``None``)."""
+    raw = (error.headers or {}).get("retry-after")
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return None
+
+
+def _retrieve_exception(task: asyncio.Future[Any]) -> None:
+    """İptal edilip beklenmeyen görevin istisnasını "alındı" say (log gürültüsü olmasın)."""
+    if not task.cancelled():
+        task.exception()
+
 
 #: İstemciye içerik taşıyan olay türleri. Akış yolunda istemciye giden tek şey
 #: `EventType.TEXT` delta'sıdır (`make_content_chunk`); `REASONING`, `DATA`,
@@ -132,6 +184,8 @@ class CompletionService:
         sessions: SessionManager,
         recaptcha: RecaptchaProvider,
         accounts: AccountPool | None = None,
+        queue: RequestQueue | None = None,
+        health: UpstreamHealth | None = None,
     ) -> None:
         self.settings = settings
         self.upstream = upstream
@@ -139,6 +193,14 @@ class CompletionService:
         self.sessions = sessions
         self.recaptcha = recaptcha
         self.accounts = accounts if accounts is not None else AccountPool(settings)
+        #: Bütün tamamlamaların geçtiği tek sıra (bkz. `RequestQueue`).
+        self.queue = queue if queue is not None else RequestQueue.from_settings(settings)
+        #: Tamamlama sonuçlarının bildirildiği sağlık kaydı (bkz. `UpstreamHealth`).
+        self.health = (
+            health
+            if health is not None
+            else UpstreamHealth(settings.ask_problem_hold_seconds)
+        )
 
     # ------------------------------------------------------------ helpers
     @property
@@ -234,6 +296,78 @@ class CompletionService:
             return UpstreamError(str(exc))
         return UpstreamError(f"Unexpected upstream failure: {exc}")
 
+    # ------------------------------------------------------ sıra ve sonuç
+    async def _admit(self, admission: Admission) -> Ticket:
+        """İsteği sıraya alır; sırası (ve istekler arası bekleme) gelince döner.
+
+        Sıra hataları API hatasına çevrilir. `should_leave` ile ayrılan istek
+        `QueueAbandoned` olarak çağırana aynen ulaşır (koşulu o verdi).
+        """
+        try:
+            ticket = await self.queue.acquire(
+                admission.label,
+                max_wait=admission.max_wait or None,
+                should_leave=admission.should_leave,
+            )
+        except QueueFull as exc:
+            raise QueueFullError(
+                f"The request queue is full ({exc.waiting} requests waiting). "
+                "Retry shortly.",
+                headers={"retry-after": "30"},
+            ) from exc
+        except QueueTimeout as exc:
+            admission.waited = exc.waited
+            raise QueueTimeoutError(
+                f"The request waited {int(exc.waited)}s in the queue without being served."
+            ) from exc
+        admission.waited = ticket.waited
+        admission.started_at = time.monotonic()
+        return ticket
+
+    @staticmethod
+    async def _within_deadline(work: Coroutine[Any, Any, T], deadline: float | None) -> T:
+        """İşi ``deadline`` saniyeyle sınırlar; dolunca iptal edip 504 fırlatır.
+
+        İş ayrı bir görevde koşar: upstream istemcisinin kendi toplam süre sınırı
+        (`_total_deadline`) "geçerli görevi" iptal ederek çalışır; iki sınırın
+        aynı görevi iptal etmesi Python sürümüne göre farklı davranır.
+        """
+        if deadline is None or deadline <= 0:
+            return await work
+        task = asyncio.ensure_future(work)
+        task.add_done_callback(_retrieve_exception)
+        try:
+            done, _ = await asyncio.wait({task}, timeout=deadline)
+        except asyncio.CancelledError:
+            task.cancel()
+            raise
+        if not done:
+            task.cancel()
+            # Upstream bağlantısı kapanana dek bekle: sıra, iş gerçekten bitmeden
+            # bir sonraki isteğe verilmesin.
+            await asyncio.gather(task, return_exceptions=True)
+            raise UpstreamTimeoutError(
+                f"The request was not answered within {deadline:g}s (request deadline)."
+            )
+        return task.result()
+
+    def _record_outcome(self, error: Exception | None) -> None:
+        """Tamamlamanın sonucunu sağlık kaydına bildirir.
+
+        İsteğe özgü hatalar (geçersiz gövde, bilinmeyen model) ve wrapper'ın kendi
+        yük sınırları upstream hakkında bir şey söylemez; kayda geçmez.
+        """
+        if error is None:
+            self.health.record_success()
+            return
+        if not isinstance(error, APIWrapperError):
+            return
+        if error.err_type == "invalid_request_error" or error.code in _LOCAL_ERROR_CODES:
+            return
+        self.health.record_failure(
+            error.code or f"http_{error.status_code}", _retry_after_seconds(error)
+        )
+
     def _new_quota_scanner(self) -> QuotaTextScanner:
         """Düz metin kota taraması için yeni bir tarayıcı üretir."""
         return QuotaTextScanner(
@@ -316,6 +450,7 @@ class CompletionService:
         self,
         request: ChatCompletionRequest,
         client_identity: str | None = None,
+        ticket: Ticket | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Upstream olay akışı.
 
@@ -368,6 +503,10 @@ class CompletionService:
                 prompt_chars=len(built.prompt),
                 url=request_settings.stream_url(built.chat_id),
             )
+            if ticket is not None:
+                # Upstream'e gerçekten gidiliyor: bu istekten sonra sıradaki,
+                # istekler arası bekleme kadar bekletilecek.
+                ticket.touched = True
             try:
                 async with self.upstream.stream_completion(
                     built.chat_id,
@@ -461,9 +600,42 @@ class CompletionService:
 
     # --------------------------------------------------------- non-stream
     async def create_completion(
-        self, request: ChatCompletionRequest, client_identity: str | None = None
+        self,
+        request: ChatCompletionRequest,
+        client_identity: str | None = None,
+        admission: Admission | None = None,
     ) -> ChatCompletionResponse:
-        """Tam yanıtı biriktirip tek seferde döndürür."""
+        """Tam yanıtı biriktirip tek seferde döndürür.
+
+        İstek önce tek sıraya girer; sırası gelince (ve bir önceki istekle araya
+        rastgele bekleme konduktan sonra) işlenir. Sonuç sağlık kaydına bildirilir.
+        """
+        admission = admission if admission is not None else Admission()
+        # Geçersiz istek sıraya hiç girmesin: ne sırayı ne aralığı harcasın.
+        self.registry.resolve(request.model)
+        validate_request(request, self.settings)
+        ticket = await self._admit(admission)
+        try:
+            response = await self._within_deadline(
+                self._create_completion(request, client_identity, ticket),
+                admission.deadline,
+            )
+        except Exception as exc:
+            self._record_outcome(exc)
+            raise
+        finally:
+            admission.duration = max(0.0, time.monotonic() - admission.started_at)
+            self.queue.release(ticket)
+        self._record_outcome(None)
+        return response
+
+    async def _create_completion(
+        self,
+        request: ChatCompletionRequest,
+        client_identity: str | None = None,
+        ticket: Ticket | None = None,
+    ) -> ChatCompletionResponse:
+        """Sırası gelmiş isteği upstream'e taşır ve yanıtı biriktirir."""
         started = time.monotonic()
         completion_id = new_completion_id()
         entry = self.registry.resolve(request.model)
@@ -478,7 +650,9 @@ class CompletionService:
         metrics.inc("apiwrapper_requests_total", labels={"endpoint": "completions",
                                                           "stream": "false"})
         try:
-            async for event in self._events(request, client_identity=client_identity):
+            async for event in self._events(
+                request, client_identity=client_identity, ticket=ticket
+            ):
                 if event.type is EventType.ERROR:
                     # Kota işaretleri `_events` içinde yakalanıp devir denenir;
                     # buraya ulaşan hata olayı gerçek bir upstream hatasıdır.
@@ -507,7 +681,9 @@ class CompletionService:
         tail = stopper.flush()
         if tail:
             parts.append(tail)
-        content = "".join(parts)
+        # İki parçaya bölünmüş emoji (tek başına vekil) UTF-8'e çevrilemez ve
+        # yanıtı HTTP 500'e düşürürdü; yarımlar burada birleştirilir.
+        content = repair_surrogates("".join(parts))
 
         prompt_tokens = count_tokens(self._prompt_preview(request))
         completion_tokens = count_tokens(content)
@@ -547,13 +723,23 @@ class CompletionService:
         request: ChatCompletionRequest,
         is_disconnected=None,
         client_identity: str | None = None,
+        admission: Admission | None = None,
     ) -> AsyncIterator[str]:
-        """SSE gövdesini parça parça üretir. `[DONE]` her koşulda gönderilir."""
+        """SSE gövdesini parça parça üretir. `[DONE]` her koşulda gönderilir.
+
+        Akış da tek sıraya girer: rol parçası hemen gönderilir, upstream isteği
+        sırası gelince başlar ve sıra akış bitene dek tutulur.
+        """
+        admission = admission if admission is not None else Admission()
+        ticket: Ticket | None = None
+        events: AsyncIterator[StreamEvent] | None = None
         started = time.monotonic()
         completion_id = new_completion_id()
         entry = self.registry.resolve(request.model)
         created = now_ts()
         stopper = StopSequenceTracker(request.stop_sequences())
+        # İki parçaya bölünmüş emoji yarımlarını birleştirir (bkz. `app/utils/text.py`).
+        joiner = SurrogateJoiner()
 
         finish_reason = "stop"
         reported_usage: dict[str, int] = {}
@@ -571,7 +757,11 @@ class CompletionService:
             yield sse_event(_dump(make_role_chunk(completion_id, entry.id, created)))
 
             try:
-                async for event in self._events(request, client_identity=client_identity):
+                # Geçersiz istek sırayı beklemeden reddedilsin.
+                validate_request(request, self.settings)
+                ticket = await self._admit(admission)
+                events = self._events(request, client_identity=client_identity, ticket=ticket)
+                async for event in events:
                     if is_disconnected is not None and await is_disconnected():
                         logger.info(
                             "client_disconnected",
@@ -595,7 +785,7 @@ class CompletionService:
                                 "apiwrapper_time_to_first_token_seconds",
                                 first_token_at - started,
                             )
-                        emitted = stopper.process(event.text)
+                        emitted = joiner.feed(stopper.process(event.text))
                         if emitted:
                             completion_text.append(emitted)
                             scanner.disable()
@@ -615,7 +805,7 @@ class CompletionService:
                         if event.usage:
                             reported_usage.update(event.usage)
 
-                tail = stopper.flush()
+                tail = joiner.feed(stopper.flush()) + joiner.flush()
                 if tail:
                     completion_text.append(tail)
                     yield sse_event(
@@ -624,6 +814,7 @@ class CompletionService:
 
             except Exception as exc:
                 api_error = self._translate(exc)
+                self._record_outcome(api_error)
                 logger.warning(
                     "stream_failed",
                     completion_id=completion_id,
@@ -645,6 +836,7 @@ class CompletionService:
                 stream_failed = True
 
             if not stream_failed:
+                self._record_outcome(None)
                 yield sse_event(
                     _dump(
                         make_finish_chunk(completion_id, entry.id, created, finish_reason)
@@ -691,12 +883,22 @@ class CompletionService:
             # `[DONE]` iptal edilmiş bir bağlantıya zaten yazılamaz.
             raise
         finally:
-            metrics.inc("apiwrapper_active_streams", -1.0)
-            metrics.observe(
-                "apiwrapper_request_duration_seconds",
-                time.monotonic() - started,
-                {"endpoint": "completions"},
-            )
+            try:
+                # Yarıda bırakılan upstream akışını (bağlantı, eşzamanlılık izni,
+                # süre sayacı) çöp toplayıcıya bırakmadan kapat. Akış zaten
+                # bittiyse bu çağrı hiçbir şey yapmaz.
+                if events is not None:
+                    with contextlib.suppress(Exception):
+                        await events.aclose()  # type: ignore[attr-defined]
+            finally:
+                # Sıra her çıkış yolunda bırakılır (bitti, hata, istemci koptu, iptal).
+                self.queue.release(ticket)
+                metrics.inc("apiwrapper_active_streams", -1.0)
+                metrics.observe(
+                    "apiwrapper_request_duration_seconds",
+                    time.monotonic() - started,
+                    {"endpoint": "completions"},
+                )
 
         # `[DONE]` başarı ve hata yollarında, `finally` dışında gönderilir;
         # istemciler bunun varlığına güvenir.

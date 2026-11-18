@@ -137,6 +137,46 @@ async def reset_breaker(upstream: UpstreamClient = Depends(get_upstream)) -> dic
     return {"status": "closed"}
 
 
+@router.get("/queue", summary="Request queue, upstream health and /v1/ask settings")
+async def queue_status(request: Request) -> dict[str, Any]:
+    """Sıranın, bilinen upstream durumunun ve `/v1/ask` ayarlarının anlık görünümü.
+
+    "Dış sistem neden `problem` alıyor?" sorusunun ilk bakılacağı yer:
+    `upstream_health.failing` doğruysa arıza biliniyordur ve
+    `hold_remaining_seconds` dolana dek `/v1/ask` istekleri upstream'e
+    gönderilmeden `problem` diye cevaplanır.
+    """
+    settings = request.app.state.settings
+    alerter = getattr(request.app.state, "alerter", None)
+    alerts: dict[str, Any] = {"enabled": alerter is not None}
+    if alerter is not None:
+        state = alerter.policy.state
+        alerts.update(
+            active_code=state.active_key,
+            failures=state.failures,
+            ask_problems=state.ask_problems,
+            sent_total=state.total_alerts,
+        )
+    return {
+        "queue": request.app.state.queue.snapshot(),
+        "upstream_health": request.app.state.upstream_health.snapshot(),
+        "ask": {
+            "first_wait_seconds": settings.ask_first_wait_seconds,
+            "wait_interval_seconds": settings.ask_wait_interval_seconds,
+            "request_timeout_seconds": settings.ask_request_timeout_seconds,
+            "max_queue_wait_seconds": settings.ask_max_queue_wait_seconds,
+            "problem_hold_seconds": settings.ask_problem_hold_seconds,
+            "default_model": settings.ask_default_model or None,
+            "in_flight": len(request.app.state.tasks),
+        },
+        "keepalive": {
+            "interval_seconds": settings.upstream_keepalive_interval_seconds,
+            "skip_when_active": settings.upstream_keepalive_skip_when_active,
+        },
+        "alerts": alerts,
+    }
+
+
 @router.get("/config", summary="Effective non-sensitive configuration")
 async def effective_config(request: Request) -> dict[str, Any]:
     settings = request.app.state.settings

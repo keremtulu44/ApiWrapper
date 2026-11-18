@@ -10,6 +10,21 @@
 
 İlk probe `UPSTREAM_KEEPALIVE_INITIAL_DELAY_SECONDS` (vars. 60 sn) sonra çalışır:
 deploy sonrası durumu bir saat bekleyip öğrenmemek için.
+
+Probe da diğer istekler gibi tek sıradan geçer (`RequestQueue`). İki kural bunu
+güvenli kılar:
+
+* **Boştayken at:** son aralıkta gerçek bir istek başarıyla cevaplandıysa oturum
+  zaten tazelenmiştir; probe o istekten bir aralık sonraya ertelenir
+  (`UPSTREAM_KEEPALIVE_SKIP_WHEN_ACTIVE`). Böylece probe kotayı boşuna harcamaz
+  ve "son başarılı istekten bu yana en çok bir aralık" kuralı korunur.
+* **Sıra doluyken bekle:** bir istek işlenirken probe sıraya girip kendi
+  180 sn'lik süresini doldurmasın diye sıra boşalana dek ertelenir. Yine de
+  araya istek girerse probe sırada en çok 60 sn bekler
+  (`KEEPALIVE_MAX_QUEUE_WAIT_SECONDS`); sıra yüzünden cevapsız kalan ya da
+  reddedilen probe (`queue_timeout`, `queue_full`) arıza sayılmaz — upstream'e
+  hiç gidilmemiştir, bildirim de bekletme de üretilmez — ve tam aralık
+  beklenmeden, yarım dakika sonra yeniden denenir.
 """
 
 from __future__ import annotations
@@ -25,6 +40,8 @@ import httpx
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.services.alerting import ProbeResult, TelegramAlerter
+from app.services.request_queue import SOURCE_HEADER, RequestQueue
+from app.services.upstream_health import UpstreamHealth
 
 logger = get_logger(__name__)
 
@@ -39,6 +56,14 @@ _KEEPALIVE_PROMPTS: tuple[str, ...] = (
     "Kısaca bir motivasyon cümlesi yaz.",
 )
 _REQUEST_TIMEOUT = 180.0
+#: Sıra doluyken probe'un yeniden bakma aralığı ve en uzun bekleyişi.
+_BUSY_POLL_SECONDS = 5.0
+_BUSY_MAX_WAIT_SECONDS = 600.0
+#: Wrapper'ın kendi sırasından dönen ret kodları: upstream hakkında bir şey söylemez.
+_QUEUE_CODES = frozenset({"queue_full", "queue_timeout"})
+#: Sıra yüzünden atlanan probe bu kadar sonra yeniden denenir (tam aralık beklenmez;
+#: yoksa son başarılı istekten bu yana iki aralığa yakın sessizlik oluşabilirdi).
+_RETRY_AFTER_SKIP_SECONDS = 30.0
 
 
 def pick_prompt(index: int) -> str:
@@ -55,6 +80,57 @@ def jittered_delay(base: float, jitter: float) -> float:
     return max(0.001, base + random.uniform(-spread, spread))
 
 
+def transport_failure_code(exc: BaseException) -> str:
+    """Loopback isteği cevapsız kaldığında arıza kodunu seçer.
+
+    Zaman aşımı "wrapper ayakta ama istek bitmedi" demektir (upstream cevap
+    vermiyor ya da tekrar denemelerde bekliyor) → `upstream_timeout`. Yalnız
+    bağlantının hiç kurulamaması `wrapper_unreachable`'dır. İkisini tek etikette
+    toplamak 18 Kasım'da yanlış teşhise yol açtı (docs/LESSONS §16).
+    """
+    if isinstance(exc, httpx.TimeoutException) and not isinstance(exc, httpx.ConnectTimeout):
+        return "upstream_timeout"
+    return "wrapper_unreachable"
+
+
+async def wait_until_due(
+    delay: float,
+    *,
+    interval: float,
+    jitter: float,
+    health: UpstreamHealth | None = None,
+    queue: RequestQueue | None = None,
+    skip_when_active: bool = True,
+) -> None:
+    """Probe zamanını bekler; gerçek trafik probe'u gereksiz kılıyorsa erteler."""
+    mark = time.monotonic()
+    await asyncio.sleep(delay)
+    busy_deadline = time.monotonic() + _BUSY_MAX_WAIT_SECONDS
+    while True:
+        if queue is not None and queue.busy and time.monotonic() < busy_deadline:
+            # Bir istek işleniyor ya da bekliyor: probe sıraya girip kendi süresini
+            # doldurmasın. O isteğin sonucu oturumun durumunu zaten gösterecek.
+            await asyncio.sleep(_BUSY_POLL_SECONDS)
+            continue
+        if health is None or not skip_when_active:
+            return
+        last = health.last_success_at
+        if last is None or last <= mark:
+            return
+        # Bu bekleyiş sırasında gerçek bir istek başarıyla cevaplandı: oturum
+        # taze. Probe'u o istekten bir aralık sonraya al.
+        mark = last
+        remaining = last + jittered_delay(interval, jitter) - time.monotonic()
+        if remaining <= 0:
+            return
+        logger.info(
+            "upstream_keepalive_deferred",
+            reason="recent_traffic",
+            seconds=round(remaining, 1),
+        )
+        await asyncio.sleep(remaining)
+
+
 def _error_code(body: str) -> str:
     """Wrapper'ın OpenAI hata zarfından kodu çıkarır (gövde yoksa boş)."""
     if not body:
@@ -68,6 +144,24 @@ def _error_code(body: str) -> str:
         return ""
     code = error.get("code") or error.get("type")
     return str(code)[:100] if code else ""
+
+
+def _stream_error_code(events: list[str]) -> str | None:
+    """Akış gövdesindeki (`data: {"error": ...}`) hata kodunu döndürür; yoksa ``None``."""
+    for line in events:
+        raw = line[5:].strip()
+        if not raw.startswith("{") or '"error"' not in raw:
+            continue
+        code = _error_code(raw)
+        if code:
+            return code
+        try:
+            payload = json.loads(raw)
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and payload.get("error"):
+            return "upstream_failure"
+    return None
 
 
 def classify_response(response: Any, duration_ms: float = 0.0) -> ProbeResult:
@@ -123,7 +217,7 @@ async def stream_smoke(
         return ProbeResult(
             ok=False,
             status_code=None,
-            code="wrapper_unreachable",
+            code=transport_failure_code(exc),
             duration_ms=duration_ms,
         )
 
@@ -140,6 +234,22 @@ async def stream_smoke(
 
     text = getattr(response, "text", "") or ""
     events = [line for line in text.splitlines() if line.startswith("data:")]
+    # Akışlı uçta hata HTTP 200 içinde, gövdede bildirilir. Onu "veri aktı" diye
+    # başarı saymak arıza sürerken "yeniden çalışıyor" mesajı üretirdi.
+    failure = _stream_error_code(events)
+    if failure is not None:
+        logger.warning(
+            "upstream_keepalive_stream_smoke_failed",
+            status=classified.status_code,
+            code=failure,
+            duration_ms=duration_ms,
+        )
+        return ProbeResult(
+            ok=False,
+            status_code=classified.status_code,
+            code=failure,
+            duration_ms=duration_ms,
+        )
     finished = "[DONE]" in text or "finish_reason" in text
     if not events or not finished:
         logger.warning(
@@ -164,13 +274,20 @@ async def stream_smoke(
 
 
 async def run_upstream_keepalive(
-    settings: Settings, alerter: TelegramAlerter | None = None
+    settings: Settings,
+    alerter: TelegramAlerter | None = None,
+    *,
+    health: UpstreamHealth | None = None,
+    queue: RequestQueue | None = None,
 ) -> None:
     """Belirli aralıklarla kısa bir non-stream completion gönder.
 
     Hata bir sonraki aralığı engellemez; bu task yalnızca deney/ölçüm içindir ve
     sabit token TTL'sini yenileme garantisi vermez. Render süreci uyuduğunda
     task da durur.
+
+    ``health`` ve ``queue`` verilirse probe yalnız upstream boştayken atılır
+    (bkz. modül açıklaması) ve cevapsız kalan probe sağlık kaydına işlenir.
     """
     interval = settings.upstream_keepalive_interval_seconds
     if interval <= 0:
@@ -182,6 +299,7 @@ async def run_upstream_keepalive(
         return
 
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    headers[SOURCE_HEADER] = "keepalive"
     base_url = f"http://127.0.0.1:{settings.port}"
     initial_delay = max(0.0, settings.upstream_keepalive_initial_delay_seconds)
     jitter = max(0.0, settings.upstream_keepalive_jitter_seconds)
@@ -193,9 +311,11 @@ async def run_upstream_keepalive(
         jitter_seconds=jitter,
         stream_smoke_interval_seconds=smoke_interval,
         alerts=alerter is not None,
+        skip_when_active=settings.upstream_keepalive_skip_when_active and health is not None,
     )
 
     first = True
+    retry_soon = False
     prompt_index = 0
     # İlk stream kontrolü bir sonraki güne planlanır: deploy anında upstream'i
     # gereksiz yere dürtmeyelim.
@@ -208,9 +328,23 @@ async def run_upstream_keepalive(
         while True:
             # İlk turda en fazla bir aralık beklenir: interval < initial_delay
             # ise (testler/kısa aralıklar) ilk probe yine de hızlı çalışır.
-            delay = min(initial_delay, interval) if first else interval
+            if first:
+                delay = min(initial_delay, interval)
+            elif retry_soon:
+                # Önceki probe sıra yüzünden atlandı: tam aralığı bekleme.
+                delay = min(_RETRY_AFTER_SKIP_SECONDS, interval)
+            else:
+                delay = interval
             first = False
-            await asyncio.sleep(jittered_delay(delay, jitter))
+            retry_soon = False
+            await wait_until_due(
+                jittered_delay(delay, jitter),
+                interval=interval,
+                jitter=jitter,
+                health=health,
+                queue=queue,
+                skip_when_active=settings.upstream_keepalive_skip_when_active,
+            )
 
             started = time.monotonic()
             use_stream = next_smoke_at is not None and time.monotonic() >= next_smoke_at
@@ -227,6 +361,10 @@ async def run_upstream_keepalive(
                     # Akış yolu kontrolü kendi hata/probe dönüşünü üretir.
                     result = await stream_smoke(client, headers, settings)
                     next_smoke_at = time.monotonic() + smoke_interval
+                    if _never_served(queue, result):
+                        retry_soon = True
+                        continue
+                    _report_health(health, result)
                     if alerter is not None:
                         await alerter.notify(result)
                     continue
@@ -243,12 +381,13 @@ async def run_upstream_keepalive(
                 logger.warning(
                     "upstream_keepalive_failed",
                     error_type=type(exc).__name__,
+                    code=transport_failure_code(exc),
                     duration_ms=duration_ms,
                 )
                 result = ProbeResult(
                     ok=False,
                     status_code=None,
-                    code="wrapper_unreachable",
+                    code=transport_failure_code(exc),
                     duration_ms=duration_ms,
                 )
             else:
@@ -266,5 +405,48 @@ async def run_upstream_keepalive(
                         duration_ms=duration_ms,
                     )
 
+            if _never_served(queue, result):
+                retry_soon = True
+                continue
+            _report_health(health, result)
             if alerter is not None:
                 await alerter.notify(result)
+
+
+def _never_served(queue: RequestQueue | None, result: ProbeResult) -> bool:
+    """Probe cevapsız kaldı ama upstream'e hiç gitmedi mi (sırada bekliyordu)?
+
+    Öndeki gerçek istek uzun sürdüyse probe kendi süresini sırada doldurabilir.
+    Bu upstream hakkında hiçbir şey söylemez; arıza diye bildirmek hem yanlış
+    alarm üretir hem `/v1/ask` isteklerini boş yere "problem"e düşürürdü.
+    """
+    if result.ok:
+        return False
+    if result.code in _QUEUE_CODES:
+        # Wrapper'ın kendi sırası reddetti (dolu ya da bekleme süresi doldu).
+        reason = "queue_rejected"
+    elif queue is not None and result.status_code is None and queue.untouched("keepalive"):
+        reason = "queued_behind_traffic"
+    else:
+        return False
+    logger.info(
+        "upstream_keepalive_skipped",
+        reason=reason,
+        code=result.code or None,
+        duration_ms=result.duration_ms,
+        hint="Probe sırada kaldı; upstream'e gidilmedi, arıza sayılmadı. Kısa süre sonra "
+        "yeniden denenecek.",
+    )
+    return True
+
+
+def _report_health(health: UpstreamHealth | None, result: ProbeResult) -> None:
+    """Cevapsız kalan probe'u sağlık kaydına işler.
+
+    HTTP cevabı dönen probe'un sonucunu tamamlama servisi zaten bildirmiştir.
+    Zaman aşımı/bağlantı hatasında ise servis tarafındaki istek iptal edilir ve
+    kayıt düşülmez; `/v1/ask` isteklerinin de aynı duvara tek tek çarpmaması
+    için arıza buradan bildirilir.
+    """
+    if health is not None and not result.ok and result.status_code is None:
+        health.record_failure(result.key)
