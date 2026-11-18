@@ -241,12 +241,54 @@ Davranış notları:
 
 ---
 
+## 7. Otomatik sistemler için: `/v1/ask` (PR #56 — henüz canlıda değil)
+
+Projen bir **alarm / otomasyon sistemi** ise — yani bir metin gönderip cevabını
+alacak, alamazsa yedeğine geçecekse — OpenAI uçları yerine `/v1/ask` kullan:
+
+```
+POST /v1/ask   {"prompt": "…"}
+→ data: {"status":"wait"}            (30 sn sonra, sonra 15 sn'de bir)
+→ data: {"status":"done","text":"…"} (cevabın tamamı, tek parça)
+→ data: {"status":"problem"}         (cevap alınamadı: yedeğe geç)
+```
+
+Hata kodu yorumlamak, tekrar deneme kurmak, zaman aşımı hesaplamak gerekmez.
+Sözleşmenin tamamı, karşı sisteme verilecek hazır talimat ve örnek istemci:
+**[`ASK_API.md`](ASK_API.md)**.
+
+## 8. İstek sırası (PR #56 ile gelir — henüz canlıda değil)
+
+O sürümden itibaren **bütün** tamamlama istekleri (bu rehberdeki OpenAI uçları
+dahil) tek sıradan geçer:
+
+* Aynı anda **bir** istek işlenir; diğerleri geliş sırasıyla bekler.
+* Ardışık iki istek arasına rastgele **5–10 sn** girer.
+* Sırada en çok 20 istek bekler; fazlası hemen şu cevabı alır:
+
+| Durum | `type` | `code` | Ne yapmalısın |
+|---|---|---|---|
+| `429` | `rate_limit_error` | `queue_full` | `Retry-After` (30 sn) kadar bekle, sonra tekrar dene |
+
+Pratik sonuçlar:
+
+1. **İstemci zaman aşımını uzun tut.** Önünde istek varsa cevabın, kendi işlem
+   süresine ek olarak öndekilerin süresi kadar gecikir. §3'teki "≥ 120 sn"
+   önerisi tek istek içindir; paralel istek gönderiyorsan daha uzun tut.
+2. **Paralel istek hız kazandırmaz.** On isteği aynı anda göndermek ile sırayla
+   göndermek aynı sürede biter.
+3. **Bağlantıyı kapatırsan isteğin iptal edilir** (akışlı ve akışsız): sırada
+   bekliyorsa sıradan çıkar, işleniyorsa durdurulur. Vazgeçtiğin istek kotanı yemez.
+
+---
+
 ## İlgili dokümanlar
 
 | Doküman | Ne için |
 |---|---|
 | [`../README.md`](../README.md) | Genel bakış, mod tabloları, sık yapılan hatalar |
 | [`ENV_FULL.md`](ENV_FULL.md) | `API_KEYS`, `API_KEY_LABELS`, hız sınırı ayarları |
+| [`ASK_API.md`](ASK_API.md) | `/v1/ask`: otomatik sistemler için bekle / bitti / problem ucu, istek sırası |
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Hata → çözüm tablosu |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | İstek akışı ve modül yapısı |
 | [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) | Ölçülmüş gerçekler (çerez ömrü, captcha, `mode`) |

@@ -461,3 +461,39 @@ için İngilizce kalır, operatöre giden yüzeyler Türkçedir.
 3. Tek bir gerçek mesaj: bot üzerinden veya `POST /v1/chat/completions`.
 4. Live tail'de `application_started` + `upstream_curl_loaded` satırları.
 5. ~1 dakika sonra ilk probe: `upstream_keepalive_completed` (veya hata kodu).
+
+---
+
+## 8. `/v1/ask` ve istek sırası (PR #56 — henüz canlıda değil)
+
+> Bu bölüm PR #56 canlıya alındıktan sonra geçerlidir (`ROLLBACK_2026_11_16.md §13`).
+> Sözleşme ve Telegram mesajlarının okunuşu: [`ASK_API.md`](ASK_API.md).
+
+**İlk bakılacak yer** (upstream'e istek atmaz, kota harcamaz):
+
+```bash
+curl -s https://<servis>.onrender.com/v1/admin/queue -H "Authorization: Bearer sk-..."
+```
+
+| Belirti | Olası neden | Nereye bak / ne yap |
+|---|---|---|
+| Karşı sistem **her istekte anında** `problem` alıyor | Arıza biliniyor, bekletme sürüyor | `upstream_health.failing: true`, `hold_remaining_seconds`. Telegram'daki ilk mesaj nedeni söyler. Geçiciyse **bekle**; süre dolunca tek istek kendiliğinden dener |
+| Karşı sistem `problem` alıyor ama **Telegram'a mesaj gelmedi** | (a) Aynı arıza için mesaj daha önce geldi — sonrakiler sayılır. (b) Karşı sistemin isteği hatalı (HTTP 4xx): "REDDEDİLDİ" mesajı tür başına saatte bir kez gelir, sonrakiler sayılır. (c) Telegram uyarıları yapılandırılmamış | (a) `alerts.ask_problems` sayacı. (b) Live tail: `ask_rejected code=…`. (c) `alerts.enabled: false` → §6 |
+| Telegram'a **"dış istek REDDEDİLDİ … KURULUM HATASI"** geldi | Karşı sistem yanlış anahtar, bilinmeyen model ya da boş `prompt` gönderiyor; her sorusu yedeğe gidiyor | Mesajdaki `Yapılacak` ve `Sunucunun cevabı` satırları. Upstream'de sorun yok; karşı sistemin ayarını düzelt |
+| Karşı sistem **45 sn'de vazgeçiyor**, logda `ask_abandoned` | `wait` satırları ona ulaşmıyor (ara vekil tamponluyor) ya da kendi toplam süre sınırı kısa | `curl -N …/v1/ask` ile dene: satırlar aktıkça geliyorsa sorun karşı sistemin HTTP ayarında (`ASK_API.md §2` "zaman aşımı ayarları") |
+| `problem`, logda `ask_problem code=upstream_timeout` | Upstream 180 sn'de bitiremedi | Tek seferlikse yok say. Sürekliyse upstream yavaş; `ASK_REQUEST_TIMEOUT_SECONDS` karşı sistemin sabrıyla birlikte düşünülmeli |
+| `problem`, `reason=overload`, `code=queue_full` | Sırada 20 istek birikti | Karşı sistem çok hızlı gönderiyor ya da öndeki istekler yavaş. `queue.waiting_labels` kimin beklediğini gösterir |
+| `problem`, `code=queue_timeout` | İstek sırada 600 sn bekledi | Aynı; `ASK_MAX_QUEUE_WAIT_SECONDS` |
+| `problem`, `code=empty_response` | Upstream boş cevap döndü | Live tail: `completion_completed content_chars=0`. Tekrarlıyorsa akış biçimi değişmiş olabilir |
+| Telegram botu **"Wrapper yanıtı zaman aşımına uğradı"** yazıyor | Mesajın sırada, önündeki isteklerin arkasında 180 sn'den uzun bekledi (istek sıradan çıkarıldı) | Yeniden yaz. `queue.active` / `waiting_labels` o anda kimin sırada olduğunu gösterir |
+| Art arda iki istekten ikincisi 5–10 sn geç cevaplanıyor | **Beklenen davranış** (istekler arası rastgele bekleme) | `REQUEST_GAP_MIN/MAX_SECONDS` |
+| Saatlik probe logda yok, yerine `upstream_keepalive_deferred` | **Beklenen davranış**: son aralıkta gerçek bir istek başarıyla cevaplandı | Sabit düzen istenirse `UPSTREAM_KEEPALIVE_SKIP_WHEN_ACTIVE=false` |
+| `upstream_keepalive_skipped reason=queue_rejected` | Probe sırada 60 sn bekleyip geri çevrildi; **arıza değil**, 30 sn sonra yeniden dener | — |
+| `request_queue_stale_slot` | Bir istek sırayı 30 dk tuttu; emniyet supabı sırayı kurtardı. **Olmaması gerekir** | Aynı dakikadaki `request_id`'yi not et ve bildir |
+| `queue.active` saatlerdir aynı etiket, `active_seconds` büyüyor | Sızmış bir istek (yukarıdakinin öncesi) | Emniyet supabını bekle (en çok 30 dk); kalıcı çözüm için bildir |
+
+**Bekletmeyi elle kaldırmanın bir ucu yoktur — gerek de yoktur:** Telegram'dan
+bota yazdığın bir mesaj upstream'e gider; başarılı olursa bekletme o anda kalkar.
+
+**`wait` satırlarını elle görmek:** `curl -N` ile uzun süren bir soru gönder;
+30. saniyede ilk `data: {"status":"wait",…}` satırı görünmelidir.

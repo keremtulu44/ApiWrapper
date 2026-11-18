@@ -178,6 +178,13 @@ _HINTS: dict[str, FailureHint] = {
             "sıklığını düşürün."
         ),
     ),
+    "invalid_request": FailureHint(
+        title="İstek gövdesi geçersiz (400).",
+        action=(
+            "Gövdeyi uç noktanın beklediği biçime getirin; neyin eksik ya da hatalı "
+            "olduğu sunucunun cevabında yazar."
+        ),
+    ),
     "model_not_found": FailureHint(
         title="İstenen model tanımlı değil (404).",
         action="config/models.yaml içindeki id/alias değerlerini kontrol edin.",

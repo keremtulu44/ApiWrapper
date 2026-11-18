@@ -105,6 +105,7 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 | [`RENDER.md`](RENDER.md) | Render kurulumu, env, uyku | Deploy ederken |
 | [`MOBILE_CURL.md`](MOBILE_CURL.md) | Telefondan cURL alma | Çerez tazelerken |
 | [`ENV_FULL.md`](ENV_FULL.md) | Tüm env değişkenleri (otomatik üretilir) | Env ararken |
+| [`ASK_API.md`](ASK_API.md) | **`/v1/ask` (PR #56, canlıda değil)**: alarm/otomasyon sistemleri için `wait` / `done` / `problem` sözleşmesi, karşı sisteme verilecek hazır talimat, örnek istemci, tek istek sırası, Telegram mesajlarının okunuşu | Bir otomasyonu bağlarken; "karşı sistem neden `problem` alıyor" diye bakarken |
 | [`CONSUMERS.md`](CONSUMERS.md) | **Tüketici rehberi**: OpenAI SDK ile bağlanma, modeller, hata kodları, hız sınırı + anahtar üretme/iptal | API'yi başka bir projeye verirken |
 | [`../README.md`](../README.md) | Genel bakış + **sık yapılan hatalar** | Her zaman |
 

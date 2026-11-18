@@ -415,7 +415,7 @@ def test_api_key_is_required(client):
 
 @respx.mock
 def test_callers_own_mistakes_do_not_count_as_an_outage(client):
-    """Bozuk istek ne arıza kaydı açar ne Telegram'a gider ne de upstream'e ulaşır."""
+    """Bozuk istek arıza kaydı açmaz, bekletme başlatmaz, upstream'e de ulaşmaz."""
     route = stream_route().mock(return_value=ok_response())
     alerter = attach_alerter(client)
 
@@ -424,8 +424,99 @@ def test_callers_own_mistakes_do_not_count_as_an_outage(client):
     drain(client)
 
     assert route.call_count == 0
-    assert alerter.sent == []
+    assert alerter.policy.state.active_key is None
     assert client.app.state.upstream_health.failing is False
+
+    # Arıza kaydı açılmadığı için sonraki sağlıklı istek "düzeldi" demez.
+    _, lines = ask(client)
+    drain(client)
+    assert lines[0]["status"] == "done"
+    assert not any("yeniden çalışıyor" in message for message in alerter.sent)
+
+
+def test_wrong_api_key_is_reported_to_the_operator_once(client):
+    """Karşı sistem yanlış anahtarla gelirse her sorusu sessizce yedeğe gider;
+    operatör bunu ilk istekte öğrenmeli — ama her istekte değil."""
+    alerter = attach_alerter(client)
+
+    for _ in range(3):
+        response = client.post(
+            "/v1/ask", json={"prompt": "x"}, headers={"Authorization": "Bearer sk-yanlis"}
+        )
+        assert response.status_code == 401
+    drain(client)
+
+    assert len(alerter.sent) == 1
+    message = alerter.sent[0]
+    assert "REDDEDİLDİ" in message
+    assert "[invalid_api_key]" in message
+    assert "KURULUM HATASI" in message
+    assert "HTTP 401" in message
+    assert "API_KEYS" in message  # ne yapılacağı
+    assert "sk-yanlis" not in message  # anahtar mesaja yazılmaz
+
+
+def test_each_kind_of_rejection_is_reported_separately(client):
+    alerter = attach_alerter(client)
+
+    blank = client.post("/v1/ask", json={"prompt": "   "})
+    unknown = client.post("/v1/ask", json={"prompt": "x", "model": "ghost"})
+    keyless = client.post("/v1/ask", json={"prompt": "x"}, headers={"Authorization": ""})
+    drain(client)
+
+    assert (blank.status_code, unknown.status_code, keyless.status_code) == (400, 404, 401)
+    assert len(alerter.sent) == 3
+    joined = "\n---\n".join(alerter.sent)
+    assert "İstek gövdesi geçersiz (400). [invalid_request]" in joined
+    assert "'prompt' must be a non-empty string" in joined  # sunucunun kendi cevabı
+    assert "[model_not_found]" in joined and "ASK_DEFAULT_MODEL" in joined
+    assert "[missing_api_key]" in joined
+    assert all("REDDEDİLDİ" in message for message in alerter.sent)
+
+
+def test_repeated_rejections_are_counted_in_the_next_report():
+    for client in make_client():
+        alerter = attach_alerter(client)
+        blank = {"prompt": " "}
+        client.post("/v1/ask", json=blank)
+        client.post("/v1/ask", json=blank)
+        client.post("/v1/ask", json=blank)
+        drain(client)
+        assert len(alerter.sent) == 1
+
+        # Bir saat geçmiş gibi: aynı tür yeniden yazılır ve aradakileri sayar.
+        for code in list(alerter._event_sent_at):
+            alerter._event_sent_at[code] -= 3601
+        client.post("/v1/ask", json=blank)
+        drain(client)
+
+        assert len(alerter.sent) == 2
+        assert "aynı türden 2 olay daha oldu" in alerter.sent[1]
+
+
+def test_rejections_on_the_chat_endpoint_are_not_reported(client):
+    """Bildirim yalnız `/v1/ask` içindir; sohbet ucunun istemcisi hatayı kendi görür."""
+    alerter = attach_alerter(client)
+
+    response = client.post(
+        "/v1/chat/completions",
+        json={"model": "ghost", "messages": [{"role": "user", "content": "x"}]},
+    )
+    drain(client)
+
+    assert response.status_code == 404
+    assert alerter.sent == []
+
+
+@respx.mock
+def test_ask_also_answers_without_the_v1_prefix(client):
+    """Taban adres `/v1` ile ya da `/v1`'siz verilmiş olsun, uç bulunur."""
+    stream_route().mock(return_value=ok_response())
+
+    response = client.post("/ask", json={"prompt": "x"})
+
+    assert response.status_code == 200
+    assert '"status":"done"' in response.text
 
 
 def test_build_chat_request_shapes():

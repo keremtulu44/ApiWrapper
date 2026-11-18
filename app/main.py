@@ -284,6 +284,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(admin.router, prefix="/v1")
     # OpenAI SDK `base_url` bazen `/v1` olmadan verilir; aksi halde /chat/completions 404 olur.
     app.include_router(chat.router, include_in_schema=False)
+    app.include_router(ask.router, include_in_schema=False)
     app.include_router(models.router, include_in_schema=False)
 
     return app

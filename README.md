@@ -65,6 +65,12 @@ OpenAI-compatible istemcilerle çalışır.
 > 10. **4. maddeye düzeltme:** bu sürümde `/ping` yalnız sürecin ayakta olduğunu
 >     söyler, cURL'ün çalıştığını **söylemez**. Deploy sonrası bota düz bir
 >     mesaj yaz ya da ~1 dakika sonraki ilk probe'u bekle (uyarı yoksa geçti).
+> 11. **`/v1/ask` ve tek istek sırası yazıldı — henüz canlıda DEĞİL (PR #56).**
+>     Alarm/otomasyon sistemleri için `wait` / `done` / `problem` ucu; bütün
+>     istekler tek sıradan, aralarında 5–10 sn ile geçer; arıza ayrıntısı
+>     Telegram'a gelir. Canlıya alma bir restart'tır (9. madde): taze cURL ile
+>     **aynı anda** yapılır. Sözleşme: **[`docs/ASK_API.md`](docs/ASK_API.md)** ·
+>     canlıya alma adımları: `docs/ROLLBACK_2026_11_16.md §13`.
 >
 > Tam kayıt, ölçümler, kaldırılanların listesi ve ileri dönüş tarifi:
 > **[`docs/ROLLBACK_2026_11_16.md`](docs/ROLLBACK_2026_11_16.md)**

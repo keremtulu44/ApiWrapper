@@ -130,6 +130,52 @@ def format_event(
     return "\n".join(lines)
 
 
+#: Reddedilen dış istekte operatöre söylenecek adım (HTTP durumuna göre).
+_REJECTED_ACTIONS: dict[int, str] = {
+    401: (
+        "Karşı sistemdeki API anahtarını kontrol edin: 'Authorization: Bearer <anahtar>' "
+        "başlığı servisteki API_KEYS değerlerinden biriyle birebir aynı olmalı."
+    ),
+    404: (
+        "Karşı sistemin gönderdiği 'model' alanını kaldırın ya da GET /v1/models "
+        "listesindeki bir adla değiştirin. Karşı sistem model göndermiyorsa "
+        "servisteki ASK_DEFAULT_MODEL değeri yanlıştır."
+    ),
+}
+_REJECTED_DEFAULT_ACTION = (
+    "Karşı sistemin gönderdiği gövdeyi kontrol edin: {\"prompt\": \"...\"} biçiminde, "
+    "boş olmayan bir metin olmalı (çok uzun metin MAX_PROMPT_CHARS sınırına takılır)."
+)
+
+
+def format_rejected(
+    code: str,
+    status_code: int,
+    detail: str,
+    details: tuple[str, ...] = (),
+) -> str:
+    """Karşı sistemin **kendi hatası** yüzünden reddedilen dış isteğin bildirimi.
+
+    Karşı sistem HTTP 4xx'i de "problem" sayıp yedeğine geçer. Yanlış anahtar ya
+    da yanlış model adı gibi bir kurulum hatası bildirilmezse her soru sessizce
+    yedeğe gider ve asıl sistemin hiç kullanılmadığı fark edilmez.
+    """
+    hint = explain_failure(status_code, code)
+    action = _REJECTED_ACTIONS.get(status_code, _REJECTED_DEFAULT_ACTION)
+    lines = [
+        "⚠️ ApiWrapper — dış istek REDDEDİLDİ (isteğin kendisi hatalı); karşı sistem "
+        "bunu \"problem\" sayıp yedeğine geçer.",
+        f"Ne oldu: {hint.title} [{code}]",
+        "Tür: KURULUM HATASI — düzeltilene dek aynı istekler hep yedeğe gider. "
+        "Upstream'de sorun yok.",
+        f"Yapılacak: {action}",
+        f"Sunucunun cevabı: {_http_label(status_code)} · {detail}" if detail else "",
+        *details,
+        _stamp(),
+    ]
+    return "\n".join(line for line in lines if line)
+
+
 class AlertPolicy:
     """Hangi durumda mesaj üretileceğine karar verir (yan etkisiz)."""
 

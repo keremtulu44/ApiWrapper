@@ -32,7 +32,9 @@ Süreler:
   beklemeden "problem" alır.
 
 Çağıranın kendi hatası (yanlış anahtar, boş `prompt`, bilinmeyen model) akış
-başlamadan düz HTTP 4xx olarak döner; istemci için bu da "problem"dir.
+başlamadan düz HTTP 4xx olarak döner; istemci için bu da "problem"dir. Arıza
+sayılmaz ama operatöre seyreltilerek bildirilir (`report_rejected`): düzeltilmeyen
+bir kurulum hatası her soruyu sessizce yedeğe gönderirdi.
 """
 
 from __future__ import annotations
@@ -59,7 +61,13 @@ from app.core.logging import get_logger
 from app.core.metrics import metrics
 from app.core.security import api_key_dependency
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
-from app.services.alerting import ProbeResult, TelegramAlerter, format_event, human_duration
+from app.services.alerting import (
+    ProbeResult,
+    TelegramAlerter,
+    format_event,
+    format_rejected,
+    human_duration,
+)
 from app.services.completion_service import Admission, CompletionService
 from app.services.request_queue import QueueAbandoned
 from app.services.upstream_health import Hold
@@ -86,7 +94,36 @@ def ask_line(payload: dict[str, Any]) -> str:
     """
     return "data: " + json.dumps(payload, ensure_ascii=True, separators=(",", ":")) + "\n\n"
 
-router = APIRouter(tags=["ask"], dependencies=[Depends(api_key_dependency)])
+def report_rejected(request: Request, exc: APIWrapperError) -> None:
+    """Çağıranın kendi hatasıyla reddedilen isteği operatöre bildirir (seyreltilmiş).
+
+    Arıza kaydı açmaz, bekletme başlatmaz: upstream'de sorun yoktur. Aynı tür
+    saatte en çok bir kez yazılır; aradakiler bir sonraki mesajda sayılır.
+    """
+    code = exc.code or f"http_{exc.status_code}"
+    request_id = getattr(request.state, "request_id", None) or "-"
+    logger.warning("ask_rejected", ask_id=request_id, code=code, status=exc.status_code)
+    metrics.inc("apiwrapper_ask_total", labels={"status": "rejected", "code": code})
+    alerter: TelegramAlerter | None = getattr(request.app.state, "alerter", None)
+    tasks: TaskRegistry | None = getattr(request.app.state, "tasks", None)
+    if alerter is None or tasks is None:
+        return
+    text = format_rejected(
+        code, exc.status_code, error_excerpt(exc.message), (f"İstek {request_id}",)
+    )
+    tasks.spawn(alerter.notify_event(f"ask_rejected:{code}", text), name="ask-alert")
+
+
+async def ask_api_key(request: Request) -> str:
+    """API anahtarını doğrular; yanlış/eksik anahtarı operatöre de bildirir."""
+    try:
+        return await api_key_dependency(request)
+    except APIWrapperError as exc:
+        report_rejected(request, exc)
+        raise
+
+
+router = APIRouter(tags=["ask"], dependencies=[Depends(ask_api_key)])
 
 #: Arıza kaydı açmayan, wrapper'ın kendi yük sınırından doğan hata kodları.
 _OVERLOAD_CODES = frozenset({"queue_full", "queue_timeout"})
@@ -450,11 +487,16 @@ async def ask(
 ) -> StreamingResponse:
     """Soruyu sıraya alır ve durumu satır satır bildirir (bkz. modül açıklaması)."""
     settings: Settings = request.app.state.settings
-    chat_request = build_chat_request(body, settings)
-    # Çağıranın hatası akış başlamadan, düz HTTP hatası olarak dönsün: bunlar
-    # upstream arızası değildir, Telegram'a bildirilmez.
-    service.registry.resolve(chat_request.model)
-    validate_request(chat_request, settings)
+    # Çağıranın hatası akış başlamadan, düz HTTP hatası olarak döner. Upstream
+    # arızası değildir (bekletme başlatmaz) ama operatöre bildirilir: karşı sistem
+    # bunu da "problem" sayar ve düzeltilmezse her soru sessizce yedeğe gider.
+    try:
+        chat_request = build_chat_request(body, settings)
+        service.registry.resolve(chat_request.model)
+        validate_request(chat_request, settings)
+    except APIWrapperError as exc:
+        report_rejected(request, exc)
+        raise
 
     runner = AskRunner(
         request=request,
