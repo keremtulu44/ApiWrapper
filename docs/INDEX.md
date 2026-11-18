@@ -43,6 +43,19 @@
 > Bu aynı zamanda **Chromium/keeper yolunun kesin olarak kapandığı** anlamına
 > geliyor: `browser_login.py:14`'teki *"(2FA/captcha yok)"* varsayımı yanlış ve
 > keeper Google akışını hiç tanımıyor (`LESSONS §15.2`).
+>
+> **18 Kasım eki — ep3 bitti, ep4 başladı.** ep3 **~28 saat** yaşadı ve
+> kendiliğinden ölmedi; operatörün env değişikliği + redeploy'u bitirdi. ep4
+> aynı kodla, probe aralığı 10 dk → **60 dk**, hedef **72 saat dokunmadan**:
+> **[`ROLLBACK_2026_11_16.md §12`](ROLLBACK_2026_11_16.md)**.
+>
+> **Üç yeni işletim kuralı** ([`LESSONS_2026_11_14.md §16`](LESSONS_2026_11_14.md)):
+>
+> 1. **`429 daily spend limit reached` ve `wrapper_unreachable` (≈180 sn) ölüm
+>    değildir — BEKLE.** Kota tanınmadığı için uyarı yanlış kodla geliyor.
+> 2. **Env değişikliği = restart = oturum kaybı.** Düzeltmeleri biriktir.
+> 3. **`/ping` hedefi göstermez** (yalnız süreç canlılığı); `ROLLBACK §11.6`'daki
+>    satır düzeltildi.
 
 ---
 

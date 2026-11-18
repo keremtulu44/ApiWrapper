@@ -320,6 +320,30 @@ Hesap geçici olarak kilitli; upstream bunu metinle bildiriyor
 * Kilit erken açıldıysa: `POST /v1/admin/accounts/{slot}/reset`.
 * Bu hata **devre kesiciyi açmaz** (erişilebilirlik arızası değildir).
 
+> ### 🔴 EK (18 Kasım ölçümü) — kota bu kodla **gelmeyebilir**
+>
+> Öncelik **`LESSONS_2026_11_14.md §16`**'da. Hedef kotayı
+> `429 {"error":"daily spend limit reached"}` diye bildirdi; bu ifade varsayılan
+> `UPSTREAM_LIMIT_MARKERS` listesinde **yok**. Sonuç, yukarıdaki davranışın tersi:
+>
+> | Beklenen (işaret tanınırsa) | Ölçülen (tanınmadı) |
+> |---|---|
+> | Retry edilmez | 429 **tekrar denendi**, arada 300 sn uyundu |
+> | İstemci hemen `429 upstream_quota_reached` alır | İstek **10 dakika asılı** kaldı → `504` (`TOTAL_REQUEST_TIMEOUT`) |
+> | Hesap dinlendirilir / devredilir | Cooldown ve devir **tetiklenmedi** |
+> | Uyarı kodu `upstream_quota_reached` | Uyarı **`wrapper_unreachable`** geldi ("PORT doğru mu?") |
+>
+> **Tanı:** uyarı `wrapper_unreachable` + probe süresi ≈180.000 ms ise logda
+> `upstream_http_error status=429 body=` ara.
+> **Çare:** **bekle** — 1 sa 46 dk'da kendiliğinden kalktı, oturum ölmedi.
+> **Restart etme:** bu sürümde restart oturumu öldürür (`ROLLBACK_2026_11_16.md §12.1`).
+> **Kalıcı düzeltme** (bir sonraki doğal restart'ta; env listesi varsayılanın
+> **yerine geçer**, bu yüzden tamamı yazılır):
+>
+> ```env
+> UPSTREAM_LIMIT_MARKERS=upstream limit reached,message limit reached,conversation limit reached,daily limit reached,usage limit reached,quota exceeded,rate limit exceeded,too many requests,daily spend limit reached
+> ```
+
 ### 3b. `429 {"error":"prompt failed"}` — yalnız görsel modunda (ikincil mod)
 
 Belirti: `model=image` isteğinde üç kez

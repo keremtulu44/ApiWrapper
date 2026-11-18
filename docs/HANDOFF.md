@@ -27,6 +27,7 @@ Kurallar:
 > değişti: canlı dal **`arena/1kasim-test`**, `main` dokunulmaz. Aşağıdaki
 > **onay kuralı geçerliliğini koruyor.** Güncel durum:
 > `docs/ROLLBACK_2026_11_16.md §11`.
+> **18 Kasım:** ep3'ün kesin sonucu ve ep4 → `docs/ROLLBACK_2026_11_16.md §12`.
 
 Merge kuralları dosyası: **`docs/MERGE_TARGET.md`** (82 satır).
 Kritik kural: merge = Render deploy, kullanıcı o turda açıkça onaylamadan merge yapılmaz (§"Onay kuralı").

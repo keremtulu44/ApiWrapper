@@ -54,11 +54,24 @@ OpenAI-compatible istemcilerle çalışır.
 >    retry yok; yani red **hedef tarafında geçici**. Ölçüldü: bir kez görüldü,
 >    kendiliğinden geçti. **Taze cURL almaya kalkma** — tarayıcıya giriş yapmak
 >    sağlıklı oturumu öldürür (1. kural). Ayrıntı: `LESSONS §15.3-§15.4`.
+> 8. **`429` veya `wrapper_unreachable` (probe ≈180 sn) görürsen BEKLE.** Hedef
+>    `429 daily spend limit reached` dönüyor; bu ifade varsayılan işaret
+>    listesinde olmadığı için uyarı yanlış kodla ("PORT doğru mu?") geliyor.
+>    Ölçüldü (18 Kasım): 1 sa 46 dk'da kendiliğinden kalktı, oturum ölmedi.
+>    Ayrıntı ve env düzeltmesi: `docs/LESSONS_2026_11_14.md §16`.
+> 9. **Env değişikliği = restart = oturum kaybı.** 18 Kasım'da tek bir env
+>    değeri için yapılan redeploy ~28 saatlik sağlıklı oturumu bitirdi.
+>    Düzeltmeleri biriktir, cURL'ün zaten yenileneceği âna sakla.
+> 10. **4. maddeye düzeltme:** bu sürümde `/ping` yalnız sürecin ayakta olduğunu
+>     söyler, cURL'ün çalıştığını **söylemez**. Deploy sonrası bota düz bir
+>     mesaj yaz ya da ~1 dakika sonraki ilk probe'u bekle (uyarı yoksa geçti).
 >
 > Tam kayıt, ölçümler, kaldırılanların listesi ve ileri dönüş tarifi:
 > **[`docs/ROLLBACK_2026_11_16.md`](docs/ROLLBACK_2026_11_16.md)**
 > Geri dönüşün **sonucu** (ep3: 10 saat+) ve ileri dönüşün doğru tarifi:
 > **`docs/ROLLBACK_2026_11_16.md §11`**
+> ep3'ün **kesin** sonucu (~28 saat, doğal ölüm yok) ve ep4 ("3 gün
+> dokunmadan", probe aralığı 3600): **`docs/ROLLBACK_2026_11_16.md §12`**
 
 > ## ⚠️ Önce oku (en sık yapılan 3 hata)
 >
