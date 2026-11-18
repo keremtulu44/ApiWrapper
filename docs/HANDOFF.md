@@ -28,6 +28,10 @@ Kurallar:
 > **onay kuralı geçerliliğini koruyor.** Güncel durum:
 > `docs/ROLLBACK_2026_11_16.md §11`.
 > **18 Kasım:** ep3'ün kesin sonucu ve ep4 → `docs/ROLLBACK_2026_11_16.md §12`.
+> **18 Kasım (akşam):** `/v1/ask` + tek istek sırası + arıza bildirimi **yazıldı,
+> canlıda değil** (PR #56, taslak; merge = restart = oturum ölümü). Sözleşme:
+> `docs/ASK_API.md` · canlıya alma planı: `docs/ROLLBACK_2026_11_16.md §13` ·
+> uygulama sırasında ölçülenler: `docs/LESSONS_2026_11_14.md §17`.
 
 Merge kuralları dosyası: **`docs/MERGE_TARGET.md`** (82 satır).
 Kritik kural: merge = Render deploy, kullanıcı o turda açıkça onaylamadan merge yapılmaz (§"Onay kuralı").
