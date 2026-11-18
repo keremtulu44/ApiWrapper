@@ -44,7 +44,8 @@ Content-Type: application/json
 
 ¹ `prompt` ya da `messages`'tan tam biri. Tanınmayan alanlar yok sayılır.
 
-Adresteki `/v1` öneki isteğe bağlıdır: `/ask` aynı uçtur.
+Adresteki `/v1` öneki isteğe bağlıdır: `/ask` aynı uçtur. Karşı sisteme
+`API_KEYS`'ten değil, yalnız bu uçta geçerli `ASK_API_KEYS`'ten bir anahtar ver (§8).
 
 **Her soru bağımsızdır:** sorular arasında bağlam taşınmaz; her istek upstream'de
 yeni bir sohbet açar (`SESSION_REUSE` açık olsa bile).
@@ -100,8 +101,9 @@ kuralın yarısı istemcidedir. **Şunların hepsi `problem`dir:**
 saniyede bir yenisini gönderir. En uzun olağan sessizlik 30 saniyedir; 45 saniye
 ağ gecikmesi için 15 saniye pay bırakır.
 
-> Daha önce konuşurken bu sınırı "40 sn" ve satırları `data:` öneksiz anlatmıştım.
-> Uygulanan ve test edilen değerler bu belgedekilerdir: **45 sn** ve **`data:` önekli** satırlar.
+> Not: tasarım konuşulurken bu sınır "40 sn", satırlar da `data:` öneksiz
+> anlatılmıştı. Uygulanan ve test edilen değerler bu belgedekilerdir:
+> **45 sn** ve **`data:` önekli** satırlar.
 
 ---
 
@@ -137,6 +139,8 @@ YANIT
     "problem" -> Cevap alınamadı. Bağlantıyı kapat ve YEDEK SİSTEME geç.
 - "done" ve "problem" son satırdır; ardından başka bir şey gelmez.
 - Diğer alanları ("elapsed", "id", "model") yok say. İleride yeni alanlar eklenebilir.
+- Satır satır okuyamıyorsan gövdenin tamamını bekleyip SON "data:" satırına bakman
+  da yeterlidir; sonuç aynıdır.
 
 ŞUNLARIN HEPSİ "problem" SAYILIR — YEDEK SİSTEME GEÇ:
 1. "status" değeri "problem" olan satır.
@@ -156,6 +160,8 @@ ZAMAN AŞIMI AYARLARI
   sisteme geç. Bağlantıyı kapatman yeterlidir; sunucu işi iptal eder.
 
 YAPMA
+- Bu adreste /v1/ask dışında hiçbir uca istek atma (sana verilen anahtar yalnız
+  bu uçta geçerlidir; diğerleri 401 döner).
 - "problem" aldığın soruyu yeniden gönderme; o soru için yedek sistemi kullan.
 - Bir sonraki soruda yine önce burayı dene. Arıza sürüyorsa "problem" cevabı
   beklemeden, anında gelir; düzeldiğinde kendiliğinden yeniden cevap vermeye başlar.
@@ -302,9 +308,10 @@ Karşı sistem bu ayrımı görmez; sen Telegram mesajındaki `Tür:` satırınd
 ### Arıza bilinirken: beklemeden `problem`
 
 Ciddi bir arızadan sonra **300 saniye** (`ASK_PROBLEM_HOLD_SECONDS`) boyunca yeni
-`/v1/ask` istekleri upstream'e **gönderilmeden**, anında `problem` alır. Alarm
-sistemi kotası dolmuş bir hesaba 180 saniye boyunca boşuna bakmaz; yedeğine
-milisaniyeler içinde geçer.
+`/v1/ask` istekleri upstream'e **gönderilmeden**, anında `problem` alır. İki
+faydası var: upstream cevap vermiyorsa her alarm ayrı ayrı 180 saniye bekleyip
+öyle yedeğe geçmez (ilkinden sonrakiler milisaniyeler içinde geçer); kotası dolmuş
+ya da oturumu düşmüş bir hesaba da art arda istek gönderilmez.
 
 ```
 12:00:00  istek A → upstream 429 → problem          (Telegram: 1 mesaj)
@@ -400,7 +407,7 @@ sistemin hiç kullanılmadığı fark edilmez. Bu yüzden sana bildirilir:
 ⚠️ ApiWrapper — dış istek REDDEDİLDİ (isteğin kendisi hatalı); karşı sistem bunu "problem" sayıp yedeğine geçer.
 Ne oldu: API anahtarı reddedildi (401). [invalid_api_key]
 Tür: KURULUM HATASI — düzeltilene dek aynı istekler hep yedeğe gider. Upstream'de sorun yok.
-Yapılacak: Karşı sistemdeki API anahtarını kontrol edin: 'Authorization: Bearer <anahtar>' başlığı servisteki API_KEYS değerlerinden biriyle birebir aynı olmalı.
+Yapılacak: Karşı sistemdeki API anahtarını kontrol edin: 'Authorization: Bearer <anahtar>' başlığı servisteki ASK_API_KEYS (ya da API_KEYS) değerlerinden biriyle birebir aynı olmalı.
 Sunucunun cevabı: HTTP 401 · Incorrect API key provided.
 İstek req_J1FGPS41Nkc0qPMpiVwU
 ```
@@ -452,7 +459,8 @@ curl -s https://<servis>.onrender.com/v1/admin/queue -H "Authorization: Bearer s
                       "seconds_since_success": 1840.5},
   "ask": {"first_wait_seconds": 30.0, "wait_interval_seconds": 15.0,
           "request_timeout_seconds": 180.0, "max_queue_wait_seconds": 600.0,
-          "problem_hold_seconds": 300.0, "default_model": null, "in_flight": 3},
+          "problem_hold_seconds": 300.0, "default_model": null,
+          "scoped_keys": 1, "background_tasks": 3},
   "keepalive": {"interval_seconds": 3600.0, "skip_when_active": true},
   "alerts": {"enabled": true, "active_code": "upstream_quota_reached",
              "failures": 4, "ask_problems": 3, "sent_total": 1}
@@ -465,6 +473,7 @@ curl -s https://<servis>.onrender.com/v1/admin/queue -H "Authorization: Bearer s
 | `upstream_health.failing` + `hold_remaining_seconds` | Arıza biliniyor mu; `/v1/ask` daha kaç saniye anında `problem` dönecek |
 | `upstream_health.seconds_since_success` | Son başarılı upstream cevabından bu yana geçen süre |
 | `alerts.ask_problems` | Süren arızada `problem` alan dış istek sayısı |
+| `ask.scoped_keys` | Tanımlı `ASK_API_KEYS` sayısı (anahtarların kendisi hiçbir uçta gösterilmez) |
 
 Bu uç upstream'e istek atmaz; kota harcamaz, oturuma dokunmaz.
 
@@ -506,10 +515,36 @@ Tam liste ve açıklamalar: `.env.example` ("istek sırası" ve "/v1/ask" bölü
 | `ASK_MAX_QUEUE_WAIT_SECONDS` | `600` | Sırada en uzun bekleme |
 | `ASK_PROBLEM_HOLD_SECONDS` | `300` | Arıza bilinirken bekletme (`0` = kapalı) |
 | `ASK_DEFAULT_MODEL` | boş | İstekte model yoksa kullanılacak |
+| `ASK_API_KEYS` | boş | **Yalnız `/v1/ask`'te** geçerli ek anahtarlar (aşağıya bak) |
 | `REQUEST_QUEUE_ENABLED` | `true` | Tek sıra (`false` = eski, eşzamanlı davranış) |
 | `REQUEST_GAP_MIN_SECONDS` / `…MAX…` | `5` / `10` | İstekler arası rastgele bekleme |
 | `REQUEST_QUEUE_MAX_WAITING` | `20` | Sıra derinliği |
 | `UPSTREAM_KEEPALIVE_SKIP_WHEN_ACTIVE` | `true` | Trafik varken probe atma |
+
+### Karşı sisteme hangi anahtar verilir: `ASK_API_KEYS`
+
+Bu sürümde `API_KEYS` içindeki her anahtar **her şeyi** yapabilir: sohbet uçları
+ve `/v1/admin/*` yönetim uçları — oturum önbelleğini silen, devre kesiciyi
+sıfırlayan, hesap dinlenmesini kaldıran uçlar ve (giriş yapılandırılmışsa)
+tarayıcı girişini tetikleyen `POST /v1/admin/upstream/login`. Otomatik bir
+sisteme böyle bir anahtar verilmemelidir.
+
+```env
+ASK_API_KEYS=sk-ask-<rastgele>
+```
+
+Buradaki anahtarlar **yalnız `/v1/ask`'te** geçerlidir; başka her uçta `401`
+döner (testle doğrulandı: sohbet, modeller, `/v1/admin/queue`, `/v1/admin/config`,
+`/v1/admin/sessions/clear`, `/v1/admin/upstream/login`). Anahtar sızarsa ya da
+karşı sistem yanlış bir uca istek atarsa verebileceği zarar bir soru sormakla
+sınırlıdır. Üretmek için:
+
+```bash
+python -c "import secrets; print('sk-ask-' + secrets.token_urlsafe(24))"
+```
+
+`API_KEYS`'teki anahtarlar `/v1/ask`'te çalışmaya devam eder (kendi denemelerin
+için). Değişken env'dir → restart ister → **deploy ile aynı anda** gir.
 
 > ⚠️ **Sessizlik sınırıyla bağlantı:** karşı sistem 45 sn sessizlikte vazgeçer.
 > `ASK_FIRST_WAIT_SECONDS` 45'e yaklaşırsa ya da `ASK_WAIT_INTERVAL_SECONDS`
@@ -525,9 +560,13 @@ Canlıya alma ve sonrasındaki deneme adımları: [`ROLLBACK_2026_11_16.md` §13
 
 ## 9. Bilinen sınırlar (dürüst liste)
 
-1. **Gerçek upstream'e karşı henüz denenmedi.** 605 otomatik test var; zamanlama
+1. **Gerçek upstream'e karşı henüz denenmedi.** 618 otomatik test var; zamanlama
    ve bağlantı kopması gerçek bir sunucu (uvicorn) üzerinde, sahte bir upstream'e
    karşı sınandı. Gerçek servise karşı ilk deneme deploy'dan sonra yapılacak.
+   Özellikle **Render'ın ara vekilinin `wait` satırlarını tamponlamadan iletip
+   iletmediği ölçülmedi**; tamponlarsa 45 sn'den uzun süren sorular karşı sistemde
+   `problem` olur (kısa sorular etkilenmez). Deploy sonrası ilk bakılacak şey budur
+   (`ROLLBACK §13.3`, 5. adım).
 2. **Sıra ve bekletme bellektedir.** Servis yeniden başlarsa sıradaki istekler
    kopar (karşı sistem kural 4 ile `problem` sayar), bekletme sıfırlanır. Tek
    süreç varsayılır (`Dockerfile`: `--workers 1`, `render.yaml`: `numInstances: 1`);
@@ -547,8 +586,9 @@ Canlıya alma ve sonrasındaki deneme adımları: [`ROLLBACK_2026_11_16.md` §13
    hiç beklemez. Fazla gelirse `ASK_PROBLEM_HOLD_SECONDS` düşürülür.
 7. **Hız sınırı `/v1/ask` için de geçerlidir** (anahtar başına 120 istek/dk,
    patlama 30). Aşılırsa akış başlamadan `429` döner — karşı sistem için `problem`.
-8. **`prompt` uzunluğu** diğer uçlarla aynı sınırlara tabidir (gövde 4 MB,
-   `MAX_PROMPT_CHARS`). Aşılırsa `400`.
+8. **`prompt` uzunluğu** diğer uçlarla aynı sınırlara tabidir. Gövde 4 MB'ı
+   aşarsa akış başlamadan `413` döner; metin `MAX_PROMPT_CHARS` sınırını aşarsa
+   `problem` satırı döner ve sana `payload_too_large` bildirilir (arıza sayılmaz).
 
 ### Uygulama sırasında ölçülüp düzeltilenler
 

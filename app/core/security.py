@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+from collections.abc import Sequence
 
 from fastapi import Request
 
@@ -42,10 +43,16 @@ def extract_api_key(request: Request) -> str | None:
     return None
 
 
-def verify_api_key(request: Request, settings: Settings | None = None) -> str:
+def verify_api_key(
+    request: Request,
+    settings: Settings | None = None,
+    *,
+    extra_keys: Sequence[str] = (),
+) -> str:
     """Anahtarı doğrular ve maskelenmiş kimliğini döndürür.
 
-    Doğrulama kapalıysa `ANONYMOUS` döner.
+    Doğrulama kapalıysa `ANONYMOUS` döner. ``extra_keys`` yalnız çağıran uç için
+    geçerli ek anahtarlardır (örn. `/v1/ask`'e özel `ASK_API_KEYS`).
     """
     if settings is None:
         settings = getattr(request.app.state, "settings", None) or get_settings()
@@ -59,7 +66,7 @@ def verify_api_key(request: Request, settings: Settings | None = None) -> str:
             code="missing_api_key",
         )
 
-    for allowed in settings.api_keys:
+    for allowed in (*settings.api_keys, *extra_keys):
         if hmac.compare_digest(key, allowed):
             return mask_value(key)
 

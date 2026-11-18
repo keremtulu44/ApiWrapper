@@ -167,7 +167,10 @@ async def queue_status(request: Request) -> dict[str, Any]:
             "max_queue_wait_seconds": settings.ask_max_queue_wait_seconds,
             "problem_hold_seconds": settings.ask_problem_hold_seconds,
             "default_model": settings.ask_default_model or None,
-            "in_flight": len(request.app.state.tasks),
+            # Yalnız sayı: anahtarların kendisi hiçbir uçta gösterilmez.
+            "scoped_keys": len(settings.ask_api_keys),
+            # Süren `/v1/ask` işleri + gönderilmekte olan bildirimler.
+            "background_tasks": len(request.app.state.tasks),
         },
         "keepalive": {
             "interval_seconds": settings.upstream_keepalive_interval_seconds,

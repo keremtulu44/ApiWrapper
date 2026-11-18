@@ -271,6 +271,11 @@ class Settings(BaseSettings):
     ask_problem_hold_seconds: float = 300.0
     #: `/v1/ask` isteğinde `model` verilmezse kullanılacak model (boş = varsayılan).
     ask_default_model: str = ""
+    #: **Yalnız `/v1/ask` için** geçerli ek anahtarlar (virgülle ayrılmış). Karşı
+    #: sisteme buradan anahtar verin: o anahtar sohbet ve yönetim (`/v1/admin/*`)
+    #: uçlarında geçersizdir. `API_KEYS` içindeki anahtarlar `/v1/ask`'te de
+    #: çalışmaya devam eder. Boş = ek anahtar yok.
+    ask_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # ---------------------------------------------------------------- alerts
     #: Telegram üzerinden arıza bildirimi. Bot token'ı ve bildirim sohbeti
@@ -358,6 +363,7 @@ class Settings(BaseSettings):
     # ----------------------------------------------------------- validators
     @field_validator(
         "api_keys",
+        "ask_api_keys",
         "cors_origins",
         "upstream_token_cookie_names",
         "upstream_token_cookie_names_2",

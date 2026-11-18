@@ -59,7 +59,7 @@ from app.core.config import Settings
 from app.core.errors import APIWrapperError, InvalidRequestError
 from app.core.logging import get_logger
 from app.core.metrics import metrics
-from app.core.security import api_key_dependency
+from app.core.security import client_fingerprint, extract_api_key, verify_api_key
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
 from app.services.alerting import (
     ProbeResult,
@@ -115,12 +115,20 @@ def report_rejected(request: Request, exc: APIWrapperError) -> None:
 
 
 async def ask_api_key(request: Request) -> str:
-    """API anahtarını doğrular; yanlış/eksik anahtarı operatöre de bildirir."""
+    """API anahtarını doğrular; yanlış/eksik anahtarı operatöre de bildirir.
+
+    `API_KEYS`'e ek olarak yalnız bu uçta geçerli `ASK_API_KEYS` kabul edilir:
+    karşı sisteme verilen anahtar sohbet ve yönetim uçlarını çağıramaz.
+    """
+    settings: Settings = request.app.state.settings
     try:
-        return await api_key_dependency(request)
+        identity = verify_api_key(request, settings, extra_keys=settings.ask_api_keys)
     except APIWrapperError as exc:
         report_rejected(request, exc)
         raise
+    request.state.api_identity = identity
+    request.state.client_fingerprint = client_fingerprint(extract_api_key(request))
+    return identity
 
 
 router = APIRouter(tags=["ask"], dependencies=[Depends(ask_api_key)])

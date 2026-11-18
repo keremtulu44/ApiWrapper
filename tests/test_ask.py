@@ -17,6 +17,7 @@ import respx
 from fastapi.testclient import TestClient
 
 from app.api.v1.ask import AskRequest, build_chat_request
+from app.core.config import Settings
 from app.core.errors import InvalidRequestError
 from app.main import create_app
 from app.services.alerting import TelegramAlerter
@@ -452,7 +453,7 @@ def test_wrong_api_key_is_reported_to_the_operator_once(client):
     assert "[invalid_api_key]" in message
     assert "KURULUM HATASI" in message
     assert "HTTP 401" in message
-    assert "API_KEYS" in message  # ne yapılacağı
+    assert "ASK_API_KEYS" in message  # ne yapılacağı
     assert "sk-yanlis" not in message  # anahtar mesaja yazılmaz
 
 
@@ -494,6 +495,26 @@ def test_repeated_rejections_are_counted_in_the_next_report():
         assert "aynı türden 2 olay daha oldu" in alerter.sent[1]
 
 
+@respx.mock
+def test_oversized_prompt_is_a_problem_for_the_caller_and_a_note_for_the_operator():
+    """Uzunluk sınırı upstream gövdesi kurulurken denetlenir: akış başlamıştır,
+    karşı sistem `problem` satırı alır. Upstream arızası sayılmaz."""
+    route = stream_route().mock(return_value=ok_response())
+    for client in make_client(max_prompt_chars=20):
+        alerter = attach_alerter(client)
+
+        response, lines = ask(client, {"prompt": "x" * 200})
+        drain(client)
+
+        assert response.status_code == 200
+        assert [line["status"] for line in lines] == ["problem"]
+        assert route.call_count == 0
+        assert client.app.state.upstream_health.failing is False
+        assert alerter.policy.state.active_key is None
+        assert len(alerter.sent) == 1
+        assert "[payload_too_large]" in alerter.sent[0]
+
+
 def test_rejections_on_the_chat_endpoint_are_not_reported(client):
     """Bildirim yalnız `/v1/ask` içindir; sohbet ucunun istemcisi hatayı kendi görür."""
     alerter = attach_alerter(client)
@@ -517,6 +538,84 @@ def test_ask_also_answers_without_the_v1_prefix(client):
 
     assert response.status_code == 200
     assert '"status":"done"' in response.text
+
+
+# ---------------------------------------------- yalnız /v1/ask için anahtar
+ASK_ONLY_KEY = "sk-ask-only-key"
+
+
+@pytest.fixture
+def scoped_client() -> Iterator[TestClient]:
+    """`ASK_API_KEYS` tanımlı servis; istemcinin varsayılan anahtarı YOK."""
+    app = create_app(make_settings(ask_api_keys=[ASK_ONLY_KEY]))
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def bearer(key: str) -> dict[str, str]:
+    return {"Authorization": f"Bearer {key}"}
+
+
+@respx.mock
+def test_ask_only_key_works_on_ask(scoped_client):
+    stream_route().mock(return_value=ok_response("tamam"))
+
+    response = scoped_client.post("/v1/ask", json={"prompt": "x"}, headers=bearer(ASK_ONLY_KEY))
+
+    assert response.status_code == 200
+    assert '"status":"done"' in response.text
+
+
+@pytest.mark.parametrize(
+    ("method", "path", "payload"),
+    [
+        ("POST", "/v1/chat/completions", {"model": "test-model", "messages": []}),
+        ("POST", "/v1/completions", {"model": "test-model", "prompt": "x"}),
+        ("GET", "/v1/models", None),
+        ("GET", "/v1/admin/queue", None),
+        ("GET", "/v1/admin/config", None),
+        ("POST", "/v1/admin/sessions/clear", None),
+        ("POST", "/v1/admin/upstream/login", None),
+    ],
+)
+def test_ask_only_key_opens_nothing_else(scoped_client, method, path, payload):
+    """Karşı sisteme verilen anahtar sohbet ve yönetim uçlarını çağıramaz."""
+    response = scoped_client.request(method, path, json=payload, headers=bearer(ASK_ONLY_KEY))
+
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "invalid_api_key"
+
+
+@respx.mock
+def test_regular_keys_keep_working_on_ask(scoped_client):
+    stream_route().mock(return_value=ok_response("tamam"))
+
+    response = scoped_client.post("/v1/ask", json={"prompt": "x"}, headers=bearer(TEST_API_KEY))
+
+    assert response.status_code == 200
+    assert '"status":"done"' in response.text
+
+
+def test_unknown_key_is_still_refused_on_ask(scoped_client):
+    response = scoped_client.post("/v1/ask", json={"prompt": "x"}, headers=bearer("sk-yanlis"))
+    assert response.status_code == 401
+
+
+def test_admin_view_shows_how_many_scoped_keys_exist_but_never_the_keys(scoped_client):
+    response = scoped_client.get("/v1/admin/queue", headers=bearer(TEST_API_KEY))
+
+    assert response.status_code == 200
+    assert response.json()["ask"]["scoped_keys"] == 1
+    assert ASK_ONLY_KEY not in response.text
+    assert ASK_ONLY_KEY not in scoped_client.get(
+        "/v1/admin/config", headers=bearer(TEST_API_KEY)
+    ).text
+
+
+def test_ask_only_keys_are_read_from_a_comma_separated_env_value():
+    settings = Settings(_env_file=None, target_domain="example.test", ask_api_keys="a, b ,,c")
+    assert settings.ask_api_keys == ["a", "b", "c"]
+    assert Settings(_env_file=None, target_domain="example.test").ask_api_keys == []
 
 
 def test_build_chat_request_shapes():
@@ -660,6 +759,8 @@ def test_admin_queue_endpoint_shows_why_requests_get_problem(client):
     assert body["ask"]["request_timeout_seconds"] == 180.0
     assert body["ask"]["first_wait_seconds"] == 30.0
     assert body["ask"]["wait_interval_seconds"] == 15.0
+    assert body["ask"]["scoped_keys"] == 0
+    assert body["ask"]["background_tasks"] == 0
     assert body["alerts"] == {"enabled": False}
 
 

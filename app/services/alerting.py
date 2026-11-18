@@ -134,7 +134,8 @@ def format_event(
 _REJECTED_ACTIONS: dict[int, str] = {
     401: (
         "Karşı sistemdeki API anahtarını kontrol edin: 'Authorization: Bearer <anahtar>' "
-        "başlığı servisteki API_KEYS değerlerinden biriyle birebir aynı olmalı."
+        "başlığı servisteki ASK_API_KEYS (ya da API_KEYS) değerlerinden biriyle birebir "
+        "aynı olmalı."
     ),
     404: (
         "Karşı sistemin gönderdiği 'model' alanını kaldırın ya da GET /v1/models "
