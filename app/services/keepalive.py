@@ -73,6 +73,18 @@ _QUEUE_CODES = frozenset({"queue_full", "queue_timeout"})
 _RETRY_AFTER_SKIP_SECONDS = 30.0
 
 
+def first_prompt_index(account_slot: int | None) -> int:
+    """Hesabın probe istemlerine hangi sıradan başlayacağı.
+
+    Ana hesap (`UPSTREAM_CURL`, 1. yuva) **her kurulumda 0'dan** başlar: ikinci
+    hesap eklenmesi ana hesabın gönderdiklerini değiştirmez; tek hesaplı kurulum
+    ve canlı sürüm (`03aca2c`) ile aynı cümleler aynı sırayla gider. Sonraki
+    hesaplar birer adım kayar ki iki hesapta aynı cümleler aynı sırayla görünüp
+    ortak bir iz bırakmasın.
+    """
+    return max(0, (account_slot or 1) - 1)
+
+
 def pick_prompt(index: int) -> str:
     """Sırayla farklı bir kısa istem döndürür (sabit desen bırakmamak için)."""
     return _KEEPALIVE_PROMPTS[index % len(_KEEPALIVE_PROMPTS)]
@@ -337,9 +349,7 @@ async def run_upstream_keepalive(
 
     first = True
     retry_soon = False
-    # Hesaplar aynı istem sırasını aynı adımdan izlemesin (iki hesapta aynı
-    # cümlelerin aynı sırayla görünmesi ortak bir iz olurdu).
-    prompt_index = account_slot or 0
+    prompt_index = first_prompt_index(account_slot)
     # İlk stream kontrolü bir sonraki güne planlanır: deploy anında upstream'i
     # gereksiz yere dürtmeyelim.
     next_smoke_at = time.monotonic() + smoke_interval if smoke_interval > 0 else None
@@ -484,9 +494,11 @@ def _report_health(health: UpstreamHealth | None, result: ProbeResult) -> None:
     """Cevapsız kalan probe'u sağlık kaydına işler.
 
     HTTP cevabı dönen probe'un sonucunu tamamlama servisi zaten bildirmiştir.
-    Zaman aşımı/bağlantı hatasında ise servis tarafındaki istek iptal edilir ve
-    kayıt düşülmez; `/v1/ask` isteklerinin de aynı duvara tek tek çarpmaması
-    için arıza buradan bildirilir.
+    Zaman aşımı/bağlantı hatasında ise servis tarafında henüz bir sonuç yoktur:
+    upstream'e gönderilmiş istek arkada sürer (canlı sürümdeki gibi yarıda
+    kesilmez, bkz. `app/api/disconnect.py`) ve sonucunu bitince kendisi
+    bildirir. O ana dek `/v1/ask` isteklerinin de aynı duvara tek tek
+    çarpmaması için arıza buradan bildirilir.
     """
     if health is not None and not result.ok and result.status_code is None:
         health.record_failure(result.key)

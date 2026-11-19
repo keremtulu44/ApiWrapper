@@ -106,8 +106,9 @@ async def create_chat_completion(
             headers={k: v for k, v in SSE_HEADERS.items() if k != "Content-Type"},
         )
 
-    # İstekler sıradan geçer: cevabı beklemekten vazgeçmiş bir istemcinin
-    # isteği sırada kalmasın, işleniyorsa da sırayı tutmasın.
+    # İstekler sıradan geçer: cevabı beklemekten vazgeçmiş bir istemcinin isteği
+    # sırada kalmasın. Upstream'e gönderilmiş istek ise yarıda kesilmez; canlı
+    # sürümdeki gibi sonuna kadar sürer (bkz. `app/api/disconnect.py`).
     admission = _admission(request)
     answered = False
     try:
@@ -116,6 +117,7 @@ async def create_chat_completion(
             service.create_completion(
                 body, client_identity=client_identity, admission=admission
             ),
+            committed=lambda: admission.sent,
         )
         answered = True
         return completion
@@ -167,8 +169,11 @@ async def create_text_completion(
             headers={k: v for k, v in SSE_HEADERS.items() if k != "Content-Type"},
         )
 
+    admission = _admission(request)
     completion = await cancel_on_disconnect(
-        request, service.create_completion(chat_body, admission=_admission(request))
+        request,
+        service.create_completion(chat_body, admission=admission),
+        committed=lambda: admission.sent,
     )
     return {
         "id": completion.id.replace("chatcmpl-", "cmpl-"),

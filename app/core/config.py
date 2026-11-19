@@ -138,6 +138,14 @@ class Settings(BaseSettings):
     #: modelin meşru cevabında da geçebileceği için düz metin taramasında yanlış
     #: alarm üretir. Hedef servisin gerçek mesajını gözlemlediğinizde buraya birebir
     #: yazın (örn. "upstream limit reached").
+    #:
+    #: Varsayılan liste canlı sürümle (`03aca2c`) **birebir aynıdır** ve bilerek
+    #: öyle tutulur: liste, upstream'e bir isteğin kaç kez gönderileceğini belirler
+    #: (kota sayılan 429 tekrar denenmez, sayılmayan denenir). 18 Kasım 2026'da
+    #: görülen `{"error":"daily spend limit reached"}` gövdesi bu listede **yoktur**;
+    #: o 429 canlıdaki gibi tekrar denenir. Kota olarak tanınması istenirse kod
+    #: değişmez, operatör env'e tam listeyi yazar (liste varsayılanın YERİNE geçer):
+    #: `.env.example` → `UPSTREAM_LIMIT_MARKERS`, docs/LESSONS §16.6 ve §20.
     upstream_limit_markers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "upstream limit reached",
@@ -148,11 +156,6 @@ class Settings(BaseSettings):
             "quota exceeded",
             "rate limit exceeded",
             "too many requests",
-            # 18 Kasım 2026'da gözlenen gövde: `{"error":"daily spend limit reached"}`.
-            # Listede olmadığı için 429 "geçici yavaşlatma" sanılıp iki kez 300 sn
-            # beklenmiş, istek 600 sn asılı kalmıştı (docs/LESSONS §16). Alt dize
-            # eşleşmesi günlük/aylık bütün "spend limit" biçimlerini kapsar.
-            "spend limit reached",
         ]
     )
     #: Yanıtın ilk kaç karakterinde düz metin kota taraması yapılsın. 0 = kapalı.

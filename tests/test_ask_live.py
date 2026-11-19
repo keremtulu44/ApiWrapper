@@ -306,9 +306,15 @@ def test_caller_that_gives_up_while_queued_is_never_sent_upstream():
     assert calls == 1  # vazgeçilen istek sırası gelse de işlenmedi
 
 
-def test_non_stream_chat_caller_that_gives_up_frees_the_queue():
-    """Akışsız sohbet ucu: bağlantısını kapatan istemcinin isteği iptal edilir."""
-    script = UpstreamScript(delay=5.0)
+def test_non_stream_chat_request_already_sent_is_finished_even_if_the_caller_leaves():
+    """Akışsız sohbet ucu: upstream'e gönderilmiş istek yarıda kesilmez.
+
+    Canlı sürümde (`03aca2c`) akışsız uçta istemci kopması izlenmiyordu; istek
+    upstream'de sonuna kadar sürüyordu (iki ağaçta gerçek soketle ölçüldü,
+    docs/LESSONS §20). Gönderme tarafı değişmesin diye aynısı korunur: upstream
+    cevabı sonuna kadar okunur, sıra iş bitince boşalır.
+    """
+    script = UpstreamScript(delay=0.8)
     chat = {"model": "test-model", "messages": [{"role": "user", "content": "selam"}]}
     with live_wrapper(script, **QUIET) as wrapper:
         with pytest.raises(httpx.ReadTimeout):
@@ -316,14 +322,46 @@ def test_non_stream_chat_caller_that_gives_up_frees_the_queue():
                 wrapper.base_url + "/v1/chat/completions",
                 json=chat,
                 headers=wrapper.headers,
+                timeout=httpx.Timeout(0.2, connect=5.0),
+            )
+        time.sleep(0.2)
+        busy_after_leaving = not queue_idle(wrapper)  # istemci gitti, iş sürüyor
+        freed = wait_until(lambda: queue_idle(wrapper))
+        health = wrapper.app.state.upstream_health
+        failing, answered_at = health.failing, health.last_success_at
+        served = wrapper.app.state.queue.snapshot()["served_total"]
+
+    assert busy_after_leaving
+    assert freed
+    assert script.calls == 1
+    assert script.cancelled == 0  # upstream isteği kesilmedi
+    assert served == 1  # olağan bir istek gibi tamamlandı
+    assert failing is False
+    assert answered_at is not None  # sonucu sağlık kaydına geçti
+
+
+def test_non_stream_chat_caller_that_gives_up_while_queued_is_never_sent_upstream():
+    """Sırada bekleyen akışsız istek, istemcisi vazgeçerse upstream'e hiç gitmez."""
+    script = UpstreamScript(delay=0.8)
+    chat = {"model": "test-model", "messages": [{"role": "user", "content": "selam"}]}
+    with live_wrapper(script, **QUIET) as wrapper, ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(ask, wrapper, "birinci")
+        time.sleep(0.1)
+        with pytest.raises(httpx.ReadTimeout):
+            httpx.post(
+                wrapper.base_url + "/v1/chat/completions",
+                json=chat,
+                headers=wrapper.headers,
                 timeout=httpx.Timeout(0.3, connect=5.0),
             )
-        freed = wait_until(lambda: queue_idle(wrapper))
-        dropped = wait_until(lambda: script.cancelled == 1)
-        health = wrapper.app.state.upstream_health.snapshot()
+        assert wait_until(lambda: wrapper.app.state.queue.snapshot()["waiting"] == 0)
 
-    assert freed and dropped
-    assert health["failing"] is False
+        assert statuses(first.result(timeout=15)) == ["done"]
+        assert wait_until(lambda: queue_idle(wrapper))
+        time.sleep(0.2)
+        calls = script.calls
+
+    assert calls == 1  # vazgeçilen istek sırası gelse de gönderilmedi
 
 
 def test_non_stream_chat_still_answers_normally():

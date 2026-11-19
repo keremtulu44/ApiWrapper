@@ -113,6 +113,10 @@ class Admission:
     waited: float = 0.0
     #: Servis doldurur: işlemin başladığı an (`time.monotonic()`); 0 = hiç başlamadı.
     started_at: float = 0.0
+    #: Servis doldurur: istek upstream'e gönderildi mi (en az bir kez)? Akışsız
+    #: sohbet ucu buna bakar: gönderilmiş istek, istemcisi kopsa da yarıda
+    #: kesilmez (canlı sürümdeki davranış; bkz. `app/api/disconnect.py`).
+    sent: bool = False
     #: Servis doldurur: işlemde geçen süre.
     duration: float = 0.0
     #: Servis doldurur: isteği işleyen hesabın adı (tek hesapta boş) ve yuvası.
@@ -762,9 +766,13 @@ class CompletionService:
                 prompt_chars=len(built.prompt),
                 url=request_settings.stream_url(built.chat_id),
             )
+            if turn is not None:
+                # Upstream'e gerçekten gidiliyor: bu andan sonra akışsız istek,
+                # istemcisi kopsa da sonuna kadar sürer (`Admission.sent`).
+                turn.admission.sent = True
             if turn is not None and turn.ticket is not None:
-                # Upstream'e gerçekten gidiliyor: bu istekten sonra sıradaki,
-                # istekler arası bekleme kadar bekletilecek.
+                # Bu istekten sonra sıradaki, istekler arası bekleme kadar
+                # bekletilecek.
                 turn.ticket.touched = True
             try:
                 async with self.upstream.stream_completion(

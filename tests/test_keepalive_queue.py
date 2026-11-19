@@ -499,8 +499,50 @@ async def test_probe_pins_itself_to_its_account(monkeypatch):
     assert seen["headers"]["x-apiwrapper-source"] == "keepalive"
     assert [result.scope for result in alerter.results] == ["hesap-2"]
     # Hesaplar istem listesine farklı yerden başlar (aynı cümle sırası ortak iz olmasın).
-    assert seen["prompt"] == keepalive_module.pick_prompt(2)
-    assert keepalive_module.pick_prompt(2) != keepalive_module.pick_prompt(1)
+    assert seen["prompt"] == keepalive_module.pick_prompt(1)
+    assert keepalive_module.pick_prompt(1) != keepalive_module.pick_prompt(0)
+
+
+async def test_main_account_probe_prompts_do_not_change_when_a_second_account_is_added(
+    monkeypatch,
+):
+    """Ana hesap (1. yuva) iki hesaplı kurulumda da tek hesaptaki istemle başlar.
+
+    İkinci hesabın eklenmesi ana cURL'ün gönderdiklerini değiştirmemelidir: ana
+    hesabın probe'ları canlı sürümdeki (`03aca2c`) cümleleri aynı sırayla yollar.
+    """
+    prompts: dict[str, str] = {}
+
+    def recorder(label: str) -> Any:
+        async def post(_url: str, **kwargs: Any) -> Any:
+            prompts[label] = kwargs["json"]["messages"][0]["content"]
+            return OkResponse()
+
+        return post
+
+    await run_one_probe(
+        monkeypatch,
+        recorder("tek"),
+        queue=RequestQueue(min_gap=0.0, max_gap=0.0),
+        health=UpstreamHealth(300.0),
+    )
+    await run_one_probe(
+        monkeypatch,
+        recorder("ana"),
+        queue=RequestQueue(min_gap=0.0, max_gap=0.0),
+        health=UpstreamHealth(300.0),
+        account_slot=1,
+        scope="hesap-1",
+    )
+
+    assert prompts["tek"] == keepalive_module.pick_prompt(0)
+    assert prompts["ana"] == prompts["tek"]
+    assert [keepalive_module.first_prompt_index(slot) for slot in (None, 1, 2, 3)] == [
+        0,
+        0,
+        1,
+        2,
+    ]
 
 
 async def test_single_account_probe_is_not_pinned(monkeypatch):

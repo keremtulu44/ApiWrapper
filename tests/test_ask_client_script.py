@@ -56,7 +56,7 @@ def test_optional_fields_are_sent():
 
 
 def test_every_failure_is_just_none():
-    quota = UpstreamScript(status=429, body='{"error":"daily spend limit reached"}')
+    quota = UpstreamScript(status=429, body='{"error":"daily limit reached"}')
     with live_wrapper(quota, **FAST) as wrapper:
         assert ask(wrapper.base_url, TEST_API_KEY, "soru") is None  # upstream arızası
         assert ask(wrapper.base_url, "sk-yanlis", "soru") is None  # HTTP 401

@@ -19,7 +19,10 @@ from tests.conftest import TEST_API_KEY, ai_stream, make_settings
 from tests.test_ask import STREAM_URL, RecordingAlerter, ask, attach_alerter, drain
 
 TOKENS = {"TOKEN-ONE": "bir", "TOKEN-TWO": "iki"}
-QUOTA_BODY = b'{"error":"daily spend limit reached"}'
+#: Kota akışını tetikleyen gövde. Varsayılan işaret listesinde (canlıdakiyle aynı
+#: liste) bulunan bir ifade taşır; 18 Kasım'ın `daily spend limit reached` gövdesi
+#: varsayılanda kota sayılmaz (bkz. `tests/test_queue_integration.py`).
+QUOTA_BODY = b'{"error":"daily limit reached"}'
 
 
 def ok(text: str = "cevap") -> Callable[[], httpx.Response]:
@@ -188,7 +191,7 @@ def test_quota_on_one_account_moves_the_request_to_the_other(duo):
     assert lane(duo, 1).health.code == "upstream_quota_reached"
     assert duo.app.state.lanes.cooling(lane(duo, 1)) > 0  # hesap dinlenmeye alındı
     assert len(alerter.sent) == 1
-    assert "daily spend limit reached" in alerter.sent[0]
+    assert "daily limit reached" in alerter.sent[0]
     assert "Tür: GEÇİCİ" in alerter.sent[0]
     assert "UPSTREAM_CURL değişkenindedir" not in alerter.sent[0]  # deploy notu yalnız kalıcıda
 

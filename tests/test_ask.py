@@ -24,7 +24,10 @@ from app.services.alerting import TelegramAlerter
 from tests.conftest import TEST_API_KEY, UPSTREAM_DOMAIN, ai_stream, make_settings
 
 STREAM_URL = f"https://{UPSTREAM_DOMAIN}/nextjs-api/stream/post-to-evaluation/"
-QUOTA_BODY = b'{"error":"daily spend limit reached"}'
+#: Kota akışını tetikleyen gövde. Varsayılan işaret listesinde (canlıdakiyle aynı
+#: liste) bulunan bir ifade taşır; 18 Kasım'ın `daily spend limit reached` gövdesi
+#: varsayılanda kota sayılmaz (bkz. `tests/test_queue_integration.py`).
+QUOTA_BODY = b'{"error":"daily limit reached"}'
 
 
 def stream_route(router=respx):
@@ -657,7 +660,7 @@ def test_operator_gets_the_details_the_caller_does_not(client):
     assert "GEÇİCİ" in message
     # Etiket değil, upstream'in kendi cevabı (18 Kasım dersi).
     assert "HTTP 429" in message
-    assert "daily spend limit reached" in message
+    assert "daily limit reached" in message
     assert lines[0]["id"] in message
     assert "Bundan sonra" in message  # bekletmenin ne kadar süreceği
 

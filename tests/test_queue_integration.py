@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -50,18 +51,72 @@ def test_defaults_match_what_was_agreed_with_the_operator():
     assert settings.upstream_keepalive_skip_when_active is True
 
 
-def test_spend_limit_is_a_known_quota_marker_out_of_the_box():
+#: Canlı sürümün (`03aca2c`) varsayılan kota işaretleri. Liste, upstream'e bir
+#: isteğin kaç kez gönderileceğini belirlediği için **gönderme tarafının**
+#: parçasıdır; operatörün kararı olmadan değişmez (docs/LESSONS §20).
+LIVE_QUOTA_MARKERS = [
+    "upstream limit reached",
+    "message limit reached",
+    "conversation limit reached",
+    "daily limit reached",
+    "usage limit reached",
+    "quota exceeded",
+    "rate limit exceeded",
+    "too many requests",
+]
+SPEND_LIMIT_BODY = b'{"error":"daily spend limit reached"}'
+
+
+def _documented_opt_in() -> str:
+    """`.env.example`'daki yorum satırı: 18 Kasım gövdesini kota sayan tam liste."""
+    template = (Path(__file__).resolve().parents[1] / ".env.example").read_text("utf-8")
+    lines = [
+        line[2:].split("=", 1)[1]
+        for line in template.splitlines()
+        if line.startswith("# UPSTREAM_LIMIT_MARKERS=")
+    ]
+    assert len(lines) == 1, "şablonda tek bir isteğe bağlı UPSTREAM_LIMIT_MARKERS satırı olmalı"
+    return lines[0]
+
+
+def test_default_quota_markers_are_exactly_the_live_list():
+    """Varsayılan liste canlıdakiyle aynı: `spend limit reached` kendiliğinden eklenmez."""
     settings = Settings(_env_file=None, target_domain="example.test")
-    assert "spend limit reached" in settings.upstream_limit_markers
+    assert settings.upstream_limit_markers == LIVE_QUOTA_MARKERS
 
 
 @respx.mock
-def test_daily_spend_limit_is_answered_at_once_without_retries():
-    """18 Kasım: bu gövde tanınmadığı için 429 tekrar tekrar denenmiş, istek asılı kalmıştı."""
-    route = stream_route().mock(
-        return_value=httpx.Response(429, content=b'{"error":"daily spend limit reached"}')
+def test_daily_spend_limit_is_retried_by_default_like_the_live_version():
+    """Canlıdaki davranış korunur: bu gövde kota sayılmaz, 429 tekrar denenir.
+
+    Canlı ağaçta aynı girdiyle ölçüldü: istek başına 3 POST, kod
+    `upstream_rate_limited` (docs/LESSONS §20).
+    """
+    route = stream_route().mock(return_value=httpx.Response(429, content=SPEND_LIMIT_BODY))
+    app = create_app(
+        make_settings(retry_max_attempts=3, retry_base_delay=0.001, retry_max_delay=0.002)
     )
-    app = create_app(make_settings(retry_max_attempts=3))
+    with TestClient(app) as client:
+        response = client.post(
+            "/v1/chat/completions", json=CHAT, headers={"Authorization": f"Bearer {TEST_API_KEY}"}
+        )
+        cooling = client.app.state.accounts.cooldown_remaining(1)
+
+    assert response.status_code == 429
+    assert response.json()["error"]["code"] == "upstream_rate_limited"
+    assert route.call_count == 3  # canlıdaki gibi: aynı istek üç kez gönderildi
+    assert cooling == 0  # hesap dinlenmeye alınmadı
+
+
+@respx.mock
+def test_daily_spend_limit_is_answered_at_once_when_the_operator_lists_it():
+    """18 Kasım koruması isteğe bağlıdır: `.env.example`'daki satırla açılır."""
+    value = _documented_opt_in()
+    settings = Settings(_env_file=None, target_domain="example.test", upstream_limit_markers=value)
+    assert settings.upstream_limit_markers == [*LIVE_QUOTA_MARKERS, "spend limit reached"]
+
+    route = stream_route().mock(return_value=httpx.Response(429, content=SPEND_LIMIT_BODY))
+    app = create_app(make_settings(retry_max_attempts=3, upstream_limit_markers=value))
     with TestClient(app) as client:
         response = client.post(
             "/v1/chat/completions", json=CHAT, headers={"Authorization": f"Bearer {TEST_API_KEY}"}
@@ -222,6 +277,105 @@ async def test_disconnect_cancels_the_work():
     with pytest.raises(ClientClosedRequestError) as error:
         await asyncio.wait_for(task, timeout=1)
     assert error.value.status_code == 499
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+
+async def test_disconnect_does_not_cut_work_already_sent_upstream():
+    """Upstream'e gönderilmiş akışsız istek, istemcisi kopsa da sonuna kadar sürer.
+
+    Canlı sürümde (`03aca2c`) böyleydi: akışsız uçta kopma izlenmiyordu. Gönderme
+    tarafının davranışı değişmesin diye korunur (docs/LESSONS §20).
+    """
+    request = FakeRequest()
+    cancelled = asyncio.Event()
+    finished = asyncio.Event()
+
+    async def work() -> str:
+        try:
+            await asyncio.sleep(0.15)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        finished.set()
+        return "cevap"
+
+    task = asyncio.create_task(
+        cancel_on_disconnect(request, work(), committed=lambda: True)  # type: ignore[arg-type]
+    )
+    await asyncio.sleep(0.01)
+    await request.messages.put({"type": "http.disconnect"})
+
+    assert await asyncio.wait_for(task, timeout=2) == "cevap"
+    assert finished.is_set()
+    assert not cancelled.is_set()
+
+
+async def test_disconnect_still_cancels_work_that_was_not_sent_yet():
+    """Sırada bekleyen (henüz gönderilmemiş) istek, istemcisi koparsa iptal edilir."""
+    request = FakeRequest()
+    cancelled = asyncio.Event()
+
+    async def work() -> str:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return "geç"
+
+    task = asyncio.create_task(
+        cancel_on_disconnect(request, work(), committed=lambda: False)  # type: ignore[arg-type]
+    )
+    await asyncio.sleep(0.01)
+    await request.messages.put({"type": "http.disconnect"})
+
+    with pytest.raises(ClientClosedRequestError):
+        await asyncio.wait_for(task, timeout=1)
+    await asyncio.wait_for(cancelled.wait(), timeout=1)
+
+
+async def test_error_of_work_that_outlived_its_client_still_surfaces():
+    """Gönderilmiş iş hatayla biterse hata olağan yoldan çıkar (yutulmaz)."""
+    request = FakeRequest()
+
+    async def work() -> str:
+        await asyncio.sleep(0.05)
+        raise ValueError("upstream hata verdi")
+
+    task = asyncio.create_task(
+        cancel_on_disconnect(request, work(), committed=lambda: True)  # type: ignore[arg-type]
+    )
+    await asyncio.sleep(0.01)
+    await request.messages.put({"type": "http.disconnect"})
+
+    with pytest.raises(ValueError, match="upstream hata verdi"):
+        await asyncio.wait_for(task, timeout=2)
+
+
+async def test_cancelling_the_handler_also_stops_work_that_outlived_its_client():
+    """Sunucu kapanırken (işleyici iptal edilir) gönderilmiş iş de bırakılır."""
+    request = FakeRequest()
+    cancelled = asyncio.Event()
+
+    async def work() -> str:
+        try:
+            await asyncio.sleep(30)
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+        return "geç"
+
+    task = asyncio.create_task(
+        cancel_on_disconnect(request, work(), committed=lambda: True)  # type: ignore[arg-type]
+    )
+    await asyncio.sleep(0.01)
+    await request.messages.put({"type": "http.disconnect"})
+    await asyncio.sleep(0.05)
+    assert not task.done()  # istemci gitti ama iş sürüyor
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
     await asyncio.wait_for(cancelled.wait(), timeout=1)
 
 
