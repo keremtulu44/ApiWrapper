@@ -89,3 +89,29 @@ def ai_stream(*chunks: str, finish: bool = True, usage: dict | None = None) -> b
         lines.append("e:" + json.dumps(payload))
         lines.append("d:" + json.dumps(payload))
     return ("\n".join(lines) + "\n").encode("utf-8")
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # noqa: ARG001
+    """GitHub Actions'ta kırılan testleri PR'ın "annotations" bölümüne de yazar.
+
+    CI logunu indirmeden (ya da indiremeyen bir ortamdan) hangi testin hangi
+    Python sürümünde, neden kırıldığı okunabilsin diye. Yerelde hiçbir şey
+    yazmaz. GitHub adım başına en çok 10 hata notu gösterir; fazlası sayılır.
+    """
+    if os.environ.get("GITHUB_ACTIONS") != "true":
+        return
+    reports = [
+        *terminalreporter.stats.get("failed", []),
+        *terminalreporter.stats.get("error", []),
+    ]
+    for report in reports[:10]:
+        text = getattr(report, "longreprtext", "") or str(getattr(report, "longrepr", ""))
+        # Notun gövdesi sınırlıdır: en bilgilendirici kısım sondaki hata satırlarıdır.
+        tail = text[-3000:]
+        message = tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+        title = f"{report.nodeid}".replace(",", " ").replace("::", " › ")[:200]
+        terminalreporter.write_line(f"::error title={title}::{message}")
+    if len(reports) > 10:
+        terminalreporter.write_line(
+            f"::error title=pytest::{len(reports) - 10} kırık test daha var (log'a bakın)"
+        )
