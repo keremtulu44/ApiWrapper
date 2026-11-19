@@ -24,10 +24,24 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install dependencies
+      # 3.10 ve 3.11: pyproject.toml'daki ARALIĞIN bugünkü en yeni sürümleri.
+      # Üretimde kullanılmazlar; yeni çıkan bir kütüphane sürümünün neyi
+      # bozacağını, o sürüm kilide alınmadan önce gösteren erken uyarıdır.
+      - name: Install dependencies (newest versions in range)
+        if: matrix.python-version != '3.12'
         run: |
           python -m pip install --upgrade pip
           pip install -e ".[dev,tokens]"
+
+      # 3.12 = üretim imajının Python'u. Paketler requirements.lock'taki TAM
+      # sürümlerle kurulur (imajla aynı küme: tokens + browser) ve kurulanın
+      # kilitle aynı olduğu doğrulanır.
+      - name: Install dependencies (requirements.lock)
+        if: matrix.python-version == '3.12'
+        run: |
+          python -m pip install --upgrade pip
+          pip install -c requirements.lock -e ".[dev,tokens,browser]"
+          python scripts/verify_lock.py requirements.lock --allow-extra
 
       - name: Lint
         run: ruff check app tests scripts
@@ -37,3 +51,85 @@ jobs:
 
       - name: Test
         run: pytest -q
+
+  # Render'ın derleyeceği imajın AYNISI derlenir (aynı Dockerfile, aynı taban imaj
+  # özeti, aynı kilit) ve bütün testler o imajın İÇİNDE koşar. Sandbox'ta/yerelde
+  # Docker olmayabilir; Dockerfile'ın gerçekten derlendiğinin tek kanıtı bu iştir.
+  image:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+
+      # Dockerfile'ın son adımı (scripts/verify_lock.py) paketler, Python ya da
+      # OpenSSL beklenenle aynı değilse derlemeyi burada durdurur.
+      - name: Build the production image (Dockerfile)
+        run: docker build --progress=plain -t apiwrapper:ci . 2>&1 | tee "$RUNNER_TEMP/image-1-build.log"
+
+      - name: Record what is inside the image
+        run: |
+          docker run --rm apiwrapper:ci python scripts/verify_lock.py requirements.lock \
+            | tee "$RUNNER_TEMP/image-2-contents.log"
+          stack="$(grep -m1 '^GÖNDERME YIĞINI' "$RUNNER_TEMP/image-2-contents.log")"
+          debs="$(docker run --rm apiwrapper:ci dpkg-query -W -f='${Package}=${Version} ' libssl3t64 openssl ca-certificates curl)"
+          echo "::notice title=image contents::${stack} | ${debs}"
+
+      # Gönderme sözleşmesi (tests/test_wire_contract.py) dahil bütün testler,
+      # imajın kendi yorumlayıcısı ve kütüphaneleriyle. Depo salt-okunur bağlanır.
+      - name: Run the test suite inside the image
+        run: |
+          docker run --rm -e GITHUB_ACTIONS=true -v "$PWD:/work:ro" apiwrapper:ci \
+            sh /work/scripts/ci_image_tests.sh 2>&1 | tee "$RUNNER_TEMP/image-3-tests.log"
+
+      # Render gibi: PORT ortamdan gelir, süreç imajın kendi CMD'siyle ve yetkisiz
+      # kullanıcıyla açılır. /healthz 200 dönmeli.
+      - name: Start the container the way Render does
+        run: |
+          log="$RUNNER_TEMP/image-4-start.log"
+          docker run -d --name apiwrapper-ci -e PORT=10000 -e API_KEYS=sk-ci-smoke \
+            -p 127.0.0.1:18000:10000 apiwrapper:ci 2>&1 | tee "$log"
+          ok=""
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18000/healthz 2>/dev/null; then ok=1; break; fi
+            sleep 1
+          done
+          echo
+          docker logs apiwrapper-ci >> "$log" 2>&1 || true
+          docker rm -f apiwrapper-ci > /dev/null
+          if [ -z "$ok" ]; then echo "/healthz 30 saniyede 200 dönmedi" | tee -a "$log"; exit 1; fi
+
+      - name: Build the Telegram worker image (Dockerfile.telegram)
+        run: |
+          docker build --progress=plain -f Dockerfile.telegram -t apiwrapper-telegram:ci . 2>&1 \
+            | tee "$RUNNER_TEMP/image-5-telegram-build.log"
+          docker run --rm apiwrapper-telegram:ci python -c "import app.telegram.bot" 2>&1 \
+            | tee -a "$RUNNER_TEMP/image-5-telegram-build.log"
+
+      # Yalnız bilgi: sabitlenen özet hâlâ `python:3.12-slim` etiketinin gösterdiği
+      # imaj mı? Değilse daha yeni bir taban imaj var demektir; güncellemek bilinçli
+      # bir karardır (docs/LESSONS_2026_11_14.md §20.6). Bu adım işi kırmaz.
+      - name: Is the pinned base image still what the tag points to? (information only)
+        continue-on-error: true
+        run: |
+          pinned="$(grep -m1 -o 'sha256:[0-9a-f]\{64\}' Dockerfile)"
+          current="$(docker buildx imagetools inspect python:3.12-slim | awk '$1 == "Digest:" { print $2; exit }')"
+          if [ -z "$current" ]; then
+            echo "etiketin özeti okunamadı"
+          elif [ "$pinned" = "$current" ]; then
+            echo "::notice title=base image::python:3.12-slim etiketi sabitlenen özeti gösteriyor (${pinned})"
+          else
+            echo "::notice title=base image::python:3.12-slim etiketi artık ${current} gösteriyor - Dockerfile bilerek ${pinned} ile sabit. Güncelleme adımları - docs/LESSONS_2026_11_14.md §20.6"
+          fi
+
+      # CI logu her ortamdan indirilemiyor; kırılan adımın son satırları hata notu
+      # olarak da yazılır (PR'ın Checks sayfasında ve API'de görünür).
+      - name: Report failure details
+        if: failure()
+        run: |
+          log="$(ls "$RUNNER_TEMP"/image-*.log 2>/dev/null | sort | tail -n 1)"
+          [ -n "$log" ] || exit 0
+          body="$(tail -n 45 "$log" | tr -d '\r' | sed -e 's/%/%25/g' | awk 'BEGIN { ORS = "%0A" } { print }')"
+          echo "::error title=image job - $(basename "$log" .log)::${body}"

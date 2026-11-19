@@ -1,7 +1,9 @@
 # syntax=docker/dockerfile:1
 # Telegram Background Worker: Web Service Dockerfile'ından bağımsız, hafif imaj.
 # Bot wrapper'a HTTP üzerinden gider; Chromium/Playwright bu imajda gerekmez.
-FROM python:3.12-slim
+# Taban imaj ve paket sürümleri Web Service imajıyla AYNI özet ve aynı kilitle
+# sabittir (Dockerfile'daki açıklama; docs/LESSONS_2026_11_14.md §20.6).
+FROM python:3.12-slim@sha256:5e2bdb1b0d542d5039cffb8181c65930093949194a65c365dfb1b0fe13a4fa5b
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -10,9 +12,13 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-COPY pyproject.toml README.md ./
+COPY pyproject.toml README.md requirements.lock ./
+COPY scripts/verify_lock.py ./scripts/verify_lock.py
 COPY app ./app
-RUN pip install --no-cache-dir . \
+# `--subset`: bu imaj kilidin yalnız bir kısmını kurar (Playwright, tiktoken yok).
+RUN pip install --no-cache-dir -c requirements.lock . \
+ && python scripts/verify_lock.py requirements.lock --subset \
+      --expect-python 3.12.16 --expect-openssl 3.5.7 \
  && useradd --create-home --uid 10001 appuser \
  && chown -R appuser:appuser /app
 

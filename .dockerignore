@@ -19,5 +19,8 @@ build
 docs
 tests
 scripts
+# Tek istisna: imaj derlenirken kurulu paketleri requirements.lock ile
+# karşılaştıran denetim. `scripts` satırından SONRA durmalı (son eşleşen kazanır).
+!scripts/verify_lock.py
 node_modules
 .DS_Store
