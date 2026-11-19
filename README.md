@@ -104,7 +104,9 @@ OpenAI-compatible istemcilerle çalışır.
 >    diye bildirilir; **işaret listesi ise canlıdakiyle aynı bırakıldı** (gönderme
 >    tarafı değişmez — 19 Kasım kararı, `LESSONS §20`): o 429 yine tekrar denenir.
 >    Kota olarak tanınması istenirse kod değişmeden env ile açılır
->    (`.env.example` → `UPSTREAM_LIMIT_MARKERS`). Ayrıntı: `docs/LESSONS_2026_11_14.md §16`.
+>    (`.env.example` → `UPSTREAM_LIMIT_MARKERS`). **Operatör kararı (19 Kasım):
+>    açılacak** — PR #56 deploy'unda, taze cURL ile aynı anda; yazılacak satır
+>    `docs/ROLLBACK_2026_11_16.md §13.3`'te. Ayrıntı: `docs/LESSONS_2026_11_14.md §16`.
 > 9. **Env değişikliği = restart = oturum kaybı.** 18 Kasım'da tek bir env
 >    değeri için yapılan redeploy ~28 saatlik sağlıklı oturumu bitirdi.
 >    Düzeltmeleri biriktir, cURL'ün zaten yenileneceği âna sakla. Canlı dala her
@@ -142,6 +144,13 @@ OpenAI-compatible istemcilerle çalışır.
 >     alınır. PR #56'nın bilerek getirdiği tek fark **zamanlamadır** (sıra +
 >     5–10 sn aralık, trafik varken probe erteleme) ve iki env anahtarıyla
 >     kapatılabilir. Ölçüm ve anahtarlar: `docs/LESSONS_2026_11_14.md §20`.
+>     **İmajın içi de sabittir (19 Kasım, PR #56):** taban imaj özetle
+>     (`python:3.12-slim@sha256:…` = Python 3.12.16, OpenSSL 3.5.7), Python
+>     paketleri `requirements.lock`'taki tam sürümlerle kurulur; derlemenin son
+>     adımı imajın içini denetler ve uyuşmazlıkta derlemeyi durdurur (çalışan
+>     sürüm sürer). Kilidi ya da taban imajı güncellemek gönderme tarafını
+>     değiştirebilir: bilerek, taze cURL ile aynı restart'ta yapılır
+>     (`docs/LESSONS_2026_11_14.md §20.6`).
 >
 > **19 Kasım düzeltmeleri (bu listede):** 5. madde "tarayıcıdan çıkış yap"
 > diyordu; operatörün uzun koşulardaki uygulaması sekmeyi **kapatmak**tır ve
@@ -780,15 +789,25 @@ Upstream token'ı reddederse (403) dinamik sağlayıcıda cache otomatik geçers
 > `/ping`'in "son upstream kontrolü" satırı (bu sürümde `/ping` yalnız
 > `/healthz`'dir), 409'da "eskimiş başlıkları hiç göndermeden tekrar" kademesi.
 > **Plan:** canlı servis Render **Free** planındadır ve dışarıdan düzenli istek
-> atan bir zamanlayıcı (cron-job.org) onu uyanık tutar (operatör, 19 Kasım);
-> `render.yaml` ise bu ağaçta `plan: starter` yazar — canlıyı etkilemez, ama
-> Blueprint'ten yeni servis kurulursa ücretli plan açılır. Blueprint'teki
+> atan bir zamanlayıcı (cron-job.org) onu uyanık tutar (operatör, 19 Kasım).
+> `render.yaml` de 19 Kasım'dan beri `plan: free` yazar (geri dönüşten o güne
+> dek `starter` yazıyordu; operatör kararıyla düzeltildi). Render'ın Free plan
+> belgesindeki üç sınır bu servis için önemlidir: 15 dakika istek almayan servis
+> uyur, Render Free servisi "herhangi bir anda yeniden başlatabilir", çalışma
+> alanı ayda 750 Free saat alır (`docs/RENDER.md`, baştaki not). Blueprint'teki
 > `RECAPTCHA_PROVIDER` 19 Kasım'da `static` yapıldı (geri dönüş onu `browser`a
 > döndürmüştü). Keepalive için aşağıdaki `10800` örneği ölçülmemiş bir değerdir;
 > canlıda denenenler `600` ve `3600` (`docs/ROLLBACK_2026_11_16.md §12`).
 
 - Depodaki `render.yaml` tek instance, ücretsiz `free` Docker servisi tanımlar;
   ücretli disk veya paid plan gerektirmez.
+- **İmaj sabit sürümlerle derlenir (19 Kasım, PR #56).** `Dockerfile` taban imajı
+  özetle (`FROM python:3.12-slim@sha256:…`), paketleri `requirements.lock` ile
+  (`pip install -c requirements.lock …`) kurar; son adımda
+  `scripts/verify_lock.py` kurulu paketleri, Python'u ve OpenSSL'i beklenenle
+  karşılaştırır. Fark varsa derleme `KİLİT UYUŞMUYOR` ile durur ve yeni sürüm
+  yayına girmez. CI aynı imajı derler ve bütün testleri içinde koşar. Güncelleme
+  adımları ve sınırlar: `docs/LESSONS_2026_11_14.md §20.6`.
 - `/healthz` yalnızca process liveness, `/readyz` statik dağıtım readiness kontrolüdür.
   Render blueprint'i `/readyz` kullanır; canlı upstream healthcheck içinde denenmez.
 - Başlatma komutu Render'ın `PORT` değişkenini, yoksa `8000` portunu kullanır.

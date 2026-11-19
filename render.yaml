@@ -1,10 +1,21 @@
-# Render Blueprint: tek instance, sleep etmeyen Docker Web Service.
+# Render Blueprint: tek instance Docker Web Service, Free plan.
 # Gizli değerler depoya yazılmaz; Blueprint oluşturulurken Render sorar.
+#
+# PLAN (operatör kararı, 19 Kasım 2026): `free` — canlı servisin gerçek planı.
+# Render'ın Free plan için belgeledikleri (https://render.com/docs/free) bu servisi
+# doğrudan ilgilendirir, çünkü bu sürümde süreç yeniden başlarsa upstream oturumu
+# ölür (çerez kavanozu bellektedir):
+#   * 15 dakika istek almayan servis UYUR; uyanış yeni süreçtir. Servisi uyanık
+#     tutan şey DIŞARIDAKİ zamanlayıcıdır (cron-job.org, düzenli `GET /`).
+#   * "Render might restart a Free web service at any time."
+#   * Çalışma alanı başına ayda 750 Free saat; biterse Free servisler ay sonuna
+#     kadar askıya alınır (7/24 çalışan TEK servis en çok 744 saat kullanır).
+# Ayrıntı: docs/RENDER.md (baştaki not), docs/ROLLBACK_2026_11_16.md §12.8.
 services:
   - type: web
     name: apiwrapper
     runtime: docker
-    plan: starter
+    plan: free
     dockerfilePath: ./Dockerfile
     dockerContext: .
     numInstances: 1

@@ -328,6 +328,6 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 | 1 | `recaptcha_provider` `PERSISTED_FIELDS` içinde değil | `app/upstream/state_store.py:67` |
 | 2 | `recaptcha_token_ttl` = 100 sn cache | `app/core/config.py:324`, `app/services/recaptcha/base.py:51` |
 | 3 | `cx` varsayılan gönderilmiyor | `app/core/config.py:89` |
-| 4 | `render.yaml` site key blueprint değeri | `render.yaml:37` |
+| 4 | `render.yaml` site key blueprint değeri | `render.yaml` → `RECAPTCHA_SITE_KEY` |
 | 5 | URL-encoded JSON çerez biçimi (`unquote` yok) | `app/upstream/auth.py:122` |
 | 6 | `_is_user_missing` / `_is_auth_body` sıralaması | `app/upstream/client.py:643,668` |

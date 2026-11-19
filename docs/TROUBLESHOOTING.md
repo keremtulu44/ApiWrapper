@@ -46,7 +46,7 @@ Amaç her arızada log okumaya sıfırdan başlamamak.
 | `GET /healthz` | Süreç ayakta mı (liveness) |
 | `GET /readyz` | Yapılandırma tamam mı (upstream'e **dokunmaz**) |
 | `GET /health` | Model/oturum/devre kesici durumu (upstream adresi varsayılan gizli) |
-| `GET /v1/admin/config` | Etkin yapılandırmanın gizli olmayan özeti |
+| `GET /v1/admin/config` | Etkin yapılandırmanın gizli olmayan özeti. `quota.markers`: kota işareti listesinin **etkin** hâli (env'deki `UPSTREAM_LIMIT_MARKERS` okundu mu, tırnak ya da eksik ifade var mı) |
 | `GET /v1/admin/accounts` | Hesap başına kota penceresi, cooldown, öğrenilen limit |
 | `GET /v1/admin/auth?slot=N` | Cookie'den token çıkarılabiliyor mu, süresi dolmuş mu |
 | `POST /v1/admin/breaker/reset` | Devre kesiciyi kapat (arıza geçtiyse) |
@@ -573,12 +573,39 @@ için İngilizce kalır, operatöre giden yüzeyler Türkçedir.
 
 ## 7. Dağıtım sonrası kontrol listesi
 
+0. *(PR #56)* Render **derleme** logunda `GÖNDERME YIĞINI python=3.12.16
+   openssl=3.5.7 httpx=0.28.1 …` ve `kilit uyumlu: 36 kurulu paket, 36
+   sabitlenmiş sürüm` satırları (§7b).
 1. `GET /readyz` → `{"status":"ok"}` (eksikse `issues` listesine bakın).
 2. Telegram `/ping` → `HTTP 200` (yalnız süreç ayakta; upstream'i kanıtlamaz).
 3. Tek bir gerçek mesaj: bot üzerinden veya `POST /v1/chat/completions` —
    **cURL'ün çalıştığının kanıtı budur.**
 4. Live tail'de `application_started` + `upstream_curl_loaded` satırları.
 5. ~1 dakika sonra ilk probe: `upstream_keepalive_completed` (veya hata kodu).
+
+### 7b. Render derlemesi `KİLİT UYUŞMUYOR` ile durdu (PR #56)
+
+İmaj sabit sürümlerle derlenir: taban imaj özetle, Python paketleri
+`requirements.lock` ile (`LESSONS_2026_11_14.md §20.6.1`). Derlemenin son adımı
+(`scripts/verify_lock.py`) imajın içini beklenenle karşılaştırır; fark varsa
+derlemeyi durdurur ve farkı yazar:
+
+| Çıktıdaki satır | Anlamı |
+|---|---|
+| `SÜRÜM FARKLI  <paket>: kurulu X, kilit Y` | Paket kilitte yazandan başka bir sürümle kuruldu |
+| `KİLİTTE YOK   <paket>==X kurulu ama sabitlenmemiş` | Kilitte olmayan bir paket kuruldu (bir bağımlılık yeni bir paket istemeye başladı) |
+| `KURULU DEĞİL  <paket>==X kilitte var ama kurulmamış` | Kilitteki bir paket bu imajda kurulmadı |
+| `PYTHON FARKLI` / `OPENSSL FARKLI` | Taban imajın içi beklenen değil (özet değişti ya da sistem paketi OpenSSL'i yükseltti) |
+
+**Ne olur:** yeni sürüm yayına **girmez**; Render'ın belgesine göre servis son
+başarılı sürümle çalışmaya devam eder (bu kurulumda ölçülmedi). Oturum harcanmaz.
+
+**Ne yapılır:** çıktıyı kaydet ve bildir. Kilidi ya da `Dockerfile`'daki beklenen
+sürümleri derleme geçsin diye **değiştirme**: durduran şey, upstream'e konuşan
+yığının sessizce değişmesini önleyen denetimdir. Güncelleme bilinçli bir iştir
+ve adımları `LESSONS §20.6.1`'dedir. Aynı `Dockerfile` her push'ta CI'ın `image`
+işinde derlenir; orası yeşilken Render'da durması beklenmez (ağ / kayıt defteri
+hatası ayrı bir şeydir ve "Deploy failed" olarak görünür).
 
 ---
 

@@ -127,6 +127,39 @@ def test_daily_spend_limit_is_answered_at_once_when_the_operator_lists_it():
     assert route.call_count == 1  # tekrar denenmedi
 
 
+def test_the_env_line_in_the_runbook_is_the_tested_one_and_shows_in_admin_config(monkeypatch):
+    """Operatör korumayı env ile açar (karar: 19 Kasım 2026).
+
+    Canlıya alma adımlarında (`ROLLBACK §13.3`) kopyalanacak değer şablondaki
+    sınanmış satırla aynıdır; ortam değişkeni olarak girildiğinde uygulama onu
+    dokuz ifade olarak okur ve belgede söylenen doğrulama ucu bunu gösterir.
+    """
+    runbook = (Path(__file__).resolve().parents[1] / "docs" / "ROLLBACK_2026_11_16.md").read_text(
+        "utf-8"
+    )
+    lines = runbook.splitlines()
+    at = lines.index("Key:    UPSTREAM_LIMIT_MARKERS")
+    assert lines[at + 1].startswith("Value:  ")
+    value = lines[at + 1].removeprefix("Value:  ")
+    assert value == _documented_opt_in()
+
+    monkeypatch.setenv("UPSTREAM_LIMIT_MARKERS", value)
+    expected = [*LIVE_QUOTA_MARKERS, "spend limit reached"]
+    with TestClient(create_app(make_settings())) as client:
+        shown = client.get(
+            "/v1/admin/config", headers={"Authorization": f"Bearer {TEST_API_KEY}"}
+        ).json()["quota"]["markers"]
+    assert shown == expected
+
+    # Belgedeki iki uyarının gerekçesi: tırnak değerin parçası olur; yalnız yeni
+    # ifadeyi yazmak öbür sekizini siler (env listesi varsayılanın YERİNE geçer).
+    monkeypatch.setenv("UPSTREAM_LIMIT_MARKERS", f'"{value}"')
+    quoted = make_settings().upstream_limit_markers
+    assert quoted[0] == '"upstream limit reached' and quoted[-1] == 'spend limit reached"'
+    monkeypatch.setenv("UPSTREAM_LIMIT_MARKERS", "spend limit reached")
+    assert make_settings().upstream_limit_markers == ["spend limit reached"]
+
+
 # ---------------------------------------------------------------- bağlantı
 def test_one_queue_health_and_alerter_are_shared_by_everything(client):
     state = client.app.state

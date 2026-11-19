@@ -28,15 +28,41 @@ edebilmektir.
 >
 > | | Belgede / dosyada | Canlıda |
 > |---|---|---|
-> | Plan | Bu belge "free" diyor; bu ağaçtaki `render.yaml` `plan: starter` yazıyor | **Free** |
+> | Plan | Bu belge ve `render.yaml` "free" diyor (`render.yaml` geri dönüşten 19 Kasım'a dek `starter` yazıyordu; operatör kararıyla `free` yapıldı) | **Free** |
 > | Uyku | "hareketsizlikte uyur" | Dışarıdan düzenli istek atan bir zamanlayıcı (**cron-job.org**) uyanık tutuyor; 2 haftadan uzun süredir uyuduğu görülmedi. Loglardaki 5 dakikada bir `GET /` büyük olasılıkla budur (`ROLLBACK §12.8`, 6. soru) |
 > | `RECAPTCHA_PROVIDER` | `render.yaml` geri dönüşten beri `browser` yazıyordu; 19 Kasım'da `static` yapıldı | **`static`** |
 >
 > `render.yaml` yalnız bir şablondur (Blueprint): canlı değerler Render
-> panosundadır. Bu ağaçtaki şablondan **yeni** servis kurulursa `plan: starter`
-> ücretli plan açar. `UPSTREAM_MODE` şablonda tanımlı değildir ve gerekmez:
-> `UPSTREAM_CURL` doluyken `mode` ve akış yolu cURL'den okunur, env değerleri
-> okunmaz (`ROLLBACK §6`, 19 Kasım düzeltmesi).
+> panosundadır. Şablon 19 Kasım'dan beri canlıyla aynı planı (`free`) yazar;
+> ondan **yeni** servis kurulursa o da Free açılır. `UPSTREAM_MODE` şablonda
+> tanımlı değildir ve gerekmez: `UPSTREAM_CURL` doluyken `mode` ve akış yolu
+> cURL'den okunur, env değerleri okunmaz (`ROLLBACK §6`, 19 Kasım düzeltmesi).
+>
+> **Free planın, Render'ın kendi belgesinde yazan ve bu servisi ilgilendiren
+> sınırları** ([render.com/docs/free](https://render.com/docs/free); 19 Kasım'da
+> okundu, bu kurulumda **gözlenmedi**). Hepsi aynı yere çıkar: süreç yeniden
+> başlarsa oturum ölür.
+>
+> | Render'ın yazdığı | Bu servis için anlamı |
+> |---|---|
+> | 15 dakika istek almayan Free servis **uyur**; sonraki istekte ~1 dakikada açılır | Uyanış yeni süreçtir. Uyanık tutan şey dışarıdaki zamanlayıcıdır (cron-job.org); durursa oturum gider |
+> | *"Render might restart a Free web service at any time."* | Elimizde olmayan bir restart kaynağı. Bir oturum, taze cURL'e rağmen kısa sürede `401`'e düşerse Render → **Events** sayfasında o saatte bir restart var mı diye bak |
+> | Çalışma alanı başına ayda **750 Free saat**; biterse Free servisler ay sonuna kadar **askıya alınır** | 7/24 çalışan tek servis en çok 744 saat kullanır: sığar. Aynı çalışma alanında sürekli çalışan **ikinci** bir Free web servisi bu payı ay bitmeden tüketir |
+> | Free serviste kabuk (shell) erişimi ve kalıcı disk yoktur | Çalışan imajın içine girip bakılamaz; imajın içeriği yalnız **derleme logundan** okunur (aşağıda) |
+>
+> **İmaj sabit sürümlerle derlenir (19 Kasım, PR #56 — henüz canlıda değil).**
+> Taban imaj özetle (`python:3.12-slim@sha256:…`), Python paketleri
+> `requirements.lock`'taki tam sürümlerle kurulur; derlemenin son adımı imajın
+> içini denetler. Derleme logunda şu iki satır görünmelidir:
+>
+> ```
+> GÖNDERME YIĞINI python=3.12.16 openssl=3.5.7 httpx=0.28.1 httpcore=1.0.9 h2=4.4.1 hpack=4.2.0 hyperframe=6.1.0 h11=0.16.0 anyio=4.16.0 certifi=2026.10.23 idna=3.20
+> kilit uyumlu: 36 kurulu paket, 36 sabitlenmiş sürüm
+> ```
+>
+> Derleme `KİLİT UYUŞMUYOR` ile durursa yeni sürüm yayına **girmez**; Render'ın
+> belgesine göre servis son başarılı sürümle çalışmaya devam eder. Ne yapılacağı:
+> [`LESSONS_2026_11_14.md §20.6`](LESSONS_2026_11_14.md).
 >
 > **Canlıya alma adımları** (PR #56; önce tek hesap, 12 saat sonra ikinci):
 > [`ROLLBACK_2026_11_16.md §13-§14`](ROLLBACK_2026_11_16.md).
@@ -45,6 +71,8 @@ edebilmektir.
 
 1. Render, `render.yaml` içindeki tek Docker Web Service'i okur.
 2. `Dockerfile` Python paketlerini, token sayacını, Playwright ve Chromium'u kurar.
+   *(19 Kasım, PR #56: taban imaj özetle, paketler `requirements.lock` ile sabit;
+   son adım imajın içini denetler — baştaki not.)*
 3. Render bir `PORT` verir. Container komutu bu portu kullanır; elle `PORT` yazmayın.
 4. Uvicorn **tek worker** ile açılır.
 5. FastAPI lifespan sırasıyla upstream client'ını, CAPTCHA sağlayıcısını, oturum
@@ -64,7 +92,7 @@ restart'ta sıfırlanır; bunlar upstream istek mantığını bozmaz.
 
 > ⚠️ **Bu sürümde (19 Kasım notu):** `RENDER_API_KEY` senkronu **yok**; dönen
 > çerezler restart'ta **kaybolur** ve bu, upstream isteklerini bozar (oturum
-> ölür). Bu ağaçtaki `render.yaml` `plan: starter` yazar; canlı servis Free'dir.
+> ölür). `render.yaml` 19 Kasım'dan beri canlıdaki gibi `plan: free` yazar.
 
 ## 2. Bir tamamlama isteği nasıl yürür?
 
@@ -106,8 +134,8 @@ restart'ta sıfırlanır; bunlar upstream istek mantığını bozmaz.
   `REPLACE_WITH_...` bırakılırsa `/readyz` servisi hazır kabul etmez.
 - Blueprint `free` plan kullanır. Servis hareketsizlikte uyuyabilir; bu durum hata
   değildir, gelen HTTP isteğiyle uyanır ancak ilk cevap gecikebilir.
-  *(19 Kasım: bu ağaçtaki `render.yaml` `plan: starter` yazıyor; canlı servis
-  Free ve cron-job.org ile uyanık tutuluyor. **Uyku, bu sürümde masum değildir:**
+  *(19 Kasım: canlı servis Free ve cron-job.org ile uyanık tutuluyor;
+  `render.yaml` de `free` yazıyor. **Uyku, bu sürümde masum değildir:**
   Render'ın belgelediği davranışa göre uyuyan servis gelen istekte yeni süreçle
   açılır; bellekteki oturum gider — restart ile aynı sonuç. Bu kurulumda
   **gözlenmedi**; zamanlayıcı durursa görülmesi beklenir.)*

@@ -102,6 +102,18 @@
 > cümlesi) ve sözleşme testle kilitlendi. PR #56'nın bilerek getirdiği tek fark
 > **zamanlamadır** (sıra + 5–10 sn aralık, trafik varken probe erteleme):
 > **[`LESSONS_2026_11_14.md §20`](LESSONS_2026_11_14.md)**.
+>
+> **19 Kasım (3) — üç operatör kararı (PR #56; canlıda henüz değil).**
+> (a) **İmajın içi sabitlendi:** taban imaj özetle (`python:3.12-slim@sha256:…`
+> = Python 3.12.16, OpenSSL 3.5.7), Python paketleri `requirements.lock`'taki
+> tam sürümlerle kurulur; derlemenin son adımı imajın içini denetler ve
+> uyuşmazlıkta derlemeyi durdurur; CI imajı derleyip bütün testleri (798) **içinde** koşar
+> ([`LESSONS_2026_11_14.md §20.6.1`](LESSONS_2026_11_14.md)).
+> (b) **`render.yaml` planı `free`** (canlı servisin gerçek planı; Render'ın Free
+> plan sınırları [`RENDER.md`](RENDER.md) başında).
+> (c) **`429 daily spend limit reached` koruması açılacak** — kodla değil,
+> operatörün deploy sırasında gireceği `UPSTREAM_LIMIT_MARKERS` ile; satır ve
+> doğrulaması [`ROLLBACK_2026_11_16.md §13.3`](ROLLBACK_2026_11_16.md).
 
 ---
 
