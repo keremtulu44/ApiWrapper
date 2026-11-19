@@ -21,14 +21,20 @@ döndürmektir; altın dosyayı bugünkü koddan yeniden üretmek **değildir**
 Kütüphane yükseltmesi de bu testi kırabilir (örn. httpx varsayılan başlıkları
 değiştirirse). O da gerçek bir değişikliktir: yeni imaj upstream'e farklı
 görünecektir; bilerek karar verilmelidir.
+
+Yorumlayıcı da gönderme tarafının parçasıdır: `Cookie` başlığındaki **sıra**
+Python sürümüne bağlıdır (aşağıda `STDLIB_SORTS_COOKIES`). Altın dosya canlı
+imajın yorumlayıcı ailesinin (3.11+; imaj 3.12) davranışını taşır.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 from typing import Any
 
+import httpx
 import pytest
 
 from tests.wire_capture import (
@@ -47,6 +53,48 @@ from tests.wire_capture import (
 
 GOLDEN_PATH = Path(__file__).parent / "data" / "wire_golden_03aca2c.json"
 GOLDEN: dict[str, Any] = json.loads(GOLDEN_PATH.read_text(encoding="utf-8"))
+
+#: cURL'deki çerez sırası (`tests/wire_capture.py: session_cookie`); bilerek alfabetik değil.
+CURL_COOKIE_ORDER = [
+    "_ga",
+    "cf_clearance",
+    "__cf_bm",
+    "arena-auth-prod-v1.0",
+    "arena-auth-prod-v1.1",
+]
+
+
+def _stdlib_sorts_cookies() -> bool:
+    """Bu yorumlayıcının çerez kavanozu çerezleri **ada göre sıralayarak** mı dolaşıyor?
+
+    httpx her istekte kavanozu dolaşarak `Cookie` başlığını kurar. Python 3.10'un
+    `http.cookiejar`'ı dolaşırken ada göre sıralar; 3.11 ve sonrası ekleme sırasını
+    (yani cURL'deki sırayı) korur. CI'da 3.10 işi bu yüzden farklı sıra üretir —
+    ilk çalıştırmada böyle görüldü. Sürüm numarasına değil davranışa bakılır.
+    """
+    jar = httpx.Cookies()
+    jar.set("b", "1", domain="x.test", path="/")
+    jar.set("a", "2", domain="x.test", path="/")
+    return [cookie.name for cookie in jar.jar] == ["a", "b"]
+
+
+STDLIB_SORTS_COOKIES = _stdlib_sorts_cookies()
+
+
+def _portable(request: dict[str, Any]) -> dict[str, Any]:
+    """Çerezleri sıralayan yorumlayıcıda `Cookie` başlığını sıradan bağımsız kıyaslanır yapar.
+
+    Yalnız o yorumlayıcıda ve yalnız çerezlerin **sırası** için: hangi çerezin
+    hangi değerle gittiği, başlığın yeri ve diğer her şey yine birebir aranır.
+    Canlı imajın yorumlayıcısında (3.11+) hiçbir şey gevşetilmez.
+    """
+    if not STDLIB_SORTS_COOKIES:
+        return request
+    headers = [
+        [name, "; ".join(sorted(value.split("; "))) if name.lower() == "cookie" else value]
+        for name, value in request["headers"]
+    ]
+    return {**request, "headers": headers}
 
 
 def _line(request: dict[str, Any]) -> str:
@@ -89,6 +137,7 @@ def _assert_same(name: str, actual: list[dict[str, Any]], expected: list[dict[st
         f"{name}: upstream'e giden isteklerin sayısı ya da sırası canlı sürümden farklı"
     )
     for index, (got, want) in enumerate(zip(actual, expected, strict=True)):
+        got, want = _portable(got), _portable(want)
         assert got == want, _explain(name, index, got, want)
 
 
@@ -112,6 +161,43 @@ def test_requests_sent_upstream_are_identical_to_the_live_version(name: str):
 @pytest.mark.parametrize("name", sorted(CURL_CASES))
 def test_main_curl_is_read_exactly_like_the_live_version(name: str):
     assert read_curl(name) == GOLDEN["curl"][name]
+
+
+# ---------------------------------------------------------------- yorumlayıcı
+def _cookie_names(request: dict[str, Any]) -> list[str]:
+    cookie = next(value for name, value in request["headers"] if name.lower() == "cookie")
+    return [part.split("=", 1)[0] for part in cookie.split("; ")]
+
+
+def test_cookie_order_is_the_curl_order_on_the_production_interpreter():
+    """Çerezler upstream'e cURL'deki sırayla gider — canlı imajın yorumlayıcısında.
+
+    Sıra koddan değil yorumlayıcıdan gelir; bu test hangisinde ne olduğunu
+    kayda geçirir ki bir gün sıra değişirse nedeni aranacak yer belli olsun.
+    """
+    first = capture("01_iki_akissiz_istek")[0]
+    if STDLIB_SORTS_COOKIES:
+        assert _cookie_names(first) == sorted(CURL_COOKIE_ORDER)  # Python 3.10
+    else:
+        assert _cookie_names(first) == CURL_COOKIE_ORDER  # Python 3.11+ (canlı: 3.12)
+
+
+def test_golden_file_carries_the_curl_cookie_order():
+    """Altın dosya, çerez sırasını koruyan yorumlayıcıda (canlıdaki aile) üretilmiştir."""
+    first = unpack(GOLDEN, "01_iki_akissiz_istek")[0]
+    assert _cookie_names(first) == CURL_COOKIE_ORDER
+
+
+def test_image_interpreter_keeps_the_cookie_order():
+    """İmajın Python'u 3.11'den eski olamaz: eskisi çerezleri yeniden sıralar.
+
+    `Dockerfile`'daki taban imaj değişirse (örn. 3.10'a) upstream'e giden
+    `Cookie` başlığı kod değişmeden farklılaşır.
+    """
+    dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text("utf-8")
+    match = re.search(r"^FROM python:(\d+)\.(\d+)", dockerfile, flags=re.MULTILINE)
+    assert match, "Dockerfile'da `FROM python:X.Y` satırı bulunamadı"
+    assert (int(match.group(1)), int(match.group(2))) >= (3, 11)
 
 
 # ---------------------------------------------------------------------- mode

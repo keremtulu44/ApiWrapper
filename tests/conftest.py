@@ -96,7 +96,8 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # no
 
     CI logunu indirmeden (ya da indiremeyen bir ortamdan) hangi testin hangi
     Python sürümünde, neden kırıldığı okunabilsin diye. Yerelde hiçbir şey
-    yazmaz. GitHub adım başına en çok 10 hata notu gösterir; fazlası sayılır.
+    yazmaz. GitHub adım başına en çok 10 hata notu gösterir: ilki bütün kırık
+    testlerin listesidir, sonrakiler ilk dokuzunun ayrıntısı.
     """
     if os.environ.get("GITHUB_ACTIONS") != "true":
         return
@@ -104,14 +105,20 @@ def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # no
         *terminalreporter.stats.get("failed", []),
         *terminalreporter.stats.get("error", []),
     ]
-    for report in reports[:10]:
+    if not reports:
+        return
+
+    def escape(text: str) -> str:
+        return text.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
+
+    names = "\n".join(report.nodeid for report in reports)
+    terminalreporter.write_line(
+        f"::error title=pytest - {len(reports)} kırık test::{escape(names[:3500])}"
+    )
+    for report in reports[:9]:
+        crash = getattr(getattr(report, "longrepr", None), "reprcrash", None)
+        head = (getattr(crash, "message", "") or "")[:1800]
         text = getattr(report, "longreprtext", "") or str(getattr(report, "longrepr", ""))
-        # Notun gövdesi sınırlıdır: en bilgilendirici kısım sondaki hata satırlarıdır.
-        tail = text[-3000:]
-        message = tail.replace("%", "%25").replace("\r", "%0D").replace("\n", "%0A")
-        title = f"{report.nodeid}".replace(",", " ").replace("::", " › ")[:200]
-        terminalreporter.write_line(f"::error title={title}::{message}")
-    if len(reports) > 10:
-        terminalreporter.write_line(
-            f"::error title=pytest::{len(reports) - 10} kırık test daha var (log'a bakın)"
-        )
+        body = f"{head}\n...\n{text[-1500:]}" if head else text[-3000:]
+        title = report.nodeid.replace(",", " ").replace("::", " › ")[:200]
+        terminalreporter.write_line(f"::error title={title}::{escape(body)}")
