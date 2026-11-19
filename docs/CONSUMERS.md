@@ -301,8 +301,12 @@ Pratik sonuçlar:
    önerisi tek istek içindir; paralel istek gönderiyorsan daha uzun tut.
 2. **Paralel istek hız kazandırmaz.** On isteği aynı anda göndermek ile sırayla
    göndermek aynı sürede biter.
-3. **Bağlantıyı kapatırsan isteğin iptal edilir** (akışlı ve akışsız): sırada
-   bekliyorsa sıradan çıkar, işleniyorsa durdurulur. Vazgeçtiğin istek kotanı yemez.
+3. **Bağlantıyı kapatırsan:** sırada bekleyen isteğin sıradan çıkar (upstream'e
+   hiç gitmez). **Akışlı** istek işleniyorsa durdurulur. **Akışsız** istek
+   upstream'e gönderilmişse durdurulmaz: sonuna kadar sürer, cevabı atılır
+   (canlı sürümdeki davranış; gönderme tarafı değişmesin diye korundu —
+   `LESSONS_2026_11_14.md §20`). Yani akışsız istekte zaman aşımını kısa tutup
+   yeniden denemek, öndeki isteğin bitmesini beklemekten hızlı değildir.
 
 ---
 

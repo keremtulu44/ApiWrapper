@@ -115,8 +115,10 @@
 11. **Stream=false**: parçalar bellekte birleştirilir, tek `chat.completion` döner.
 12. Token sayımı: upstream usage vermezse `tiktoken` (cl100k_base) ile tahmin edilir,
     `usage.estimated=true` bayrağı `system_fingerprint` yanında raporlanır.
-13. İstemci bağlantıyı koparırsa (`await request.is_disconnected()`) upstream isteği
-    `CancelledError` ile iptal edilir — sızdıran bağlantı kalmaz.
+13. İstemci bağlantıyı koparırsa **akışlı** yanıtta (`await request.is_disconnected()`)
+    upstream isteği `CancelledError` ile iptal edilir — sızdıran bağlantı kalmaz.
+    **Akışsız** yanıtta upstream'e gönderilmiş istek kesilmez, sonuna kadar sürer
+    (canlı sürümde de böyle; `LESSONS_2026_11_14.md §20`).
 
 ---
 

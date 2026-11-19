@@ -11,7 +11,7 @@
 > | Doküman | Bu sürümdeki durumu |
 > |---|---|
 > | `ROLLBACK_2026_11_16.md` | ✅ **Bu sürümün kaydı — önce bunu oku** (§12 ep4, §13-§14 canlıya alma planı) |
-> | `LESSONS_2026_11_14.md` | ✅ Ölçümler. Eski bölümlerdeki çürütülmüş satırlar yerinde işaretli; **§19 belge denetimi ve geçerli kurallar** |
+> | `LESSONS_2026_11_14.md` | ✅ Ölçümler. Eski bölümlerdeki çürütülmüş satırlar yerinde işaretli; **§19 belge denetimi ve geçerli kurallar**; **§20 gönderme tarafı denetimi** |
 > | `ASK_API.md`, `TWO_ACCOUNTS.md` | ✅ PR #56'nın belgeleri (kod **canlıda değil**) |
 > | `TROUBLESHOOTING.md` | ⚠️ **Kısmen.** Başındaki sürüm notu hangi bölümün geçerli olduğunu söyler. §3 (EK), §4 (DÜZELTME), §6-§9 geçerli; §1b, §1c, §2'deki Telegram komutları ve `/v1/admin/upstream/{curl,cookie,capture,refresh,apikey}` çareleri **yok** |
 > | `RENDER.md` | ⚠️ **Kısmen.** Dağıtım sırası, `/readyz` kodları, log okuma geçerli; `RENDER_API_KEY` kalıcılığı, token yenileme, `/cookie` `/yenile` `/apikey` **yok** |
@@ -92,6 +92,16 @@
 >
 > Bulguların tamamı, hangi tarafın neden doğru olduğu ve **geçerli kuralların
 > tek tablosu**: **[`LESSONS_2026_11_14.md §19`](LESSONS_2026_11_14.md)**.
+>
+> **19 Kasım (2) — gönderme tarafı denetimi (operatör kuralı: ana cURL ve
+> gönderme tarafı değişmez, `mode` dahil).** Canlı commit (`03aca2c`) ile PR #56
+> aynı girdilerle iki ağaçta çalıştırıldı: upstream'e giden isteklerin **içeriği
+> bayt bayt aynı** (102 istek; başlık ve gövde sırası, `mode`, çerezler dahil).
+> Davranışta bulunan üç fark canlıdaki hâline döndürüldü (kota işareti
+> `spend limit reached`, akışsız istekte kopma, iki hesapta ana hesabın probe
+> cümlesi) ve sözleşme testle kilitlendi. PR #56'nın bilerek getirdiği tek fark
+> **zamanlamadır** (sıra + 5–10 sn aralık, trafik varken probe erteleme):
+> **[`LESSONS_2026_11_14.md §20`](LESSONS_2026_11_14.md)**.
 
 ---
 
@@ -136,7 +146,7 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 | Doküman | Ne anlatıyor | Ne zaman |
 |---|---|---|
 | [`ROLLBACK_2026_11_16.md`](ROLLBACK_2026_11_16.md) | **Bu sürümün kaydı.** Neden `e1e8d5a`'ye dönüldü, ölçülen oturum ömürleri, 16 Kasım ölümünün olay defteri, tarayıcı bulgusu, kaldırılanların listesi, işletim kuralı, ileri dönüş tarifi | **Önce bu** |
-| [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) | **Ölçülmüş gerçekler.** Çerez/token ömrü, çakışma modeli, static vs browser; §15-§18 bu sürümün ölçümleri; **§19 geçerli kurallar ve belge denetimi** | **İlk bu** |
+| [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) | **Ölçülmüş gerçekler.** Çerez/token ömrü, çakışma modeli, static vs browser; §15-§18 bu sürümün ölçümleri; **§19 geçerli kurallar ve belge denetimi**; **§20 gönderme tarafı canlıyla aynı mı (ölçüm + test)** | **İlk bu** |
 | [`BIG_PICTURE.md`](BIG_PICTURE.md) | Büyük resim, 3 çerez katmanı | ⚠️ Tarihsel model: "kendiliğinden yenilenir" kısmı bu sürümde **yok** |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | Modül yapısı, istek akışı | Koda girmeden önce (⚠️ proje anahtarları yok; sıra/hatlar anlatılmıyor) |
 | [`COOKIE_LIFECYCLE.md`](COOKIE_LIFECYCLE.md) | Çerez yaşam döngüsü | ⚠️ §5 (otomatik yenileme) bu kurulumda **çalışmaz** |

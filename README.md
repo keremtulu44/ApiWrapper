@@ -98,10 +98,13 @@ OpenAI-compatible istemcilerle çalışır.
 >    tarayıcıya giriş yapmak sağlıklı oturumu öldürür. Ayrıntı: `LESSONS §15.3-§15.4`.
 > 8. **`429` veya ≈180 sn süren probe uyarısı görürsen BEKLE** (2 saate kadar;
 >    ölçülen 1 sa 46 dk, 18 Kasım — oturum ölmedi). Hedef
->    `429 daily spend limit reached` dönüyor. **Canlı kodda** bu ifade işaret
->    listesinde olmadığı için uyarı yanlış kodla gelir: `wrapper_unreachable`
->    ("PORT doğru mu?"). PR #56'da ifade varsayılan listeye eklendi ve gecikme
->    `upstream_timeout` diye bildirilir. Ayrıntı: `docs/LESSONS_2026_11_14.md §16`.
+>    `429 daily spend limit reached` dönüyor. Bu ifade varsayılan işaret
+>    listesinde yok; **canlı kodda** uyarı bu yüzden yanlış kodla gelir:
+>    `wrapper_unreachable` ("PORT doğru mu?"). PR #56'da gecikme `upstream_timeout`
+>    diye bildirilir; **işaret listesi ise canlıdakiyle aynı bırakıldı** (gönderme
+>    tarafı değişmez — 19 Kasım kararı, `LESSONS §20`): o 429 yine tekrar denenir.
+>    Kota olarak tanınması istenirse kod değişmeden env ile açılır
+>    (`.env.example` → `UPSTREAM_LIMIT_MARKERS`). Ayrıntı: `docs/LESSONS_2026_11_14.md §16`.
 > 9. **Env değişikliği = restart = oturum kaybı.** 18 Kasım'da tek bir env
 >    değeri için yapılan redeploy ~28 saatlik sağlıklı oturumu bitirdi.
 >    Düzeltmeleri biriktir, cURL'ün zaten yenileneceği âna sakla. Canlı dala her
@@ -131,6 +134,14 @@ OpenAI-compatible istemcilerle çalışır.
 >     bir kez görüldü). Hâlâ 401 ise 6. maddeye göre taze cURL al → Render env →
 >     yeniden deploy. Doğrulamadan o hesapla tarayıcıya **girme**: giriş, yaşayan
 >     oturumu kesin bitirir.
+> 14. **Gönderme tarafı değişmez (operatör kuralı, 19 Kasım).** Ana cURL'ün
+>     işlenişi ve upstream'e giden istekler — adres, başlıklar, gövde, `mode`,
+>     bir isteğin kaç kez gönderildiği — canlıdakiyle aynı kalır. PR #56 iki kod
+>     ağacı karşılaştırılarak ölçüldü (içerik bayt bayt aynı) ve
+>     `tests/test_wire_contract.py` ile kilitlendi; test kırılırsa **kod** geri
+>     alınır. PR #56'nın bilerek getirdiği tek fark **zamanlamadır** (sıra +
+>     5–10 sn aralık, trafik varken probe erteleme) ve iki env anahtarıyla
+>     kapatılabilir. Ölçüm ve anahtarlar: `docs/LESSONS_2026_11_14.md §20`.
 >
 > **19 Kasım düzeltmeleri (bu listede):** 5. madde "tarayıcıdan çıkış yap"
 > diyordu; operatörün uzun koşulardaki uygulaması sekmeyi **kapatmak**tır ve

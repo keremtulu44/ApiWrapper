@@ -173,6 +173,15 @@ döner.**
 
 Ayrıntılar:
 
+* **"Kota metni" hangisi?** `UPSTREAM_LIMIT_MARKERS` listesindeki ifadeler.
+  Varsayılan liste canlıdakiyle aynıdır ve 18 Kasım'da görülen
+  `daily spend limit reached` ifadesini **içermez**: o `429` bu tabloda "başka
+  arıza" satırına düşer (canlıdaki gibi tekrar denenir, istek taşınmaz, **1**
+  `problem`; sonraki istekler öbür hesaba gider). İkinci satırdaki gibi
+  davranması — hemen taşınsın, karşı sistem hiçbir şey görmesin — isteniyorsa
+  ifade env'e eklenir (`.env.example` → `UPSTREAM_LIMIT_MARKERS`, yorumlu hazır
+  satır). Bu bir operatör tercihidir: gönderme davranışını değiştirir
+  (`LESSONS_2026_11_14.md §16.6`, `§20`).
 * **Neden yalnız `401` ve kota taşınıyor?** İkisi de hesaba özgü ve hızlıdır
   (upstream hemen reddeder). Zaman aşımı gibi arızalarda istek süresini zaten
   harcamıştır; öbür hesapta baştan denemek 180 sn sınırını ikiye katlardı.
@@ -223,7 +232,9 @@ Her hesabın **kendi** probe döngüsü vardır:
 * **İlk probe'lar kaydırılır:** 1. hesap deploy'dan ~60 sn, 2. hesap ~120 sn
   sonra. İki hesap aynı saniyede yoklanmaz.
 * **İstemler farklı adımdan başlar:** iki hesap aynı cümleleri aynı sırayla
-  göndermez.
+  göndermez. **Ana hesap (`UPSTREAM_CURL`) tek hesaptaki sırayla, ilk cümleden
+  başlar**; ikinci hesap bir adım ileriden. İkinci hesabın eklenmesi ana
+  hesabın gönderdiklerini değiştirmez (`LESSONS §20.3`).
 * **Arızalı hesabı geri getiren probe'dur** (§5).
 * **Probe sayısı:** hiç trafik yokken her hesap kendi aralığıyla probe atar; iki
   hesap, toplamda iki kat probe demektir (hesap başına sayı tek hesaptakiyle

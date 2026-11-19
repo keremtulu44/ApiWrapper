@@ -287,9 +287,15 @@ Ayrıntılar:
 * **Karşı sistem bağlantıyı kapatırsa iş iptal edilir:** sırada bekliyorsa sıradan
   çıkar, işleniyorsa upstream bağlantısı kapatılır ve sıra bir sonrakine geçer.
   Vazgeçilmiş bir istek ne kotayı harcar ne arkadakileri bekletir.
+  Bu kural **`/v1/ask`** içindir. Sohbet uçlarının akışsız isteklerinde
+  (`/v1/chat/completions` — Telegram botu, probe, doğrudan API) yalnız **sırada
+  bekleyen** istek iptal edilir; upstream'e **gönderilmiş** istek, istemcisi
+  kopsa da yarıda kesilmez, sonuna kadar sürer ve sıra o bitince boşalır. Canlı
+  sürümde böyleydi; gönderme tarafı değişmesin diye korundu (`LESSONS §20`).
 * **Telegram mesajları da aynı sıradadır.** Bot wrapper'dan cevabı 180 sn bekler;
   önünde uzun istekler varsa "zaman aşımı" yazar ve isteği sıradan çıkar. Yeniden
-  yazman yeterlidir.
+  yazman yeterlidir. (Mesaj upstream'e gönderilmiş ama cevap 180 sn'de
+  gelmemişse istek arkada sürer; cevabı kimseye ulaşmaz.)
 
 Ölçülen örnek (süreler küçültülmüş ayarlarla, gerçek soket üzerinde): arka arkaya
 4 istek → upstream'e aynı anda en çok **1** istek gitti, cevaplar geliş sırasıyla
@@ -301,7 +307,7 @@ döndü, ardışık iki upstream isteği arasında işlem süresi + aralık kada
 
 | Durum | İç kod | Tür |
 |---|---|---|
-| Kota doldu (`429 … spend limit reached` vb.) | `upstream_quota_reached` | geçici |
+| Kota doldu (`429` + tanınan kota ifadesi, örn. `quota exceeded`) | `upstream_quota_reached` | geçici |
 | Upstream isteği yavaşlattı (`429`, kota işareti yok) | `upstream_rate_limited` | geçici |
 | reCAPTCHA reddi | `recaptcha_rejected` | geçici |
 | Upstream 180 sn içinde cevap vermedi | `upstream_timeout` | geçici |
@@ -349,6 +355,15 @@ ya da oturumu düşmüş bir hesaba da art arda istek gönderilmez.
 Karşı sisteme tek kelime, sana ayrıntı. Kural: **olay başına tek mesaj.**
 
 ### İlk arıza
+
+> Aşağıdaki örnek, upstream'in cevabı **kota olarak tanındığında** gelen
+> mesajdır. Örnekteki `daily spend limit reached` gövdesi varsayılan listede
+> yoktur; bu mesajı o gövdeyle görmek için ifade env'e eklenmiş olmalıdır
+> (§6 sonu, `LESSONS §20.3`). Eklenmemişse aynı olay `[upstream_rate_limited]`
+> koduyla ve `Upstream cevabı: HTTP 429 · …` satırıyla, ya da — tekrar denemeler
+> 180 sn'yi doldurursa — `[upstream_timeout]` koduyla ve
+> `Upstream'den görülen son hata: HTTP 429 · …` satırıyla bildirilir. İki
+> durumda da upstream'in kendi cevabı mesajdadır.
 
 ```
 ⚠️ ApiWrapper — dış istek cevaplanamadı; karşı sisteme "problem" döndü.
@@ -454,8 +469,17 @@ Probe ile ilgili değişenler:
 * Cevabı geciken probe artık `upstream_timeout` olarak bildirilir.
   `wrapper_unreachable` yalnız bağlantı hiç kurulamadığında kullanılır
   (18 Kasım'daki yanlış etiketin düzeltmesi, `LESSONS §16.2`).
-* `429 … spend limit reached` artık kota olarak tanınır ve **tekrar denenmez**
-  (önceden 3 kez deneniyor, istek dakikalarca asılı kalıyordu).
+* `429 … spend limit reached` **varsayılan olarak kota sayılmaz** — canlı
+  sürümdeki gibi tekrar denenir (istek başına 3 gönderim; 18 Kasım'da istek
+  dakikalarca asılı kalmıştı). 19 Kasım kararı: upstream'e gönderme davranışı
+  canlıdakiyle aynı kalır (`LESSONS §20`). `/v1/ask` bu durumda yine `problem`
+  der: upstream 18 Kasım'daki gibi uzun bir `Retry-After` verirse ilk istek
+  180 sn'lik süresini doldurduktan sonra (`upstream_timeout`), vermezse üç
+  deneme birkaç saniyede bitince (`upstream_rate_limited`). Sonraki istekler
+  bekletme süresince hemen `problem` alır. Kota olarak tanınması
+  (tek gönderim, hemen `problem`, hesap dinlenir, ikinci hesap varsa iş ona
+  geçer) istenirse kod değişmez, env'e tam liste yazılır: `.env.example` →
+  `UPSTREAM_LIMIT_MARKERS` (yorum satırındaki hazır değer).
 
 ---
 

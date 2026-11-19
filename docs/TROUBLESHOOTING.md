@@ -436,8 +436,12 @@ Hesap geçici olarak kilitli; upstream bunu metinle bildiriyor
 > `upstream_http_error status=429 body=` ara.
 > **Çare:** **bekle** — 1 sa 46 dk'da kendiliğinden kalktı, oturum ölmedi.
 > **Restart etme:** bu sürümde restart oturumu öldürür (`ROLLBACK_2026_11_16.md §12.1`).
-> **Kalıcı düzeltme** (bir sonraki doğal restart'ta; env listesi varsayılanın
-> **yerine geçer**, bu yüzden tamamı yazılır):
+> **Kalıcı düzeltme — isteğe bağlı, yalnız env** (bir sonraki doğal restart'ta;
+> env listesi varsayılanın **yerine geçer**, bu yüzden tamamı yazılır). PR #56'da
+> da varsayılan liste canlıdakiyle aynıdır: ifade koda eklenmedi, çünkü liste
+> upstream'e bir isteğin kaç kez gönderileceğini belirler ve gönderme tarafı
+> operatör kararı olmadan değişmez (`LESSONS §20`). PR #56'da fark yalnız
+> etikette: uyarı `wrapper_unreachable` yerine `upstream_timeout` gelir.
 >
 > ```env
 > UPSTREAM_LIMIT_MARKERS=upstream limit reached,message limit reached,conversation limit reached,daily limit reached,usage limit reached,quota exceeded,rate limit exceeded,too many requests,daily spend limit reached
@@ -599,7 +603,8 @@ curl -s https://<servis>.onrender.com/v1/admin/queue -H "Authorization: Bearer s
 | `problem`, `reason=overload`, `code=queue_full` | Sırada 20 istek birikti | Karşı sistem çok hızlı gönderiyor ya da öndeki istekler yavaş. `queue.waiting_labels` kimin beklediğini gösterir |
 | `problem`, `code=queue_timeout` | İstek sırada 600 sn bekledi | Aynı; `ASK_MAX_QUEUE_WAIT_SECONDS` |
 | `problem`, `code=empty_response` | Upstream boş cevap döndü | Live tail: `completion_completed content_chars=0`. Tekrarlıyorsa akış biçimi değişmiş olabilir |
-| Telegram botu **"Wrapper yanıtı zaman aşımına uğradı"** yazıyor | Mesajın sırada, önündeki isteklerin arkasında 180 sn'den uzun bekledi (istek sıradan çıkarıldı) | Yeniden yaz. `queue.active` / `waiting_labels` o anda kimin sırada olduğunu gösterir |
+| Telegram botu **"Wrapper yanıtı zaman aşımına uğradı"** yazıyor | (a) Mesajın sırada, önündeki isteklerin arkasında 180 sn'den uzun bekledi (istek sıradan çıkarıldı, upstream'e gitmedi). (b) Mesaj upstream'e gitti ama cevap 180 sn'de gelmedi: istek arkada **sürer** (kesilmez), cevabı atılır | (a) Yeniden yaz. (b) Önce `queue.active` boşalsın (`active_seconds` büyüyorsa o istek hâlâ sürüyor); sonra yeniden yaz. Log: `client_disconnected … upstream=in_flight action=finish` |
+| `queue.active` bir süredir `telegram` / `api` / `keepalive`, ama o istemci çoktan gitti | **Beklenen davranış**: upstream'e gönderilmiş akışsız istek, istemcisi kopsa da sonuna kadar sürer (canlı sürümdeki gibi; `LESSONS §20.3`). En çok `TOTAL_REQUEST_TIMEOUT` (600 sn) | Bekle; sıra kendiliğinden boşalır |
 | Art arda iki istekten ikincisi 5–10 sn geç cevaplanıyor | **Beklenen davranış** (istekler arası rastgele bekleme) | `REQUEST_GAP_MIN/MAX_SECONDS` |
 | Saatlik probe logda yok, yerine `upstream_keepalive_deferred` | **Beklenen davranış**: son aralıkta gerçek bir istek başarıyla cevaplandı | Sabit düzen istenirse `UPSTREAM_KEEPALIVE_SKIP_WHEN_ACTIVE=false` |
 | `upstream_keepalive_skipped reason=queue_rejected` | Probe sırada 60 sn bekleyip geri çevrildi; **arıza değil**, 30 sn sonra yeniden dener | — |
