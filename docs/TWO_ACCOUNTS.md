@@ -41,13 +41,15 @@ Birinci hesapla aynı yöntem (`MOBILE_CURL.md`, `LESSONS §15.1`), üç farkla:
 
 | 2. cURL'den alınan (hesaba özgü) | 1. cURL'den alınan (ortak) |
 |---|---|
-| çerez / `authorization` | hedef domain, akış yolu |
+| çerez / `authorization` | akış yolu |
 | `user-agent`, `accept-language` | `mode`, captcha alanının adı |
-| referer yolu | sürüm damgası başlıkları (`x-deployment-id` …) |
+| referer yolu, URL'deki alan adı | sürüm damgası başlıkları (`x-deployment-id` …) |
 | gövdedeki captcha token'ı (`RECAPTCHA_PROVIDER=static` iken) | varsayılan modelin kimliği (`modelAId`) |
 
-İki cURL farklı bir yol/`mode` taşıyorsa servis yine başlar ama loga
+İki cURL farklı bir alan adı/yol/`mode` taşıyorsa servis yine başlar ama loga
 `upstream_curl_slot_mismatch` yazar (hangi alanların farklı olduğunu söyler).
+Alan adı farklıysa 2. hesabın istekleri **kendi** cURL'ündeki alan adına gider;
+bu neredeyse her zaman yanlış isteğin kopyalandığı anlamına gelir.
 
 ### 2.2 Env
 
@@ -165,6 +167,10 @@ Ayrıntılar:
   Telegram'a "✅ hesap yeniden çalışıyor" gelir. Neden gerçek istekle değil:
   takılı kalan bir hesap, payına düşen her isteği 180 sn bekletip `problem`e
   düşürürdü — öbür hesap çalışırken bu gereksiz.
+* **Geri dönüş ne kadar sürer:** arıza tek seferlik bir aksaklık olsa bile hesap,
+  **bir sonraki probe'una dek** devre dışı kalır; bu en geç bir keepalive aralığıdır
+  (o hesabın son başarılı isteğinden sayılır: aralık 3600 ise en çok ~1 saat). Bu
+  sürede bütün işi öbür hesap yapar. Beklemek istemezsen: §8'deki `resume`.
 * **Keepalive kapalıysa** (`UPSTREAM_KEEPALIVE_INTERVAL_SECONDS=0`) hesabı geri
   getirecek probe yoktur: arızalı hesap **30 dakikada bir** gerçek bir istekle
   denenir. Beklemek istemezsen: §8'deki `resume`.
@@ -201,6 +207,9 @@ Her hesabın **kendi** probe döngüsü vardır:
 * **İstemler farklı adımdan başlar:** iki hesap aynı cümleleri aynı sırayla
   göndermez.
 * **Arızalı hesabı geri getiren probe'dur** (§5).
+* **Probe sayısı:** hiç trafik yokken her hesap kendi aralığıyla probe atar; iki
+  hesap, toplamda iki kat probe demektir (hesap başına sayı tek hesaptakiyle
+  aynı). Trafik varken ikisi de ertelenir.
 
 Ölçüldü (aralık 1 sn'ye küçültülmüş): 2. hesaba 0,9. ve 1,5. saniyelerde gerçek
 istek → o hesabın bir sonraki probe'u 2,5. saniyede (son gerçek istekten tam bir
