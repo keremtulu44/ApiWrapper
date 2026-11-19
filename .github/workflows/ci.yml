@@ -83,6 +83,7 @@ jobs:
         run: |
           docker run --rm -e GITHUB_ACTIONS=true -v "$PWD:/work:ro" apiwrapper:ci \
             sh /work/scripts/ci_image_tests.sh 2>&1 | tee "$RUNNER_TEMP/image-3-tests.log"
+          echo "::notice title=tests inside the image::$(tail -n 1 "$RUNNER_TEMP/image-3-tests.log")"
 
       # Render gibi: PORT ortamdan gelir, süreç imajın kendi CMD'siyle ve yetkisiz
       # kullanıcıyla açılır. /healthz 200 dönmeli.
@@ -100,6 +101,7 @@ jobs:
           docker logs apiwrapper-ci >> "$log" 2>&1 || true
           docker rm -f apiwrapper-ci > /dev/null
           if [ -z "$ok" ]; then echo "/healthz 30 saniyede 200 dönmedi" | tee -a "$log"; exit 1; fi
+          echo "::notice title=container start::PORT=10000 ile açıldı, GET /healthz 200 döndü"
 
       - name: Build the Telegram worker image (Dockerfile.telegram)
         run: |
@@ -107,6 +109,8 @@ jobs:
             | tee "$RUNNER_TEMP/image-5-telegram-build.log"
           docker run --rm apiwrapper-telegram:ci python -c "import app.telegram.bot" 2>&1 \
             | tee -a "$RUNNER_TEMP/image-5-telegram-build.log"
+          stack="$(docker run --rm apiwrapper-telegram:ci python scripts/verify_lock.py requirements.lock --subset | grep '^GÖNDERME YIĞINI')"
+          echo "::notice title=telegram image contents::${stack}"
 
       # Yalnız bilgi: sabitlenen özet hâlâ `python:3.12-slim` etiketinin gösterdiği
       # imaj mı? Değilse daha yeni bir taban imaj var demektir; güncellemek bilinçli
@@ -115,9 +119,14 @@ jobs:
         continue-on-error: true
         run: |
           pinned="$(grep -m1 -o 'sha256:[0-9a-f]\{64\}' Dockerfile)"
-          current="$(docker buildx imagetools inspect python:3.12-slim | awk '$1 == "Digest:" { print $2; exit }')"
+          if ! inspect="$(docker buildx imagetools inspect python:3.12-slim 2>&1)"; then
+            echo "::notice title=base image::python:3.12-slim etiketinin özeti okunamadı - $(printf '%s\n' "$inspect" | tail -n 1)"
+            exit 0
+          fi
+          # awk girdinin tamamını okur: erken çıksaydı pipefail adımı düşürürdü.
+          current="$(printf '%s\n' "$inspect" | awk '$1 == "Digest:" && !seen { print $2; seen = 1 }')"
           if [ -z "$current" ]; then
-            echo "etiketin özeti okunamadı"
+            echo "::notice title=base image::python:3.12-slim etiketinin özeti çıktıda bulunamadı"
           elif [ "$pinned" = "$current" ]; then
             echo "::notice title=base image::python:3.12-slim etiketi sabitlenen özeti gösteriyor (${pinned})"
           else
