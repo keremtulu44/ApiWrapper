@@ -1,5 +1,37 @@
 # Ortam değişkenlerinin tam listesi
 
+> ## ⚠️ BAYAT (19 Kasım 2026) — env ararken buraya değil `.env.example`'a bak
+>
+> Bu dosya `77d4011` sürümünde **üretilmişti**. Üreticisi
+> (`scripts/env_template.py`), denetim betiği (`scripts/env_audit.py`) ve
+> sürüklenme testi (`tests/test_env_template.py`) 16/17 Kasım geri dönüşüyle
+> kalktı: dosya **yeniden üretilemiyor** ve aşağıdaki "elle düzenleme" uyarısının
+> koruduğu şey artık yok. İçerik kayıt olarak duruyor.
+>
+> | Fark | Adlar |
+> |---|---|
+> | Burada yazıyor, bu sürüm **okumuyor** (20 ad — yazsan da etkisi olmaz) | `ADMIN_API_KEYS`, `API_KEY_LABELS`, `DEPLOYMENT_STAMP_STRIP_ON_CONFLICT`, `RENDER_API_KEY`, `RENDER_SERVICE_ID`, `SESSION_TIMELINE_SIZE`, `SESSION_TIMELINE_UTC_OFFSET_HOURS`, `TELEGRAM_IMAGE_MODEL`, `TELEGRAM_WEB_MODEL`, `UPSTREAM_CAPTURED_MODEL_ID`, `UPSTREAM_CX`, `UPSTREAM_CX_SEND`, `UPSTREAM_FORENSIC_RETRY`, `UPSTREAM_REFRESH_API_KEY`, `UPSTREAM_REFRESH_CHECK_INTERVAL_SECONDS`, `UPSTREAM_REFRESH_ENABLED`, `UPSTREAM_REFRESH_LEEWAY_SECONDS`, `UPSTREAM_REFRESH_URL`, `UPSTREAM_SNAPSHOT_VERSION`, `UPSTREAM_STATE_FILE` |
+> | Kod okuyor, burada **yok** (17 ad — PR #56) | `ASK_API_KEYS`, `ASK_DEFAULT_MODEL`, `ASK_FIRST_WAIT_SECONDS`, `ASK_MAX_QUEUE_WAIT_SECONDS`, `ASK_PROBLEM_HOLD_SECONDS`, `ASK_REQUEST_TIMEOUT_SECONDS`, `ASK_WAIT_INTERVAL_SECONDS`, `REQUEST_QUEUE_ENABLED`, `REQUEST_QUEUE_MAX_WAITING`, `REQUEST_QUEUE_MAX_HOLD_SECONDS`, `REQUEST_GAP_MIN_SECONDS`, `REQUEST_GAP_MAX_SECONDS`, `UPSTREAM_KEEPALIVE_SKIP_WHEN_ACTIVE`, `UPSTREAM_CURL_2`, `UPSTREAM_CURL_3`, `UPSTREAM_CURL_4`, `ACCOUNT_FAILOVER` |
+>
+> **Bayatlamış açıklamalar** (satırlar yerinde duruyor):
+>
+> * `ADMIN_API_KEYS` — ayrı yönetim anahtarı bu sürümde **yok**: `API_KEYS`'teki
+>   her anahtar `/v1/admin/*` uçlarını da açar.
+> * `RECAPTCHA_STATIC_TOKEN` — "2+ saat, hedef yaş denetimi yapmıyor" yerine:
+>   aynı token ~28 saat kabul edildi (`LESSONS §15.3`).
+> * `UPSTREAM_KEEPALIVE_INTERVAL_SECONDS` — `10800` örneği ölçülmedi; denenmiş
+>   değerler `600` ve `3600`.
+> * `UPSTREAM_LIMIT_MARKERS` — env'de verilirse varsayılan listenin **yerine
+>   geçer** (`LESSONS §16.6`).
+> * `UPSTREAM_REFRESH_ENABLED` — "kalıcı `false`" değil; ad bu sürümde okunmuyor.
+> * Gizli değerlerin "`/v1/admin/auth` (cookie/curl) üzerinden" girdiği cümlesi:
+>   bu sürümde tek yol Render env'indeki `UPSTREAM_CURL`'dür.
+> * Sondaki `python -m scripts.env_audit .env` komutu çalışmaz.
+>
+> Güncel ve **testle denetlenen** şablon: `.env.example`
+> (`tests/test_env_example.py`). Kesin kaynak: `app/core/config.py`.
+> Geçerli işletim kuralları: [`LESSONS_2026_11_14.md §19.1`](LESSONS_2026_11_14.md).
+
 > Bu dosya **üretilir**: `python -m scripts.env_template`. Elle düzenleme;
 > `tests/test_env_template.py` sürüklenmeyi yakalar. Liste alfabetiktir ve
 > `Settings` + `TelegramSettings` alanlarının tamamını içerir.

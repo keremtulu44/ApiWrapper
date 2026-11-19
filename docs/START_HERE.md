@@ -1,5 +1,19 @@
 # Başlangıç dosyası (START HERE)
 
+> ## 🗄️ ARŞİV (19 Kasım 2026) — buradan başlama
+>
+> Bu dosya `arena/cd32810d-apiwrapper` / `a0e49a1` ağacı için yazıldı. Satır
+> numaraları, "açık PR", test sayıları ve §5'teki tespit adımlarının dayandığı
+> uçlar/betikler bugünkü ağaçla **eşleşmez**.
+>
+> **Bugün nereden başlanır:** [`INDEX.md`](INDEX.md) (hangi belge geçerli) →
+> [`ROLLBACK_2026_11_16.md`](ROLLBACK_2026_11_16.md) (bu sürümün kaydı; §12 süren
+> deney, §13-§14 canlıya alma planı) → [`LESSONS_2026_11_14.md §19.1`](LESSONS_2026_11_14.md) (geçerli işletim kuralları).
+>
+> Kurulum ve doğrulama komutları bugün: `pip install -e ".[dev,tokens]"` ·
+> `ruff check app tests scripts` · `mypy app` · `pytest -q` (CI her push'ta
+> üçünü Python 3.10 / 3.11 / 3.12 ile koşar).
+
 Bu dosya, sonraki oturumun **tek başına** işe başlayabilmesi için gereken her şeyi
 sıraya koyar: önce oku, sonra çalıştır, sonra tespit et, sonra düzelt.
 

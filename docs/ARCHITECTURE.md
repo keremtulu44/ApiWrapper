@@ -4,6 +4,23 @@
 > **OpenAI-Compatible** bir REST API'ye (`/v1/chat/completions`, `/v1/models`) dönüştürülmesi.
 > Hedef: production-ready, modüler, asenkron, yüksek performanslı FastAPI servisi.
 
+> ## ⚠️ SÜRÜM NOTU (19 Kasım 2026)
+>
+> Bu belge ilk tasarım planıdır ve sonradan `77d4011`'e göre güncellenmiştir;
+> canlıdaki kod bir geri dönüş sürümüdür (`ROLLBACK_2026_11_16.md`). Katmanlar,
+> ara katman zinciri ve istek akışı **geçerlidir**. Farklar:
+>
+> | Bu belgede | Bu sürümde |
+> |---|---|
+> | Akış yolu `…/post-to-evaluation/{chat_id}` | Canlı uç `…/create-evaluation` (15 Kasım ölçümü); yol `UPSTREAM_CURL`'den okunur |
+> | §2b atıflar → `Kaynaklar:` bloğu; §3'te `session_capture.py`, `project_keys.py` | **Yok** |
+> | §5 ve §9: proje anahtarları (`/v1/admin/keys`), `api_key_labels` | **Yok.** Ayrı yönetim anahtarı da yok: `API_KEYS`'teki her anahtar `/v1/admin/*` uçlarını açar |
+> | §4 `static`: "ölçümde 2+ saat geçerli"; `browser`: "bağımsız üretim" | Aynı statik token ~28 saat kabul edildi; `browser` bu hedefte `403` alıyor — tek geçerli kip `static` (`LESSONS §3`, `§15.3`) |
+> | §4 "Token reddi (403) → otomatik invalidate + 1 kez retry" | Yalnız token **üreten** sağlayıcılarda; `static`'te tekrar denenmez |
+> | — (anlatılmıyor) | PR #56 (canlıda değil): `POST /v1/ask`, hesap başına istek sırası, ikinci hesap ve hatlar — [`ASK_API.md`](ASK_API.md), [`TWO_ACCOUNTS.md §10`](TWO_ACCOUNTS.md) ("nerede ne var") |
+>
+> Geçerli işletim kuralları: [`LESSONS_2026_11_14.md §19.1`](LESSONS_2026_11_14.md).
+
 ---
 
 ## 1. Sistem Genel Görünümü

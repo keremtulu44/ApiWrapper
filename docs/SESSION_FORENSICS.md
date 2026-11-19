@@ -3,6 +3,31 @@
 **Bu dosya bir deney protokolüdür.** Amaç: `502 upstream_unauthorized` geldiğinde
 "kimin yüzünden" sorusunu tahminle değil **ölçümle** cevaplamak.
 
+> ## ⚠️ SÜRÜM NOTU (19 Kasım 2026) — bu ölçüm sistemi bu sürümde YOK
+>
+> Olay defteri (`app/services/session_timeline.py`), `GET /v1/admin/timeline`,
+> Telegram `/zaman` ve forensic retry (`UPSTREAM_FORENSIC_RETRY`) 16/17 Kasım
+> geri dönüşüyle kalktı. Aşağıdaki protokol **uygulanamaz**; kayıt olarak ve
+> ileri dönüş (`ROLLBACK_2026_11_16.md §10`, `§11.7`) için duruyor.
+>
+> **Sistemin ürettiği son veri** (16 Kasım): `LESSONS_2026_11_14.md §13` ve
+> `ROLLBACK §2`. Otomatik hüküm **`H2 DESTEKLENDİ`** idi (oturum hedef tarafında
+> düştü: 401 anında çerezde taze token yoktu). Süresi geçmiş token'la başarılı
+> istek **görülmedi** (en yaşlı çalışan token 1185 sn < ömür 1200 sn) ve 401'ler
+> donmuş token'ın `exp` anında başladı; ölümün imzası "rotasyon durur, 401
+> ~20 dakika sonra gelir".
+>
+> ⚠️ **Etiket uyarısı.** `ROLLBACK §2` ve `LESSONS §13` bu sonucu *"H1
+> çürütüldü"* diye yazar. Bu dosyanın tanımına göre (§1 tablosu ve §4 karar
+> tablosu) `H1 ÇÜRÜTÜLDÜ` **tersini** söyler: "hedef yaşı denetlemiyor". Ölçümün
+> söylediği o değildir. Geçerli olan kelimelerle yazılan sonuçtur: *"hedef token
+> yaşını denetlemiyor" kaydının dayanağı çürüdü* — yani aşağıdaki karar
+> tablosunun diliyle sonuç `H1 ÇÜRÜTÜLDÜ` **değildir** (`LESSONS §19.4/24`).
+>
+> **Bu sürümde `401` nasıl teşhis edilir:** `upstream_http_error … body=` log
+> satırı + bir sonraki probe'un sonucu. Kural: süren 401 oturumun ölümüdür; tek
+> 401'de önce doğrula (`LESSONS §19.2`). Geçerli işletim kuralları: [`LESSONS_2026_11_14.md §19.1`](LESSONS_2026_11_14.md).
+
 Bugüne kadar her 401'de aynı tartışma baştan yapılıyordu, çünkü loglar yalnızca
 sonucu söylüyordu:
 

@@ -10,17 +10,33 @@
 >
 > | Doküman | Bu sürümdeki durumu |
 > |---|---|
-> | `SESSION_FORENSICS.md` | ⚠️ **Tarihsel.** `/zaman`, olay defteri ve forensic retry bu sürümde **yok** |
+> | `ROLLBACK_2026_11_16.md` | ✅ **Bu sürümün kaydı — önce bunu oku** (§12 ep4, §13-§14 canlıya alma planı) |
+> | `LESSONS_2026_11_14.md` | ✅ Ölçümler. Eski bölümlerdeki çürütülmüş satırlar yerinde işaretli; **§19 belge denetimi ve geçerli kurallar** |
+> | `ASK_API.md`, `TWO_ACCOUNTS.md` | ✅ PR #56'nın belgeleri (kod **canlıda değil**) |
+> | `TROUBLESHOOTING.md` | ⚠️ **Kısmen.** Başındaki sürüm notu hangi bölümün geçerli olduğunu söyler. §3 (EK), §4 (DÜZELTME), §6-§9 geçerli; §1b, §1c, §2'deki Telegram komutları ve `/v1/admin/upstream/{curl,cookie,capture,refresh,apikey}` çareleri **yok** |
+> | `RENDER.md` | ⚠️ **Kısmen.** Dağıtım sırası, `/readyz` kodları, log okuma geçerli; `RENDER_API_KEY` kalıcılığı, token yenileme, `/cookie` `/yenile` `/apikey` **yok** |
 > | `CONSUMERS.md` | ⚠️ **Kısmen tarihsel.** Proje anahtarı üretimi (`/v1/admin/keys`) ve `web`/`image` modelleri **yok**; OpenAI şeması, hata kodları ve hız sınırı geçerli |
-> | `ENV_FULL.md`, `env.mobile.example` | ⚠️ Anahtarların bir kısmı bu sürümün `Settings`'inde yok (üreticileri `scripts/env_template.py` de kaldırıldı) |
-> | `ROLLBACK_2026_11_16.md` | ✅ **Bu sürümün kaydı — önce bunu oku** |
-> | Diğerleri | ✅ Geçerli |
+> | `ARCHITECTURE.md` | ⚠️ **Kısmen.** Modül yapısı ve istek akışı geçerli; proje anahtarları, `session_capture.py`, `Kaynaklar:` **yok**; PR #56'nın sırası ve hatları anlatılmıyor |
+> | `SESSION_FORENSICS.md` | ⚠️ **Tarihsel.** `/zaman`, olay defteri ve forensic retry bu sürümde **yok** |
+> | `BIG_PICTURE.md`, `COOKIE_LIFECYCLE.md` | ⚠️ **Tarihsel model.** Otomatik yenileme, kalıcılık, telefon komutları **yok**; çerez katmanlarının tarifi bilgi olarak geçerli |
+> | `MOBILE_CURL.md` | ⚠️ **Tarihsel.** `/yenile`, `/cookie`, `/curl` **yok**: telefondan oturum tazelenemez. Çerezi/cURL'ü telefonda nasıl elde edeceğin kısmı bilgi olarak geçerli |
+> | `ENV_FULL.md`, `env.mobile.example` | ⚠️ **Bayat.** `ENV_FULL.md` üreticisi (`scripts/env_template.py`) kaldırıldı: bu sürümde olmayan adlar içerir, PR #56'nın adlarını içermez. Güncel şablon **`.env.example`** (testle denetlenir) |
+> | `CAPTURE_TIMELINE.md` | ✅ Ölçüm kaydı (bir satırı `LESSONS §13`'te düzeltildi) |
+> | `HANDOFF.md`, `START_HERE.md`, `AUDIT_2026_11.md`, `MERGE_TARGET.md`, `DELIVERY_REPORT.md` | 🗄️ **Arşiv.** Yazıldıkları ağacın dosya/satır haritaları; satır numaraları ve bir kısım dosya artık yok |
+>
+> *(19 Kasım: bu tablo eskiden dört satırdı ve geri kalanı için "Diğerleri ✅
+> Geçerli" diyordu; yanlıştı. Denetimin kaydı: `LESSONS_2026_11_14.md §19`.)*
 >
 > **Bu sürümün işletim kuralı:** kalıcılık katmanı yok (`state_store.py` bu
-> sürümde mevcut değil). `UPSTREAM_CURL`, `UPSTREAM_MODE=direct-battle` ve
-> `UPSTREAM_STREAM_PATH` **Render env'inde** durmalı, yoksa her restart'ta servis
-> ölür ya da her istek `400 ZodError · path ["mode"]` döner. Ayrıntı:
+> sürümde mevcut değil). `UPSTREAM_CURL` **Render env'inde** durmalı ve her
+> restart'ta **taze** olmalı, yoksa servis açılır ama cevap veremez. Ayrıntı:
 > [`ROLLBACK_2026_11_16.md §6`](ROLLBACK_2026_11_16.md).
+>
+> *(19 Kasım düzeltmesi: bu paragraf "`UPSTREAM_MODE=direct-battle` ve
+> `UPSTREAM_STREAM_PATH` de env'de durmalı, yoksa her istek `400 ZodError`
+> döner" diyordu. `UPSTREAM_CURL` doluyken o iki env değeri **okunmaz**; `mode`
+> ve yol cURL'den gelir — denendi, `ROLLBACK §6`. Env'de duruyorlarsa
+> zararsızdır; silmek için restart yapma.)*
 >
 > ### ✅ Sonuç geldi: geri dönüş **çalıştı** (17 Kasım)
 >
@@ -34,11 +50,13 @@
 >
 > 1. **cURL'ü yalnız Google ile giriş yapılmış oturumdan al.** E-posta + şifre
 >    ile girilmiş oturumun cURL'ü `recaptcha_rejected` veriyor.
-> 2. **`recaptcha_rejected` görürsen 10-15 dakika BEKLE.** `static` token
->    değişmez, bu sürümde retry yok ⇒ red hedef tarafında **geçici**; ölçüldü,
->    kendiliğinden geçti. **Taze cURL almaya kalkma** — tarayıcıya giriş sağlıklı
->    oturumu öldürür. Belgelerdeki eski çareler (`TROUBLESHOOTING §4`,
->    `diagnostics.py`) **çürütüldü**, öncelik `LESSONS §15`'te.
+> 2. **`recaptcha_rejected` görürsen BEKLE** (ölçülen süre 10-15 dakika;
+>    **2 saate kadar** bekle). `static` token değişmez, bu sürümde retry yok ⇒
+>    red hedef tarafında **geçici**; ölçüldü, kendiliğinden geçti. **Taze cURL
+>    almaya kalkma** — tarayıcıya giriş sağlıklı oturumu öldürür. Belgelerdeki
+>    eski çareler (`TROUBLESHOOTING §4`, `diagnostics.py`) **çürütüldü**, öncelik
+>    `LESSONS §15`'te (`diagnostics.py` metinleri PR #56'da düzeltildi; canlı
+>    kodda eski hâliyle duruyor).
 >
 > Bu aynı zamanda **Chromium/keeper yolunun kesin olarak kapandığı** anlamına
 > geliyor: `browser_login.py:14`'teki *"(2FA/captcha yok)"* varsayımı yanlış ve
@@ -56,6 +74,24 @@
 > 2. **Env değişikliği = restart = oturum kaybı.** Düzeltmeleri biriktir.
 > 3. **`/ping` hedefi göstermez** (yalnız süreç canlılığı); `ROLLBACK §11.6`'daki
 >    satır düzeltildi.
+>
+> **19 Kasım eki — karar ve belge denetimi.**
+>
+> 1. **Canlıya alma sırası (operatör kararı):** PR #56 önce **tek hesapla**
+>    canlıya alınır ve **12 saat** denenir; sorunsuz geçerse ikinci hesap
+>    (`UPSTREAM_CURL_2`) ayrı bir restart'la eklenir. 12 saat dolmadan oturum
+>    ölürse ikinci hesap eklenmez; neden aranır, yine tek hesapla denenir:
+>    **[`ROLLBACK_2026_11_16.md §14`](ROLLBACK_2026_11_16.md)**.
+> 2. **cURL'ü aldıktan sonra sekmeyi kapat, ÇIKIŞ YAPMA.** Belgeler "çıkış yap"
+>    diyordu; operatörün uzun koşulardaki uygulaması bunun tersidir.
+> 3. **Süren `401` oturumun ölümüdür; tek 401'de önce doğrula.** İki zıt cümle
+>    ("genelde kendi döner" / "kendiliğinden düzelmez") tek kurala indirildi.
+> 4. **Şablonlar düzeltildi:** `.env.example` sürüm damgası ayarlarını uygulamanın
+>    okumadığı adlarla (`UPSTREAM_DEPLOYMENT_…`) veriyordu; `.env.example` ve
+>    `render.yaml` `RECAPTCHA_PROVIDER=browser` taşıyordu.
+>
+> Bulguların tamamı, hangi tarafın neden doğru olduğu ve **geçerli kuralların
+> tek tablosu**: **[`LESSONS_2026_11_14.md §19`](LESSONS_2026_11_14.md)**.
 
 ---
 
@@ -67,8 +103,9 @@
 ```
 
 Hedefin **erişim token'ı ~20 dakikada ölür** gibi bilinen bir yanlış var; doğrusu
-`docs/LESSONS_2026_11_14.md`. Kısaca: **çerez 15+ saat yaşar, onu öldüren şey
-tarayıcıya giriş yapmaktır.**
+`docs/LESSONS_2026_11_14.md`. Kısaca: token ~20 dakikada bir **yenilenir** (hedef,
+biz istek attıkça yeniler); **oturum 15 saat+ ve ~28 saat yaşadı, onu öldürdüğü
+bilinen şeyler tarayıcıya giriş yapmak ve restart'tır.**
 
 ---
 
@@ -76,12 +113,17 @@ tarayıcıya giriş yapmaktır.**
 
 | # | Kural | Neden |
 |---|---|---|
-| 1 | **Sunucu çerezin tek sahibi olsun.** Aynı hesapla tarayıcıda oturum açma. | Tarayıcıda giriş yapınca platform yeni oturumu tek geçerli sayar, sunucudaki çerez iptal olur → `401 User not found` |
-| 2 | `401` görünce **hemen cURL arama.** Tarayıcıya girmeden bekle. | Kod 401'de çerezi silmez, devre kesiciyi açmaz; kısa düşmeler kendi kendine döner |
+| 1 | **Sunucu çerezin tek sahibi olsun.** Aynı hesapla tarayıcıda oturum açma. cURL'ü aldıktan sonra **sekmeyi kapat, çıkış yapma.** | Tarayıcıda giriş yapınca platform yeni oturumu tek geçerli sayar, sunucudaki çerez iptal olur → `401 User not found`. Sunucu tarayıcının oturumunun aynısını taşır; çıkış da onu bitirebilir |
+| 2 | `401` görünce **hemen tarayıcıya girme.** Önce doğrula: bir sonraki probe / bota düz mesaj. Hâlâ 401 ise taze cURL + yeniden deploy. | Kod 401'de çerezi silmez, devre kesiciyi açmaz; kısa bir 401 dönemi bir kez kendiliğinden geçti (14-15 Kasım). **Süren** 401 oturumun ölümüdür ve dönmez (16 Kasım) |
 | 3 | `RECAPTCHA_PROVIDER=static` **kalıcı.** | Sunucudan üretilen token (`browser`) reddediliyor — `403 recaptcha validation failed`. Ölçüldü |
-| 4 | "Bildirim aldım" ≠ "oturum öldü" | Bildirim tek başına çerezi bozmaz. Bozan şey **giriş yapmak** |
-| 5 | `UPSTREAM_REFRESH_ENABLED=false` **kalıcı.** | Yenileme ucu Supabase `apikey` istiyor; elde edilemiyor |
-| 6 | Docker'da `--with-deps` kullanma | `libatomic.so.1` eksikliği → build `exit 127` |
+| 4 | "Bildirim aldım" ≠ "oturum öldü" | `429`, `recaptcha_rejected` ve ≈180 sn süren probe uyarısı **ölüm değildir**: 2 saate kadar bekle, dokunma. Ölüm yalnız süren 401'dir |
+| 5 | **Env değişikliği = restart = oturum ölümü.** Canlı dala merge de bir restart'tır. | Çerez yalnız bellekte; açılışta env'deki (bayat) cURL'e dönülür. 18 Kasım'da ~28 saatlik oturumu bitirdi |
+| 6 | cURL'ü **yalnız Google ile** giriş yapılmış oturumdan al. | E-posta + şifre oturumunun cURL'ü `recaptcha_rejected` veriyor (17 Kasım) |
+| 7 | Docker'da `--with-deps` kullanma | `libatomic.so.1` eksikliği → build `exit 127` |
+
+*(19 Kasım: 1., 2. ve 4. satır düzeltildi, 5. ve 6. satır eklendi. Eski 5. satır
+"`UPSTREAM_REFRESH_ENABLED=false` kalıcı" diyordu; o ayar bu sürümde **yok**,
+otomatik yenileme kodu geri dönüşle kalktı.)*
 
 Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 [`../README.md#sık-yapılan-hatalar-bunları-tekrar-yapma`](../README.md#sık-yapılan-hatalar-bunları-tekrar-yapma).
@@ -94,17 +136,17 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 | Doküman | Ne anlatıyor | Ne zaman |
 |---|---|---|
 | [`ROLLBACK_2026_11_16.md`](ROLLBACK_2026_11_16.md) | **Bu sürümün kaydı.** Neden `e1e8d5a`'ye dönüldü, ölçülen oturum ömürleri, 16 Kasım ölümünün olay defteri, tarayıcı bulgusu, kaldırılanların listesi, işletim kuralı, ileri dönüş tarifi | **Önce bu** |
-| [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) | **Ölçülmüş gerçekler.** Çerez/token ömrü, çakışma modeli, static vs browser | **İlk bu** |
-| [`BIG_PICTURE.md`](BIG_PICTURE.md) | Büyük resim, 3 çerez katmanı | Sistemi kavramak için |
-| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Modül yapısı, istek akışı | Koda girmeden önce |
+| [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) | **Ölçülmüş gerçekler.** Çerez/token ömrü, çakışma modeli, static vs browser; §15-§18 bu sürümün ölçümleri; **§19 geçerli kurallar ve belge denetimi** | **İlk bu** |
+| [`BIG_PICTURE.md`](BIG_PICTURE.md) | Büyük resim, 3 çerez katmanı | ⚠️ Tarihsel model: "kendiliğinden yenilenir" kısmı bu sürümde **yok** |
+| [`ARCHITECTURE.md`](ARCHITECTURE.md) | Modül yapısı, istek akışı | Koda girmeden önce (⚠️ proje anahtarları yok; sıra/hatlar anlatılmıyor) |
 | [`COOKIE_LIFECYCLE.md`](COOKIE_LIFECYCLE.md) | Çerez yaşam döngüsü | ⚠️ §5 (otomatik yenileme) bu kurulumda **çalışmaz** |
 
 ### Kurulum ve işletim
 | Doküman | Ne anlatıyor | Ne zaman |
 |---|---|---|
-| [`RENDER.md`](RENDER.md) | Render kurulumu, env, uyku | Deploy ederken |
-| [`MOBILE_CURL.md`](MOBILE_CURL.md) | Telefondan cURL alma | Çerez tazelerken |
-| [`ENV_FULL.md`](ENV_FULL.md) | Tüm env değişkenleri (otomatik üretilir) | Env ararken |
+| [`RENDER.md`](RENDER.md) | Render kurulumu, env, uyku | Deploy ederken (⚠️ kalıcılık/`RENDER_API_KEY` kısımları bu sürümde **yok**) |
+| [`MOBILE_CURL.md`](MOBILE_CURL.md) | Telefondan cURL alma | ⚠️ Tarihsel: telefon komutları **yok**; cURL güncellemek Render panosu ister |
+| [`ENV_FULL.md`](ENV_FULL.md) | Tüm env değişkenleri (`77d4011` anında üretildi) | ⚠️ **Bayat.** Env ararken **`.env.example`**'a bak |
 | [`TWO_ACCOUNTS.md`](TWO_ACCOUNTS.md) | **İkinci hesap: `UPSTREAM_CURL_2` (PR #56, canlıda değil)**: isteklerin iki hesaba yarı yarıya bölünmesi, hesap başına sıra ve probe, bir hesap arıza verince ne olduğu, Telegram mesajları, teşhis | İkinci hesabı eklerken; "bir hesap neden iş almıyor" diye bakarken |
 | [`ASK_API.md`](ASK_API.md) | **`/v1/ask` (PR #56, canlıda değil)**: alarm/otomasyon sistemleri için `wait` / `done` / `problem` sözleşmesi, karşı sisteme verilecek hazır talimat, örnek istemci, tek istek sırası, Telegram mesajlarının okunuşu | Bir otomasyonu bağlarken; "karşı sistem neden `problem` alıyor" diye bakarken |
 | [`CONSUMERS.md`](CONSUMERS.md) | **Tüketici rehberi**: OpenAI SDK ile bağlanma, modeller, hata kodları, hız sınırı + anahtar üretme/iptal | API'yi başka bir projeye verirken |
@@ -113,9 +155,9 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 ### Arıza
 | Doküman | Ne anlatıyor | Ne zaman |
 |---|---|---|
-| [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Hata → çözüm tablosu | Bir şey bozulduğunda |
-| [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) § captcha | reCAPTCHA hata → çözüm | Captcha reddederse |
-| [`SESSION_FORENSICS.md`](SESSION_FORENSICS.md) | **Ölçüm protokolü**: 401 bizden mi hedeften mi (H1–H4), `/zaman` olay defteri, 24 saatlik deney planı | `502 upstream_unauthorized` tekrarlıyorsa |
+| [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Hata → çözüm tablosu | Bir şey bozulduğunda — **önce başındaki sürüm notunu oku** |
+| [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) § captcha | reCAPTCHA hata → çözüm | Captcha reddederse (**çare: bekle**; tablodaki eski çareler çürütüldü) |
+| [`SESSION_FORENSICS.md`](SESSION_FORENSICS.md) | **Ölçüm protokolü**: 401 bizden mi hedeften mi (H1–H4), `/zaman` olay defteri, 24 saatlik deney planı | ⚠️ Tarihsel: ölçüm sistemi bu sürümde **yok** |
 | [`CAPTURE_TIMELINE.md`](CAPTURE_TIMELINE.md) | Yakalama zaman çizelgesi | Geçmiş kararları anlamak |
 
 ### Geçmiş / arşiv
@@ -125,19 +167,44 @@ tablolara bak.
 
 ---
 
-## Aktif kurulum (ana dal / `main`)
+## Aktif kurulum
+
+Canlı servis **`arena/1kasim-test`** dalını izler (`main` değil; `MERGE_TARGET.md`).
 
 ```env
 RECAPTCHA_PROVIDER=static        # KALICI
-UPSTREAM_REFRESH_ENABLED=false   # KALICI
+UPSTREAM_CURL=<tam create-evaluation cURL'ü>   # mode ve akış yolu buradan okunur
 ```
 
-> **`main` dalında otomatik tarayıcı girişi (Chromium) YOKTUR.** Aşağıdaki
-> tabloya bakın — kod nerede duruyor, hangi dalda, hangi commit'te.
+> **19 Kasım düzeltmesi.** Bu bölümün başlığı "Aktif kurulum (ana dal / `main`)"
+> idi ve `UPSTREAM_REFRESH_ENABLED=false   # KALICI` satırını taşıyordu. Canlı dal
+> `main` değildir; `UPSTREAM_REFRESH_ENABLED` ise bu sürümde **okunmayan** bir
+> addır (otomatik yenileme kodu geri dönüşle kalktı) — yazmak ya da yazmamak bir
+> şey değiştirmez. `UPSTREAM_MODE` de böyledir: `UPSTREAM_CURL` doluyken
+> env'deki değeri okunmaz (`ROLLBACK §6`).
+>
+> Otomatik tarayıcı girişinin (Chromium) kodu canlı dalda **duruyor ama kapalı**;
+> aşağıdaki bölüm kayıt olarak korunuyor, **uygulanmamalı**.
 
 ---
 
 ## Chromium / otomatik tarayıcı girişi — nerede duruyor?
+
+> ## ⛔ Bu yol KAPANDI (17 Kasım ölçümü) — aşağısı kayıttır, tarif değil
+>
+> Aşağıdaki "Ne zaman alınır / Nasıl alınır / Denemek için" adımlarını
+> **uygulama.** Gerekçe (`LESSONS_2026_11_14.md §15.1-§15.2`):
+>
+> * Otomatik giriş siteye **e-posta + şifre** ile girer; öyle açılan oturumun
+>   istekleri `recaptcha_rejected` alıyor. Çalışan oturumlar **Google** girişiyle
+>   alınıyor ve otomatik giriş Google akışını tanımıyor.
+> * Sunucunun kendi girişi, env'deki cURL'ün taşıdığı çalışan oturumla
+>   **çakışır** (yukarıdaki 1. kural).
+>
+> Bu bölüm "çerez sürekli ölüyorsa otomatik girişi aç" diye bitiyor; aynı
+> belgenin başındaki not ise yolun kapandığını söylüyordu. Geçerli olan
+> **kapandığıdır**. Aşağıdaki tabloda `main` için yazılanlar doğrudur; canlı dal
+> `arena/1kasim-test`'tir ve kod orada durur (`UPSTREAM_LOGIN_ENABLED=false`).
 
 **Kod yazıldı, test edildi, ama `main`'de DEĞİL.** Bilerek dışarıda tutuldu:
 şu an gerekmiyor ve `main`'e giren tek şeyin doküman olması istendi.
@@ -201,6 +268,27 @@ düzelmiyorsa.
 ---
 
 ## Hızlı komutlar
+
+**Bu sürümde geçerli olanlar:**
+
+| Ne | Komut |
+|---|---|
+| Süreç ayakta mı | `GET /healthz` · Telegram `/ping` (ikisi de upstream'i **denemez**) |
+| Upstream gerçekten cevap veriyor mu | Bota **düz bir mesaj** yaz (gerçek soru) |
+| Token okunuyor mu, ne zaman doluyor | `GET /v1/admin/auth` (ikinci hesap: `?slot=2`) |
+| Etkin ayarlar (gizli olmayan) | `GET /v1/admin/config` |
+| Hesap/kota durumu | `GET /v1/admin/accounts` |
+| Sıra, upstream durumu, hesap hatları *(PR #56)* | `GET /v1/admin/queue` |
+| **Çerez/cURL tazele** | Render → Environment → `UPSTREAM_CURL` → kaydet (**yeniden deploy = restart**) |
+
+Yönetim uçları `Authorization: Bearer <API_KEYS'ten bir anahtar>` ister.
+
+> ### ⚠️ Aşağıdaki komutlar bu sürümde YOK (kayıt olarak duruyor)
+>
+> `POST /v1/admin/upstream/curl`, Telegram `/tani` ve `/curl`, `/v1/admin/keys`
+> geri dönüşle kalktı. `POST /v1/admin/auth` satırı da yanlıştı: uç **`GET`**'tir.
+> Çalışan servise deploy'suz cURL yüklenemez; proje anahtarı üretilemez
+> (anahtar vermek = Render env'inde `API_KEYS` / `ASK_API_KEYS`).
 
 **Çerez tazele (deploy gerekmez):**
 ```powershell

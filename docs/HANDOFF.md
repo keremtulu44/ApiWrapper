@@ -1,5 +1,22 @@
 # Oturum devir dosyası (HANDOFF)
 
+> ## 🗄️ ARŞİV (19 Kasım 2026)
+>
+> Bu harita `arena/cd32810d-apiwrapper` / `635d502` ağacına aittir: satır
+> numaraları, dal adları, "açık PR #28" ve §9 (kalıcılık: `state_store.py`,
+> Render env) bugünkü ağaçla **eşleşmez**. Yeni bir oturum buradan başlamasın.
+>
+> **Bugünkü durum için sıra:** [`ROLLBACK_2026_11_16.md`](ROLLBACK_2026_11_16.md)
+> (§12 süren deney, §13-§14 canlıya alma planı) → [`LESSONS_2026_11_14.md §19.1`](LESSONS_2026_11_14.md) (geçerli kurallar) →
+> [`ASK_API.md`](ASK_API.md), [`TWO_ACCOUNTS.md`](TWO_ACCOUNTS.md) (PR #56).
+>
+> **Verilmiş ve henüz uygulanmamış karar (operatör, 19 Kasım):** PR #56 önce
+> **tek hesapla** canlıya alınır ve **12 saat** denenir; ikinci hesap
+> (`UPSTREAM_CURL_2`) ancak ondan sonra, ayrı bir restart'la eklenir. 12 saat
+> dolmadan oturum ölürse ikinci hesap eklenmez; yine tek hesapla denenir
+> (`ROLLBACK §14.1-§14.2`). Merge = deploy = restart = oturum ölümü: açık onay ve
+> taze cURL olmadan merge yapılmaz ([`MERGE_TARGET.md`](MERGE_TARGET.md)).
+
 Bu dosya, yeni bir oturumun (veya başka bir modelin) depoyu **kendi başına**
 anlaması için gereken dosya yollarını ve satır konumlarını listeler.
 

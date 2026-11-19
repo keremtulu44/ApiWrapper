@@ -4,6 +4,11 @@
 > Canlıya alma koşulu ve adımları: [`ROLLBACK_2026_11_16.md` §13](ROLLBACK_2026_11_16.md).
 > Bu belgedeki süreler gerçek bir sunucu üzerinde ölçülerek doğrulandı; gerçek
 > upstream'e karşı ilk doğrulama deploy'dan sonra yapılacak (§8).
+>
+> **Canlıya alma sırası (operatör kararı, 19 Kasım):** önce **tek hesapla**
+> alınır ve **12 saat** denenir; ikinci hesap (§10) ancak ondan sonra, ayrı bir
+> restart'la eklenir (`ROLLBACK_2026_11_16.md §14`). Yani ilk 12 saat bu belgenin
+> §1-§9'u geçerlidir, §10 değil.
 
 `/v1/chat/completions` bir insan ya da OpenAI SDK'sı içindir: cevap gelene dek
 sessizdir, arızayı ayrıntılı hata koduyla bildirir. Bir alarm sistemi için ikisi
@@ -359,7 +364,7 @@ Bundan sonra: dış isteklere 5 dk boyunca upstream'e gidilmeden "problem" denir
 | Satır | Ne işe yarar |
 |---|---|
 | `Ne oldu … [kod]` | Arızanın adı ve kodu |
-| `Tür: GEÇİCİ / KALICI` | **Dokunmalı mıyım?** Geçici → bekle. Kalıcı (🔴) → elle müdahale |
+| `Tür: GEÇİCİ / KALICI` | **Dokunmalı mıyım?** Geçici → bekle (2 saate kadar). Kalıcı (🔴) → elle müdahale; oturum düşmesinde (`401`) müdahaleden önce bir kez doğrula (aşağıda) |
 | `Yapılacak` | O koda özel adım |
 | `Upstream cevabı` | Upstream'in **kendi** cevabı: durum kodu + gövdenin özeti. Etikete değil buna güven (18 Kasım dersi, `LESSONS §16`). Token/çerez gibi uzun değerler `[gizlendi]` yazılır |
 | `İstek req_…` | Render logunda aynı `request_id` ile aranır |
@@ -371,9 +376,16 @@ Oturum düşmesi aynı biçimde ama kırmızı ve kalıcı olarak gelir:
 🔴 ApiWrapper — dış istek cevaplanamadı; karşı sisteme "problem" döndü.
 Ne oldu: Upstream oturum kimliğini reddetti (HTTP 401): oturum düştü. [upstream_unauthorized]
 Tür: KALICI — elle müdahale gerekir.
-Yapılacak: Kendiliğinden düzelmez. Google ile giriş yapılmış tarayıcıdan taze cURL alıp UPSTREAM_CURL'ü güncelleyin ve yeniden deploy edin; …
+Yapılacak: Süren 401 kendiliğinden dönmez; yine de müdahaleden önce bir kez doğrulayın: bir sonraki probe'dan sonra "yeniden çalışıyor" bildirimi gelmezse oturum ölmüştür (…). Ölmüşse Google ile giriş yapılmış tarayıcıdan taze cURL alıp UPSTREAM_CURL'ü güncelleyin ve yeniden deploy edin. Buna karar vermeden o hesapla tarayıcıdan giriş yapmayın: …
 Upstream cevabı: HTTP 401 · {"error":"unauthorized"}
 ```
+
+**Neden "önce doğrula":** taze cURL tarayıcıya giriş ister ve giriş, hâlâ
+yaşayan oturumu kesin bitirir — geri alınamaz tek adım odur. Süren 401'in
+dönmediği ölçüldü (16 Kasım: art arda 6 probe); tek bir 401 döneminin ise
+dokunulmadan geçtiği bir kez görüldü (14-15 Kasım). Bir sonraki probe ikisini
+ayırır: `✅ … yeniden çalışıyor` gelirse dokunma, gelmezse cURL'ü yenile
+(`TROUBLESHOOTING.md §2`).
 
 ### Arıza sürerken
 
@@ -526,7 +538,7 @@ Tam liste ve açıklamalar: `.env.example` ("istek sırası" ve "/v1/ask" bölü
 | `ASK_PROBLEM_HOLD_SECONDS` | `300` | Arıza bilinirken bekletme (`0` = kapalı) |
 | `ASK_DEFAULT_MODEL` | boş | İstekte model yoksa kullanılacak |
 | `ASK_API_KEYS` | boş | **Yalnız `/v1/ask`'te** geçerli ek anahtarlar (aşağıya bak) |
-| `REQUEST_QUEUE_ENABLED` | `true` | Tek sıra (`false` = eski, eşzamanlı davranış) |
+| `REQUEST_QUEUE_ENABLED` | `true` | İstek sırası — hesap başına tek tek (`false` = eski, eşzamanlı davranış) |
 | `REQUEST_GAP_MIN_SECONDS` / `…MAX…` | `5` / `10` | İstekler arası rastgele bekleme |
 | `REQUEST_QUEUE_MAX_WAITING` | `20` | Sıra derinliği |
 | `UPSTREAM_KEEPALIVE_SKIP_WHEN_ACTIVE` | `true` | Trafik varken probe atma |
@@ -566,7 +578,8 @@ için). Değişken env'dir → restart ister → **deploy ile aynı anda** gir.
 > ⚠️ **Her ayar değişikliği restart, her restart oturum ölümüdür** (`LESSONS §16.5`).
 > Ayarları tek tek deneme; cURL'ün zaten yenileneceği ana sakla.
 
-Canlıya alma ve sonrasındaki deneme adımları: [`ROLLBACK_2026_11_16.md` §13](ROLLBACK_2026_11_16.md).
+Canlıya alma ve sonrasındaki deneme adımları: [`ROLLBACK_2026_11_16.md` §13](ROLLBACK_2026_11_16.md)
+(tek hesap, 12 saat); ikinci hesabın eklenmesi: aynı belgenin §14'ü.
 
 ---
 

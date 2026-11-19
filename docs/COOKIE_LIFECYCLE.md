@@ -14,6 +14,19 @@ değer **kendiliğinden** döner, hangisi elle taşınır.
 >
 > Güncel model: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md).
 
+> ## ⚠️ 19 Kasım 2026 — yukarıdaki not da eskidi; bu sürümde olmayanlar
+>
+> | Yukarıda / aşağıda yazan | Güncel bilgi |
+> |---|---|
+> | "`UPSTREAM_REFRESH_ENABLED=false` kalıcıdır… §5'teki akış kod olarak durur" | Kod olarak da **durmuyor**: `refresh.py` 16/17 Kasım geri dönüşüyle kalktı; ad okunmuyor |
+> | "Token yaşı pratikte sorun değil: hedef `exp` alanını denetlemiyor" | **Dayanağı çürütüldü** (16 Kasım, `LESSONS §13`): token ~20 dakikada bir **yenileniyor** (hedef, isteklerimize `Set-Cookie` ile yenisini koyuyor); süresi geçmiş token'la başarılı istek o ölçümde görülmedi. Uzun yaşayan şey çerezdir (oturum): 15 saat+ ve ~28 saat |
+> | §1 ve §3: `/tani`, `/yenile` çıktıları | İki komut da bu sürümde **yok** (Telegram: yalnız `/start`, `/help`, `/ping`) |
+> | §0 tablosu, 2. katman: "`/yenile` otomatik yakalar" | Bu sürümde sürüm damgasını **kanarya** tazeler (`DEPLOYMENT_ID_REFRESH_ENABLED`, varsayılan açık); `cx` gönderilmez |
+> | §4 "ne sıklıkta elle müdahale" | Süreyle değil olayla: yalnız **süren `401`**'de ya da kendi yaptığın restart'tan önce |
+>
+> §0'daki katman ayrımı, §2 ve §4b bilgi olarak geçerlidir.
+> Geçerli işletim kuralları: [`LESSONS_2026_11_14.md §19.1`](LESSONS_2026_11_14.md).
+
 ## 0. Üç katman — karışan şey bu
 
 | Katman | Örnek | Ömrü | Kim tazeler |

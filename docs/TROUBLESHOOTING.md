@@ -5,6 +5,38 @@ Amaç her arızada log okumaya sıfırdan başlamamak.
 
 > Örneklerde sağlayıcı adresi **`upstream.example`** olarak maskelenmiştir.
 
+> ## ⚠️ SÜRÜM NOTU (19 Kasım 2026) — önce bunu oku
+>
+> Bu el kitabının gövdesi `77d4011` sürümü için yazıldı. Canlıdaki kod bir
+> **geri dönüş** sürümüdür (`ROLLBACK_2026_11_16.md`): Telegram'da yalnız
+> `/start`, `/help`, `/ping` var; çalışan servise cURL/çerez yüklenemez; olay
+> defteri, otomatik token yenileme ve "damga sıyırma" yok. Bu yüzden aşağıdaki
+> **"Yapılacak" adımlarının bir kısmı uygulanamaz.** Bölüm bölüm durum:
+>
+> | Bölüm | Bu sürümde |
+> |---|---|
+> | §0 Hızlı teşhis | ✅ 19 Kasım'da güncellendi |
+> | §1 `409 refresh_required` | ⚠️ Kanarya ve tek taze-damga denemesi **var**; 2. kademe (damga sıyırma) **yok**. Ayar adları `DEPLOYMENT_…` (düzeltildi) |
+> | §1b `409 → 401` | ⚠️ Teşhis geçerli; `/yenile`, `/cookie`, `/curl`, `/zaman` çareleri **yok** → tek çare Render env + yeniden deploy |
+> | §1c `create-evaluation` görünmüyor | ⚠️ Tablo geçerli; "Kısayol" (`/cookie`) **yok** |
+> | §2 `401` | ⚠️ **Başındaki 19 Kasım kuralını uygula.** Gövdedeki `/zaman`, `/cookie`, `UPSTREAM_REFRESH_API_KEY` maddeleri yok |
+> | §2b tüketici `401 invalid_api_key` | ⚠️ `/v1/admin/keys` yok; anahtar listesi Render env'indeki `API_KEYS` / `ASK_API_KEYS`'tir |
+> | §3 `429` | ✅ **EK (18 Kasım)** önceliklidir |
+> | §3b görsel modu | ❌ mod yok |
+> | §4 CAPTCHA | ✅ yalnız **DÜZELTME (17 Kasım)** kutusu; üstündeki tablo çürütüldü |
+> | §5 zaman aşımı · §6 Telegram bildirimleri · §7 dağıtım sonrası | ✅ |
+> | §8 `/v1/ask` · §9 iki hesap | ✅ PR #56 (kod canlıda değil) |
+>
+> **Bütün bölümlerin üstündeki dört kural** (`LESSONS_2026_11_14.md §19.1`):
+>
+> 1. **`429`, `recaptcha_rejected`, ≈180 sn süren probe uyarısı ⇒ BEKLE**, 2 saate
+>    kadar hiçbir şeye dokunma. Üçü de ölçümde kendiliğinden geçti.
+> 2. **Süren `401` ⇒ oturum öldü**, kendiliğinden dönmez. Tek 401'de önce doğrula
+>    (bir sonraki probe / bota düz mesaj).
+> 3. **Her çare bir restart'tır ve restart oturumu bitirir.** cURL'ü tazelemek =
+>    Render env + yeniden deploy. Küçük düzeltmeleri biriktir.
+> 4. **Uyarının etiketine değil `upstream_http_error … body=` log satırına güven.**
+
 ---
 
 ## 0. Hızlı teşhis
@@ -18,9 +50,14 @@ Amaç her arızada log okumaya sıfırdan başlamamak.
 | `GET /v1/admin/accounts` | Hesap başına kota penceresi, cooldown, öğrenilen limit |
 | `GET /v1/admin/auth?slot=N` | Cookie'den token çıkarılabiliyor mu, süresi dolmuş mu |
 | `POST /v1/admin/breaker/reset` | Devre kesiciyi kapat (arıza geçtiyse) |
-| `POST /v1/admin/recaptcha/invalidate` | reCAPTCHA token'ını zorla yenile |
-| Telegram `/ping` | Wrapper `/healthz` **+ son upstream kontrolünün saati/sonucu** |
-| Telegram `/tani` | Çerez adları, oturum adayı, çerezdeki/kullanılan token, refresh token **+ tek satır "ne yapmalı"** |
+| `POST /v1/admin/recaptcha/invalidate` | reCAPTCHA token'ını zorla yenile (`static` sağlayıcıda **etkisiz**: token sabit) |
+| `GET /v1/admin/queue` *(PR #56)* | Sıra, upstream'in bilinen durumu (`upstream_health`), hesap hatları, `/v1/ask` ayarları |
+| Telegram `/ping` | Yalnız wrapper `/healthz`: **süreç ayakta mı.** Upstream'i göstermez |
+| Bota **düz mesaj** | Gerçek soru: upstream'in cevap verdiğinin tek hızlı kanıtı |
+
+> *(19 Kasım düzeltmesi: `/ping` satırı "+ son upstream kontrolünün saati/sonucu"
+> diyordu ve bir `/tani` satırı vardı. İkisi de `77d4011`'e aitti; bu sürümde
+> `/ping` yalnız `/healthz`'i çağırır, `/tani` yoktur.)*
 
 Genel zihinsel model (hangi katman kendiliğinden tazelenir):
 **[`docs/BIG_PICTURE.md`](BIG_PICTURE.md)**.
@@ -34,6 +71,9 @@ Loglarda olay adı (event) ile arayın: `upstream_request`, `upstream_http_error
 Sürüm damgası/oturum tarafı: `deployment_id_detected`, `deployment_id_changed`,
 `deployment_stamp_refreshed`, `deployment_stamp_unchanged`, `upstream_set_cookie`,
 `upstream_cx_flag`, `upstream_referer_path_default`.
+(`recaptcha_rejected_retrying` `static` sağlayıcıda hiç basılmaz. PR #56'da
+`account_switched` bir isteğin öbür hesabın sırasına taşındığını gösterir;
+`/v1/ask` isteklerinde yanında `ask_rerouted` da basılır — §9.)
 
 ---
 
@@ -69,7 +109,7 @@ sürüm yayınladı ve tarayıcıdan alınan cURL'deki **sürüm/deployment damg
 Wrapper, sürüm damgasını **dondurulmuş** tutmak yerine upstream'in kendi
 sayfasından okuyor (`app/upstream/deployment.py`):
 
-1. **Kanarya:** `UPSTREAM_DEPLOYMENT_ID_TTL_SECONDS` (vars. 1800 sn) boyunca
+1. **Kanarya:** `DEPLOYMENT_ID_TTL_SECONDS` (vars. 1800 sn) boyunca
    geçerli olacak şekilde ana sayfa bir `GET` ile okunur. Değer önce yanıt
    başlıklarından (`x-deployment-id`, `x-arena-web-deployment`), olmazsa HTML
    içindeki `dpl_...` deseninden alınır.
@@ -86,7 +126,9 @@ sayfasından okuyor (`app/upstream/deployment.py`):
    çıkarılarak** bir kez daha denenir. Bu kademe hiçbir değer bilmeyi
    gerektirmez; skew koruması olmayan istek genelde kabul edilir. Logda
    `deployment_stamp_stripped`, metrikte `apiwrapper_deployment_stamp_strip_total`.
-   Kapalı tutmak için: `UPSTREAM_DEPLOYMENT_STAMP_STRIP_ON_CONFLICT=false`.
+   Kapalı tutmak için: `DEPLOYMENT_STAMP_STRIP_ON_CONFLICT=false`.
+   ⚠️ **Bu kademe bu sürümde YOK** (geri dönüşle kalktı; ayar, log ve metrik de
+   yok). Bu sürümde sıra: kanarya → tek taze-damga denemesi → son kademe.
 4. **Son kademe:** ikisi de işe yaramazsa oturum çerezini tazelemek için tek bir
    sayfa `GET`'i yapılır (`upstream_warmup`) ve hata mevcut net mesajla
    (`503 upstream_refresh_required`) döner. Bu `GET` aynı zamanda sayfada
@@ -96,12 +138,19 @@ sayfasından okuyor (`app/upstream/deployment.py`):
 İlgili ayarlar (hepsi opsiyonel):
 
 ```env
-UPSTREAM_DEPLOYMENT_ID_REFRESH_ENABLED=true   # kanaryayı tamamen kapat: false
-UPSTREAM_DEPLOYMENT_ID_TTL_SECONDS=1800       # ne sıklıkla okunacak
-UPSTREAM_DEPLOYMENT_PROBE_PATH=/              # okunacak sayfa
-UPSTREAM_DEPLOYMENT_PROBE_TIMEOUT=8
-UPSTREAM_DEPLOYMENT_ID_AUTO_RETRY=true        # 409 sonrası tek taze-damga denemesi
+DEPLOYMENT_ID_REFRESH_ENABLED=true   # kanaryayı tamamen kapat: false
+DEPLOYMENT_ID_TTL_SECONDS=1800       # ne sıklıkla okunacak
+DEPLOYMENT_PROBE_PATH=/              # okunacak sayfa
+DEPLOYMENT_PROBE_TIMEOUT=8
+DEPLOYMENT_ID_AUTO_RETRY=true        # 409 sonrası tek taze-damga denemesi
 ```
+
+> **19 Kasım düzeltmesi — bu adların başında `UPSTREAM_` YOK.** Bu bölüm (ve
+> `.env.example`, `RENDER.md`) adları `UPSTREAM_DEPLOYMENT_…` diye veriyordu;
+> uygulama o adları **okumaz**, değer sessizce yok sayılır
+> (`app/core/config.py`: `deployment_id_refresh_enabled` …). Env'inde
+> `UPSTREAM_DEPLOYMENT_…` varsa etkisizdir; varsayılanlar zaten yukarıdaki
+> değerlerdir, yani davranış değişmemiştir.
 
 Kanarya yalnızca istekte **zaten bulunan** deployment başlıklarını tazeler;
 tanımadığı upstream'lere yeni başlık eklemez. `UPSTREAM_CURL` içinde hiç
@@ -117,7 +166,7 @@ olabilir. O zaman:
 1. Tarayıcıda uygulamayı **Ctrl+Shift+R** ile sert yenile ve giriş yap.
 2. Yeni bir sohbet mesajı gönder, isteği **Copy as cURL** ile kopyala.
 3. Render'da `UPSTREAM_CURL` secret'ını bu değerle güncelle → **Manual Deploy**.
-4. Doğrula: Telegram `/ping` sonrası bir mesaj ya da `POST /v1/chat/completions`.
+4. Doğrula: bota düz bir mesaj ya da `POST /v1/chat/completions` (`/ping` yetmez).
 5. Farkı görmek istersen: `python scripts/compare_curl.py request.txt`.
 
 **Bu hata sınıfı:**
@@ -135,6 +184,8 @@ Canlıda gözlendi (2026-11-02, saatlik keepalive): her probe `409
 `/healthz` hâlâ `200` döner — süreç ayaktadır ama **hiçbir istek çalışmıyor**.
 `/ping` artık son upstream kontrolünü de yazdığı için bu sessiz kesinti
 görünür olur; PR sonrası ayrıca Telegram'a tek bir özet bildirim gider.
+*(Bu sürümde `/ping` upstream'i göstermez; kesintiyi probe'un Telegram
+bildirimi haber verir.)*
 Kalıcı çözüm yukarıdaki otomatik kurtarma kademeleridir; ikisi de tutmazsa
 `deployment_stamp_unchanged` logu ile yeni cURL gerekir.
 
@@ -145,6 +196,7 @@ olarak göndermiyor, istekler çalışıyor. Bir 4xx gövdesi `cx` alanına atı
 bulunmaya başlarsa logda `upstream_cx_flag` +
 `apiwrapper_upstream_cx_flags_total` metriği görünür: bu, alanın zorunlu hâle
 geldiği anlamına gelir. O anda `UPSTREAM_CX_SEND=true` yapmak yeterlidir.
+*(`UPSTREAM_CX_SEND` bu sürümde **yok**; `cx` gönderilmez.)*
 
 ---
 
@@ -171,6 +223,15 @@ sorununu, 401 ise asıl sorunu söylüyor — **oturum ölmüş**.
 Bu senaryoda damga kanaryası işe yaramaz: ana sayfa oturum olmadan `dpl_`
 kimliğini yayınlamıyor (`source: configured`). Sıralama doğru çalışıyor:
 tazeleme → sıyırma → hata.
+
+> ⚠️ **Bu sürümde (19 Kasım notu):** aşağıdaki 1. ve 2. adım, "API
+> karşılıkları" ve "Ölçüm" paragrafı **uygulanamaz** — `/yenile`, `/cookie`,
+> `/curl`, `/zaman`, `/v1/admin/upstream/{curl,cookie,capture,refresh,apikey}` ve
+> `/v1/admin/timeline` yok; log
+> tablosundaki `upstream_session_dead` ve `upstream_identity_forensic_*`
+> satırları da basılmaz. **Geçerli tek adım 3'tür:** Google ile giriş yapılmış
+> tarayıcıdan taze cURL → Render'da `UPSTREAM_CURL` → yeniden deploy. Önce §2'nin
+> başındaki doğrulama kuralı.
 
 **Yapılacak — telefonda DevTools gerekmez**
 
@@ -226,6 +287,11 @@ hangisinin geçerli olduğuna dair karar tablosu ve 24 saatlik deney planı:
 | Uç nokta farklı adlandırılmış | `post-to-evaluation`, `evaluation`, `stream` arayın | Arama kutusuna `evaluation` yazın |
 | Mobil tarayıcı | Network paneli yok | `/yenile` ya da Cookie-Editor → `/cookie` |
 
+> ⚠️ **Bu sürümde (19 Kasım notu):** aşağıdaki kısayol ve tablodaki `/yenile` /
+> `/cookie` çareleri **yok**. Bu sürümde tam `create-evaluation` cURL'ü
+> **şarttır**: `UPSTREAM_CURL` ondan akış yolunu, `mode`'u ve captcha token'ını
+> da okur.
+
 **Kısayol:** `create-evaluation` şart değil. Wrapper'ın asıl ihtiyacı `Cookie`
 başlığıdır:
 
@@ -235,6 +301,32 @@ başlığıdır:
   bilinçli olarak değiştirilebilir). Yani yanlış isteğin cURL'ü servisi bozmaz.
 
 ## 2. `HTTP 401` — `upstream_unauthorized`
+
+> ### 🔴 GEÇERLİ KURAL (19 Kasım) — aşağıdaki maddelerden önce
+>
+> Bu belgede ve README'de 401 için iki zıt cümle vardı: *"bekle, genelde kendi
+> döner"* ve *"kendiliğinden düzelmez, taze cURL al"*. İkisinin de arkasında bir
+> ölçüm var; kural ikisini birleştirir:
+>
+> | Ölçüm | Ne gösterdi |
+> |---|---|
+> | 14-15 Kasım (`LESSONS §1`) | Tarayıcı girişinden sonra 401 başladı; **dokunulmadı**, aynı cURL ertesi gün çalışıyordu. 401 döneminin süresi kayıtlı değil |
+> | 16 Kasım (`ROLLBACK §2`) | **Art arda 6 probe** (~50 dk) 401 aldı; oturum dönmedi, token rotasyonu durmuştu |
+>
+> 1. **O hesapla tarayıcıdan giriş yapma.** Giriş, hâlâ yaşayan oturumu kesin
+>    bitirir; geri alınamaz tek adım budur.
+> 2. **Bir kez doğrula:** bir sonraki probe'u bekle (iki hesapta o hesabın kendi
+>    probe'u; "yeniden çalışıyor" bildirimi gelir) ya da tek hesapta bota düz bir
+>    mesaj yaz. Cevap geldiyse geçiciydi — dokunma.
+> 3. **Hâlâ 401 ise oturum ölmüştür ve kendiliğinden dönmez.** Google ile giriş
+>    yapılmış tarayıcıdan taze cURL al → **sekmeyi kapat, çıkış yapma** → Render
+>    env'inde `UPSTREAM_CURL` → yeniden deploy.
+>
+> Aşağıdaki maddelerden bu sürümde **geçerli olmayanlar:** `/cookie` (1. madde),
+> `/zaman` ve `forensic_retry` (5.-6. madde), `UPSTREAM_REFRESH_API_KEY` (son
+> madde). 4.-5. maddedeki *"`exp` pratikte bağlayıcı değil, hedef token yaşını
+> denetlemiyor"* iddiasının dayanağı 16 Kasım ölçümüyle **çürütüldü** (`LESSONS §13`): token
+> ~20 dakikada bir yenileniyor; 15 saat yaşayan şey çerezdi, token değil.
 
 Oturum cookie'si/token'ı ölmüş. `/v1/admin/auth?slot=N` ile hangi hesabın
 düştüğüne bakın (`expires_in_seconds: -1` = süresi dolmuş).
@@ -280,7 +372,7 @@ düştüğüne bakın (`expires_in_seconds: -1` = süresi dolmuş).
 
 | Gördüğünüz | Gerçek sebep | Yapılacak |
 |---|---|---|
-| `502 upstream_unauthorized` | Oturum öldü (401 / `user not found`) | Kimliği tazeleyin: `/cookie`, `/curl` veya `/yenile` |
+| `502 upstream_unauthorized` | Oturum öldü (401 / `user not found`) | Kimliği tazeleyin: ~~`/cookie`, `/curl` veya `/yenile`~~ *(bu sürümde yok)* → bölümün başındaki 3 adım |
 | `429 upstream_quota_reached` + `retry_after` | Hesap gerçekten kilitli, upstream bunu **metinle** söyledi | Bekleyin; `Retry-After` süresi dolmadan denemeyin |
 | `429` + `"All upstream accounts are temporarily locked ... Earliest retry in 0s"` | **Eski sürüm hatası**: ölü oturum kota gibi raporlanıyordu | Güncel sürümde bu mesaj 401 aldığınızda görünmez; görüyorsanız önce kimliği tazeleyin |
 
@@ -291,6 +383,13 @@ düştüğüne bakın (`expires_in_seconds: -1` = süresi dolmuş).
 ---
 
 ## 2b. Tüketici `401 invalid_api_key` alıyor (anahtar tarafı)
+
+> ⚠️ **Bu sürümde (19 Kasım notu):** aşağıdaki tablonun `/v1/admin/keys`,
+> `is_admin`, `project_key_revoked` ve `upstream_state_restored` satırları
+> **yok**. Geçerli anahtarlar Render env'indeki `API_KEYS` (her uç) ve
+> `ASK_API_KEYS` (yalnız `/v1/ask`, PR #56) listeleridir; kontrol edilecek tek
+> şey tüketicinin anahtarının o listede birebir bulunması ve başlık biçimidir.
+> `ASK_API_KEYS` anahtarı sohbet/yönetim uçlarında `401` alır — beklenen davranış.
 
 Yukarıdaki 401 **upstream** oturumuyla ilgiliydi ve istemciye `502
 upstream_unauthorized` olarak yansır. Tüketicinin gördüğü düz `401
@@ -346,6 +445,8 @@ Hesap geçici olarak kilitli; upstream bunu metinle bildiriyor
 
 ### 3b. `429 {"error":"prompt failed"}` — yalnız görsel modunda (ikincil mod)
 
+> ⚠️ **Bu sürümde görsel modu yok** (`model=image` → `model_not_found`). Kayıttır.
+
 Belirti: `model=image` isteğinde üç kez
 `upstream_http_error status=429 body={"error":"prompt failed"}`, ardından
 `stream_failed error_code=upstream_rate_limited content_chars=0`. Aynı dakikada
@@ -365,6 +466,10 @@ Ayrıntı: `LESSONS_2026_11_14.md §10`.
 ---
 
 ## 4. CAPTCHA — `recaptcha_unavailable` / `recaptcha_rejected`
+
+> ⚠️ **Önce aşağıdaki "DÜZELTME (17 Kasım ölçümü)" kutusunu oku.** Bu tablonun
+> "Yapılacak" sütunu çürütüldü; `recaptcha_rejected` için geçerli çare
+> **beklemektir** (ölçülen 10-15 dk; 2 saate kadar). Tablo kayıt olarak duruyor.
 
 | Belirti | Olası neden | Yapılacak |
 |---|---|---|
@@ -406,6 +511,14 @@ site key / provider ayarını işaret eder.
 >    tablonun 4. satırı onu işaret ediyor — bayat referans, `git grep` boş).
 > 7. **cURL'ü yalnız Google ile giriş yapılmış oturumdan al.** E-posta + şifre
 >    ile girilmiş oturumun cURL'ü `recaptcha_rejected` veriyor (`LESSONS §15.1`).
+>
+> **19 Kasım eki.** (a) Bekleme sınırı: ölçülen süre 10-15 dakikadır; kural
+> olarak **2 saate kadar** beklenir, 2 saati aşarsa taze cURL. (b) 3. maddedeki
+> komut sayısı **3**'tür (`/start`, `/help`, `/ping`); `/healthz` bir HTTP ucudur.
+> (c) 4. maddede çürütüldüğü yazılan iki kod metni (`static.py`,
+> `diagnostics.py`) ve API hata mesajı **PR #56'da düzeltildi**; canlı
+> (`03aca2c`) kodda eski hâlleriyle duruyor, yani canlıdaki Telegram uyarısı
+> hâlâ "token'ı yenileyin / browser sağlayıcıya geçin" der — **uygulama**.
 
 ---
 
@@ -457,8 +570,9 @@ için İngilizce kalır, operatöre giden yüzeyler Türkçedir.
 ## 7. Dağıtım sonrası kontrol listesi
 
 1. `GET /readyz` → `{"status":"ok"}` (eksikse `issues` listesine bakın).
-2. Telegram `/ping` → `HTTP 200`.
-3. Tek bir gerçek mesaj: bot üzerinden veya `POST /v1/chat/completions`.
+2. Telegram `/ping` → `HTTP 200` (yalnız süreç ayakta; upstream'i kanıtlamaz).
+3. Tek bir gerçek mesaj: bot üzerinden veya `POST /v1/chat/completions` —
+   **cURL'ün çalıştığının kanıtı budur.**
 4. Live tail'de `application_started` + `upstream_curl_loaded` satırları.
 5. ~1 dakika sonra ilk probe: `upstream_keepalive_completed` (veya hata kodu).
 

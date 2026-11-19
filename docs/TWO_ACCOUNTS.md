@@ -4,6 +4,13 @@
 > Gerçek upstream'e karşı hiç çalışmadı: buradaki bütün ölçümler sahte upstream
 > ile, gerçek soketler üzerinde alındı (`tests/test_two_accounts_live.py`).
 > Canlıya alma: `ROLLBACK_2026_11_16.md §14`.
+>
+> **Canlıya alma sırası (operatör kararı, 19 Kasım):** ikinci hesap **ilk gün
+> eklenmez.** Yeni kod önce **tek hesapla** canlıya alınır ve **12 saat** denenir
+> (`UPSTREAM_CURL_2` boş); sorunsuz geçerse ikinci hesap ayrı bir restart'la
+> eklenir. 12 saat dolmadan oturum ölürse ikinci hesap eklenmez; neden aranır
+> ve yine tek hesapla denenir. Bu belgedeki her şey o ikinci restart'tan sonra
+> geçerlidir; o güne dek servis §1'deki "verilmezse" hâlinde çalışır.
 
 Bu belge üç soruyu cevaplar: ikinci hesap **nasıl eklenir**, eklenince **ne
 değişir**, bir hesap arıza verince **ne olur**. Karşı sistemin (`/v1/ask`)
@@ -34,7 +41,10 @@ Birinci hesapla aynı yöntem (`MOBILE_CURL.md`, `LESSONS §15.1`), üç farkla:
 1. **Başka bir hesap.** Aynı hesabın ikinci cURL'ü işe yaramaz; servis bunu
    fark eder ve **başlamaz** (§2.3).
 2. **Ayrı tarayıcı profili** (ya da ayrı cihaz). Aynı profilde hesap değiştirmek,
-   birinci hesabın o tarayıcıdaki oturumunu kapatır.
+   birinci hesabın o tarayıcıdaki oturumunu kapatır — ve sunucu o oturumun
+   **aynısını** taşıdığı için bu, sunucudaki birinci hesabı da bitirebilir.
+   cURL'ü aldıktan sonra **sekmeyi kapat, çıkış yapma**; o hesapla tarayıcıdan bir
+   daha girme (`ROLLBACK §6`, 19 Kasım düzeltmesi).
 3. **Aynı sayfa, aynı tür istek.** İki cURL de aynı siteden, aynı sohbet
    türünden (`create-evaluation`) alınmalı. Akış yolu, `mode` ve captcha alanının
    adı **1. cURL'den** okunur; 2. cURL'den yalnız hesaba özgü olanlar alınır:
@@ -61,8 +71,16 @@ bu neredeyse her zaman yanlış isteğin kopyalandığı anlamına gelir.
 | `UPSTREAM_ACCOUNT_NAME`, `UPSTREAM_ACCOUNT_2_NAME` | hayır | Mesajlarda görünen ad. Boşsa `hesap-1`, `hesap-2` |
 | `ACCOUNT_FAILOVER` | hayır (`true`) | §5 |
 
-Başka hiçbir ayar gerekmez. `render.yaml` değişmedi: `UPSTREAM_CURL_2` Render
-panelinden (Environment) elle eklenir.
+Başka hiçbir ayar gerekmez. `UPSTREAM_CURL_2` blueprint'te (`render.yaml`)
+tanımlı değildir; Render panelinden (Environment) elle eklenir.
+
+**Sonekli eski alanlar.** Hesap yuvaları ayrıca tek tek alanlarla da
+tanımlanabilir (`UPSTREAM_COOKIE_2`, `UPSTREAM_ACCESS_TOKEN_2` …; yerel `.env`
+kurulumunda `scripts/curl_to_env.py` bunları yazar). `UPSTREAM_CURL` doluyken
+— Render'daki kurulum — kendi `UPSTREAM_CURL_N`'i verilmemiş yuvaların bu
+alanları açılışta **boşaltılır**: env'de unutulmuş eski bir `UPSTREAM_COOKIE_2`
+ikinci hesap **oluşturmaz**. Kaç hesabın kurulduğunu açılış logu söyler:
+`application_started … accounts=1` (ya da `2`).
 
 ### 2.3 Hatalı cURL: servis **başlamaz**
 

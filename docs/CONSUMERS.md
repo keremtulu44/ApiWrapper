@@ -12,6 +12,30 @@ api_key  = "sk-…"                                    # 2
 > böylece kullanım proje bazında görülür ve bir proje iptal edildiğinde diğerleri
 > etkilenmez.
 
+> ## ⚠️ SÜRÜM NOTU (19 Kasım 2026)
+>
+> Bu rehber `77d4011` sürümü için yazıldı; canlıdaki kod bir geri dönüş
+> sürümüdür (`ROLLBACK_2026_11_16.md`). Bölüm bölüm:
+>
+> | Bölüm | Bu sürümde |
+> |---|---|
+> | §1 Hızlı başlangıç · §3 Hatalar · §4 Hız sınırları | ✅ |
+> | §2 Modeller | ⚠️ Yalnız **`max`**. `web` modeli ve `Kaynaklar:` bloğu **yok**; `model=web` isteği `model_not_found` alır |
+> | §5 İşletici tarafı | ❌ `ADMIN_API_KEYS`, `/v1/admin/keys`, `API_KEY_LABELS` **yok**. Aşağıya bak |
+> | §6 Bilinen sınırlar | ✅ |
+> | §7 `/v1/ask` · §8 İstek sırası | PR #56 (canlıda değil). §8'deki "tek sıra", ikinci hesap eklenince **hesap başınadır** (`TWO_ACCOUNTS.md §4`) |
+>
+> **⚠️ Güvenlik — §5'teki "önce `ADMIN_API_KEYS` ayır" adımı bu sürümde hiçbir
+> şeyi korumaz.** O ad okunmaz. Bu sürümde `API_KEYS`'teki **her** anahtar
+> `/v1/admin/*` uçlarını da açar (hesap sıfırlama, oturum temizleme, ayar özeti).
+> Yani bir tüketiciye `API_KEYS`'ten anahtar vermek ona yönetim yetkisi de
+> vermektir. Anahtar üretmek/iptal etmek için uç da yok: liste Render env'indeki
+> `API_KEYS`'tir ve değiştirmek bir **restart**'tır (oturum ölür).
+>
+> Yalnız soru soracak bir otomasyon için PR #56 ayrı bir liste getirir:
+> **`ASK_API_KEYS`** — yalnız `/v1/ask`'te geçerlidir, başka hiçbir ucu açmaz
+> (`ASK_API.md §8`).
+
 ---
 
 ## 1. Hızlı başlangıç
