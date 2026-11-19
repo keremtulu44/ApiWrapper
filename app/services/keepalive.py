@@ -11,8 +11,8 @@
 İlk probe `UPSTREAM_KEEPALIVE_INITIAL_DELAY_SECONDS` (vars. 60 sn) sonra çalışır:
 deploy sonrası durumu bir saat bekleyip öğrenmemek için.
 
-Probe da diğer istekler gibi tek sıradan geçer (`RequestQueue`). İki kural bunu
-güvenli kılar:
+Probe da diğer istekler gibi hesabının sırasından geçer (`RequestQueue`). Şu
+kurallar bunu güvenli kılar:
 
 * **Boştayken at:** son aralıkta gerçek bir istek başarıyla cevaplandıysa oturum
   zaten tazelenmiştir; probe o istekten bir aralık sonraya ertelenir

@@ -5,7 +5,7 @@ tüketir; yanıt yarıda biterse onu **kapatmaz**. Üretici bir `yield`'de askı
 hata olursa (parça kodlanamadı, istemciye yazılamadı, ara katman iptal etti)
 üreticinin `finally` bloğu çalışmaz; çöp toplayıcı ne zaman uğrarsa o zaman çalışır.
 
-İstekler tek sıradan geçtiği için bu burada ölümcüldür: sıradaki yer üreticinin
+İstekler sıradan (hesap başına tek tek) geçtiği için bu burada ölümcüldür: sıradaki yer üreticinin
 `finally` bloğunda bırakılır. Gerçek sunucuda ölçüldü — upstream ikiye bölünmüş
 bir emoji (tek başına vekil karakter) gönderdiğinde parça UTF-8'e çevrilemedi,
 üretici askıda kaldı ve sıra 6 sn sonra hâlâ o isteğe aitti; emniyet supabına

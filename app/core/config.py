@@ -77,7 +77,13 @@ class Settings(BaseSettings):
     upstream_stream_path: str = "/nextjs-api/stream/post-to-evaluation/{chat_id}"
     #: Tarayıcıdaki sohbet sayfası yolu (referer üretimi için).
     upstream_referer_path: str = "/c/{chat_id}"
-    #: Gövdeye yazılacak `mode` alanı (örn. "direct"). Boşsa alan gönderilmez.
+    #: Gövdeye yazılacak `mode` alanı (örn. "direct-battle"). Boşsa alan
+    #: gönderilmez — gözlenen hedef alanı zorunlu tutuyor, boşsa `400 ZodError`.
+    #: `UPSTREAM_CURL` doluyken bu ayar env'den **okunmaz**: değer cURL'ün
+    #: gövdesinden gelir; gövdede `mode` yoksa alan boşa sıfırlanır
+    #: (`curl_runtime.apply_upstream_curl`). Env değeri yalnız cURL'süz
+    #: (parça parça) kurulumda kullanılır. Aynısı `upstream_stream_path` için de
+    #: geçerlidir: cURL varsa yol cURL'ün adresinden okunur.
     upstream_mode: str = ""
     #: Gövdedeki reCAPTCHA alanının adı. Hedefe göre "recaptchaV3Token" veya
     #: "recaptchaV2Token" olabilir; tarayıcı isteğinden birebir kopyalayın.
@@ -231,7 +237,9 @@ class Settings(BaseSettings):
     stream_idle_timeout: float = 120.0
 
     # ------------------------------------------------------------- keepalive
-    #: 0 = kapalı. Örn. 10800 üç saatte bir sentetik non-stream completion.
+    #: 0 = kapalı. Sentetik non-stream completion'ın aralığı (saniye). Canlıda
+    #: denenmiş değerler: 600 (ep3: ~28 saat kesintisiz; günde ~144 probe kota harcar)
+    #: ve 3600 (docs/ROLLBACK §12). Daha uzun aralık ölçülmedi.
     #: Süreç ayaktayken çalışır; upstream oturumunu yenileme garantisi değildir.
     upstream_keepalive_interval_seconds: float = 0.0
     upstream_keepalive_model: str = "max"
@@ -464,9 +472,11 @@ class Settings(BaseSettings):
 
     # ------------------------------------------- kalıcı tarayıcı girişi
     #: Sunucudaki Chromium siteye mail+şifre ile girip çerezi tazelesin mi?
-    #: Platform oturumu ~3 saatte düşürdüğü için bunu açmak elle cURL
-    #: kopyalama ihtiyacını kaldırır. Varsayılan kapalı: RAM ve giriş
-    #: bilgisi gerektirir.
+    #: **Kapalı kalmalı.** Bu hedefte işe yaramadığı ölçüldü: e-posta + şifre
+    #: oturumunun istekleri `recaptcha_rejected` alıyor, çalışan oturumlar Google
+    #: girişiyle alınıyor (docs/LESSONS §15.1) ve sunucunun girişi çalışan oturumla
+    #: çakışır (§1). "Oturum ~3 saatte düşer" varsayımı da ölçümle çürütüldü
+    #: (3-28+ saat; docs/ROLLBACK §12.2). Kod kayıt değeriyle duruyor.
     upstream_login_enabled: bool = False
     #: Siteye giriş e-postası (secret değil).
     upstream_login_email: str = ""

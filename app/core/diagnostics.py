@@ -49,10 +49,15 @@ _HINTS: dict[str, FailureHint] = {
     ),
     "recaptcha_unavailable": FailureHint(
         title="reCAPTCHA token'ı üretilemedi veya yenilenemedi.",
+        # `static` sağlayıcıda (canlı kurulum) bu hata beklenmez: token üretilmez,
+        # cURL'den gelen sabit dize gönderilir ve saatlerce geçerlidir
+        # (docs/LESSONS §2, §15.3). Eski metin "static ise token ~2 dakikada ölür:
+        # yenileyin" diyordu; ölçümle çürütüldü.
         action=(
-            "RECAPTCHA_PROVIDER=browser ise Chromium/Google erişimini, "
-            "RECAPTCHA_SITE_KEY/ACTION/VERSION değerlerini kontrol edin. "
-            "static ise token ~2 dakikada ölür: yenileyin."
+            "Bu hata yalnız token üreten sağlayıcılarda (browser/external) çıkar: "
+            "Chromium/Google erişimini ve RECAPTCHA_SITE_KEY/ACTION/VERSION "
+            "değerlerini kontrol edin. Bu hedefte kalıcı ayar RECAPTCHA_PROVIDER=static'tir "
+            "(sunucuda üretilen token reddediliyor)."
         ),
         severity="critical",
     ),
@@ -63,7 +68,8 @@ _HINTS: dict[str, FailureHint] = {
         # metin "token'ı yenileyin / browser sağlayıcıya geçin" diyordu; ikisi de
         # faydasız, taze cURL için tarayıcıya girmek ise çalışan oturumu öldürür.
         action=(
-            "Genelde geçicidir: 2 saate kadar hiçbir şeye dokunmadan bekleyin. "
+            "Ölçümde geçiciydi (10-15 dakikada kendiliğinden geçti): 2 saate kadar "
+            "hiçbir şeye dokunmadan bekleyin. "
             "Taze cURL almak için tarayıcıya giriş yapmayın (çalışan oturumu "
             "öldürür). 2 saati aşarsa Google ile giriş yapılmış tarayıcıdan taze "
             "cURL alıp UPSTREAM_CURL'ü güncelleyin."
@@ -71,10 +77,19 @@ _HINTS: dict[str, FailureHint] = {
     ),
     "upstream_unauthorized": FailureHint(
         title="Upstream oturum kimliğini reddetti (HTTP 401): oturum düştü.",
+        # İki ölçüm birlikte (docs/LESSONS §19.2): süren 401 dönmedi (16 Kasım: art
+        # arda 6 probe, ~50 dk); tek bir 401 dönemi ise dokunulmadan geçti (14-15
+        # Kasım; süresi kayıtlı değil). Taze cURL tarayıcı girişi ister ve giriş
+        # yaşayan oturumu kesin bitirir: bu yüzden önce doğrulama, sonra müdahale.
         action=(
-            "Kendiliğinden düzelmez. Google ile giriş yapılmış tarayıcıdan taze "
-            "cURL alıp UPSTREAM_CURL'ü güncelleyin ve yeniden deploy edin; "
-            "/v1/admin/auth?slot=N ile hangi hesabın düştüğünü görün."
+            "Süren 401 kendiliğinden dönmez; yine de müdahaleden önce bir kez "
+            'doğrulayın: bir sonraki probe\'dan sonra "yeniden çalışıyor" bildirimi '
+            "gelmezse oturum ölmüştür (beklemeden doğrulamak için tek hesapta bota düz "
+            "bir mesaj yazın; cevap gelirse geçiciydi). Ölmüşse Google ile giriş "
+            "yapılmış tarayıcıdan taze cURL alıp UPSTREAM_CURL'ü güncelleyin ve yeniden "
+            "deploy edin. Buna karar vermeden o hesapla tarayıcıdan giriş yapmayın: "
+            "giriş, yaşayan oturumu bitirir. /v1/admin/auth?slot=N token'ın okunup "
+            "okunmadığını gösterir."
         ),
         severity="critical",
     ),
@@ -104,7 +119,7 @@ _HINTS: dict[str, FailureHint] = {
     "upstream_timeout": FailureHint(
         title="Upstream süresinde cevap vermedi (zaman aşımı).",
         action=(
-            "Genelde geçicidir: bekleyin. Live tail'de aynı dakikadaki "
+            "Ölçümde geçiciydi: 2 saate kadar bekleyin. Live tail'de aynı dakikadaki "
             "upstream_http_error / upstream_retry satırlarına bakın (ör. 429 "
             "sonrası tekrar deneme bekleyişi). Sürekli olursa STREAM_IDLE_TIMEOUT, "
             "TOTAL_REQUEST_TIMEOUT ve ASK_REQUEST_TIMEOUT_SECONDS değerlerini "

@@ -38,8 +38,11 @@ Otomatik doldurulanlar:
 
 Betik **tek hesaplıdır**: her çalıştırmada eski 2/3/4/5 yuva kalıntılarını temizler
 ve yalnız 1. hesabı tazeler. `.env` yoksa güncel `.env.example` ile oluşturulur.
-`browser`/`external` CAPTCHA seçimini static'e çevirmez ve kısa ömürlü CAPTCHA
-token'ını bu kiplerde kaydetmez. Diğer mevcut ayarlar korunur, mükerrer anahtarlar
+`.env` içinde `RECAPTCHA_PROVIDER=static` ise (kalıcı değer; güncel `.env.example`
+böyle gelir) cURL'ün gövdesindeki captcha token'ını `RECAPTCHA_STATIC_TOKEN` olarak
+yazar. `.env`'de `browser`/`external` yazılıysa o seçimi static'e **çevirmez** ve
+token'ı kaydetmez — bu hedefte `browser` çalışmadığı için o durumda satırı elle
+`static` yapın. Diğer mevcut ayarlar korunur, mükerrer anahtarlar
 tekilleştirilir. Eski `.env`'i tamamen sıfırlamak isterseniz önce şu komutları çalıştırın:
 
 ```powershell
@@ -111,7 +114,7 @@ UPSTREAM_MODE=direct-battle
 UPSTREAM_RECAPTCHA_FIELD=recaptchaV3Token
 UPSTREAM_COOKIE=<normal Max create-evaluation isteğindeki ham Cookie>
 UPSTREAM_AUTH_FROM_COOKIE=false
-RECAPTCHA_PROVIDER=browser
+RECAPTCHA_PROVIDER=static
 RECAPTCHA_VERSION=enterprise
 RECAPTCHA_ACTION=chat_submit
 RECAPTCHA_SITE_KEY=<.env.example içindeki public site key>

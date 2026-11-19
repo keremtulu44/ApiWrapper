@@ -69,7 +69,7 @@ if (-not (Test-Path ".env")) {
     Write-Host "  TARGET_DOMAIN            = hedef domain (semasiz)" -ForegroundColor Yellow
     Write-Host "  UPSTREAM_COOKIE          = tarayicidan aldiginiz ham Cookie" -ForegroundColor Yellow
     Write-Host "  UPSTREAM_RECAPTCHA_FIELD = recaptchaV3Token" -ForegroundColor Yellow
-    Write-Host "  RECAPTCHA_PROVIDER       = browser (site key/example hazir)" -ForegroundColor Yellow
+    Write-Host "  RECAPTCHA_PROVIDER       = static (token'i setup-from-curl.ps1 cURL'den yazar)" -ForegroundColor Yellow
     Write-Host "  config\models.yaml       = Max upstream_id hazir" -ForegroundColor Yellow
     Write-Host ""
     notepad .env

@@ -6,7 +6,7 @@ istemci bağlantıyı kapattıktan 3 sn sonra bile ``False`` dönüyor. ASGI
 `receive()` kanalını dinlemek ise kopmayı anında bildiriyor. Bu modül o yolu
 kullanır.
 
-Neden önemli: istekler tek sıradan geçer. Cevabı beklemekten vazgeçmiş bir
+Neden önemli: istekler sıradan geçer (hesap başına tek tek). Cevabı beklemekten vazgeçmiş bir
 istemcinin isteği sırada kalır ya da işlenmeye devam ederse hem kotayı boşa
 harcar hem arkasındaki istekleri bekletir.
 """

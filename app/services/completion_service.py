@@ -315,9 +315,12 @@ class CompletionService:
                 code="upstream_unauthorized",
             )
         if isinstance(exc, RecaptchaRejected):
+            # Eski metin "token'ı yenile ya da browser/external sağlayıcıya geç"
+            # diyordu; ikisi de bu hedefte faydasız (docs/LESSONS §15.4).
             return RecaptchaError(
-                "The upstream service rejected the reCAPTCHA token. "
-                "Refresh RECAPTCHA_STATIC_TOKEN or use the 'browser'/'external' provider.",
+                "The upstream service rejected the request at its reCAPTCHA check. "
+                "This is usually temporary on the upstream side: retry later without "
+                "changing anything.",
                 code="recaptcha_rejected",
             )
         if isinstance(exc, UpstreamTimeout):
@@ -834,7 +837,7 @@ class CompletionService:
     ) -> ChatCompletionResponse:
         """Tam yanıtı biriktirip tek seferde döndürür.
 
-        İstek önce tek sıraya girer; sırası gelince (ve bir önceki istekle araya
+        İstek önce bir hesabın sırasına girer; sırası gelince (ve bir önceki istekle araya
         rastgele bekleme konduktan sonra) işlenir. Sonuç sağlık kaydına bildirilir.
         """
         admission = admission if admission is not None else Admission()
@@ -961,7 +964,7 @@ class CompletionService:
     ) -> AsyncIterator[str]:
         """SSE gövdesini parça parça üretir. `[DONE]` her koşulda gönderilir.
 
-        Akış da tek sıraya girer: rol parçası hemen gönderilir, upstream isteği
+        Akış da hesabın sırasına girer: rol parçası hemen gönderilir, upstream isteği
         sırası gelince başlar ve sıra akış bitene dek tutulur.
         """
         admission = admission if admission is not None else Admission()

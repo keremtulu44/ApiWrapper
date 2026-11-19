@@ -1,6 +1,8 @@
-"""Tek sıra + istekler arası rastgele bekleme.
+"""Bir hesabın sırası + istekler arası rastgele bekleme.
 
-Upstream'e giden her tamamlama bu kapıdan geçer:
+Tek hesaplı kurulumda bütün trafiğin tek sırasıdır; birden çok hesap varken her
+hesabın kendi sırası vardır ve istek, atandığı hesabın sırasından geçer
+(`app/services/lanes.py`). Upstream'e giden her tamamlama bu kapıdan geçer:
 
 * Aynı anda **bir** istek işlenir; diğerleri geliş sırasıyla (FIFO) bekler.
 * Bir istek bitince sıradaki, ``min_gap``–``max_gap`` aralığından rastgele
@@ -8,8 +10,8 @@ Upstream'e giden her tamamlama bu kapıdan geçer:
   isteklerden sonra uygulanır (``Ticket.touched``); yerelde reddedilen istek
   kimseyi bekletmez.
 
-Sıra bütün trafiğin önündeki tek kilittir, yani tek hata noktasıdır. Bu yüzden
-üç emniyet vardır:
+Sıra, hesabın bütün trafiğinin önündeki tek kilittir, yani tek hata noktasıdır.
+Bu yüzden üç emniyet vardır:
 
 * **İptal güvenliği:** bekleyen görev iptal edilirse sıradan çıkar; sıra tam o
   anda kendisine verilmişse bir sonrakine devredilir.
@@ -119,7 +121,7 @@ class _Waiter:
 
 
 class RequestQueue:
-    """FIFO tek sıra ve istekler arası rastgele bekleme."""
+    """Bir hesabın FIFO sırası ve istekler arası rastgele bekleme."""
 
     def __init__(
         self,

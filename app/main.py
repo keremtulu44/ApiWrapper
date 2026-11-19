@@ -181,8 +181,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             _run_embedded_telegram(telegram_settings), name="telegram-bot"
         )
 
-    # Kalıcı tarayıcı girişi: platform oturumu ~3 saatte düştüğü için
-    # çerezi bu görev tazeler. CAPTCHA'ya dokunmaz (static kalır).
+    # Kalıcı tarayıcı girişi (varsayılan kapalı; bu hedefte önerilmez, bkz.
+    # `Settings.upstream_login_enabled`). Açıksa çerezi bu görev tazeler;
+    # CAPTCHA'ya dokunmaz (static kalır).
     keeper_task: asyncio.Task[None] | None = None
     app.state.session_keeper = SessionKeeper(settings) if login_configured(settings) else None
     if app.state.session_keeper is not None:

@@ -115,7 +115,10 @@ def test_render_blueprint_is_single_instance_always_on_and_secret_free():
         "UPSTREAM_STREAM_PATH",
         "UPSTREAM_EXTRA_HEADERS",
     } & env.keys()
-    assert env["RECAPTCHA_PROVIDER"]["value"] == "browser"
+    # Kalıcı değer `static`: sunucuda üretilen token (`browser`) hedefte 403 alıyor
+    # (14 Kasım 2026 ölçümü, docs/LESSONS §3). `browser` yazılıysa cURL içe aktarımı
+    # statik token'ı atar; blueprint'ten kurulan servis hiç cevap veremezdi.
+    assert env["RECAPTCHA_PROVIDER"]["value"] == "static"
     # Site key public'tir; gerçek cookie/token değerleri sync:false kalır.
     assert env["RECAPTCHA_SITE_KEY"]["value"] == "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0"
     assert env["RECAPTCHA_VERSION"]["value"] == "enterprise"

@@ -148,6 +148,63 @@ def test_missing_optional_curl_fields_do_not_reuse_old_custom_values():
     assert updated.recaptcha_static_token == ""
 
 
+@pytest.mark.parametrize(
+    ("curl_kwargs", "env_mode", "expected_mode"),
+    [
+        # cURL'de mode var, env boş: cURL'ünki kullanılır.
+        ({}, "", "direct-battle"),
+        # cURL'de mode YOK, env'de var: env değeri korumaz, alan boşa sıfırlanır.
+        ({"include_mode": False}, "direct-battle", ""),
+        # İkisi de var ve farklı: cURL kazanır.
+        ({"mode": "direct"}, "direct-battle", "direct"),
+    ],
+)
+def test_env_mode_is_not_a_fallback_while_upstream_curl_is_set(
+    curl_kwargs, env_mode, expected_mode
+):
+    """Belgelerdeki "`UPSTREAM_MODE`'u env'e gir, 400'e karşı sigortadır" kuralı yanlıştı.
+
+    `UPSTREAM_CURL` doluyken env'deki `UPSTREAM_MODE` hiç okunmaz: değer cURL'ün
+    gövdesinden gelir, gövdede yoksa alan boşa sıfırlanır (ve hedef `mode`'u zorunlu
+    tuttuğu için istekler 400 alır). Koruma, cURL'ün tam `create-evaluation`
+    isteği olmasıdır. Bu davranış değişirse `docs/ROLLBACK_2026_11_16.md` §6 ve
+    `docs/LESSONS_2026_11_14.md` §19.1/10 ile §19.4/23 de güncellenmelidir.
+    """
+    settings = make_settings(
+        upstream_curl=_curl(**curl_kwargs),
+        upstream_mode=env_mode,
+        recaptcha_provider="static",
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.upstream_mode == expected_mode
+
+
+def test_env_stream_path_is_overridden_by_the_curl_url():
+    """Akış yolu için de aynısı: cURL varken env'deki `UPSTREAM_STREAM_PATH` okunmaz."""
+    settings = make_settings(
+        upstream_curl=_curl(),
+        upstream_stream_path="/eski/yol/{chat_id}",
+        recaptcha_provider="static",
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.upstream_stream_path == "/nextjs-api/stream/create-evaluation"
+
+
+def test_env_mode_is_used_only_without_upstream_curl():
+    """cURL'süz (parça parça) kurulumda env değeri olduğu gibi kalır."""
+    settings = make_settings(upstream_curl="", upstream_mode="direct-battle")
+
+    updated, model_id = apply_upstream_curl(settings)
+
+    assert updated is settings
+    assert model_id is None
+    assert updated.upstream_mode == "direct-battle"
+
+
 def test_app_lifespan_uses_curl_model_id_for_default_max_model():
     app = create_app(
         make_settings(

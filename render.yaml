@@ -25,8 +25,14 @@ services:
         value: "true"
       - key: AUTH_DISABLED
         value: "false"
+      # KALICI değer `static`. Sunucudaki Chromium'un ürettiği token (`browser`)
+      # hedefte `403 recaptcha validation failed` alıyor (14 Kasım 2026 ölçümü);
+      # aynı çerez/gövde ile gerçek tarayıcıdan alınmış statik token çalışıyor ve
+      # UPSTREAM_CURL'ün gövdesinden kendiliğinden okunuyor. Burada `browser`
+      # yazılıysa cURL'deki token KULLANILMAZ (içe aktarım seçimi static'e çevirmez).
+      # 16/17 Kasım geri dönüşü bu satırı `browser`a döndürmüştü; 19 Kasım'da düzeltildi.
       - key: RECAPTCHA_PROVIDER
-        value: browser
+        value: static
       # reCAPTCHA site key public'tir; cookie/token değildir.
       - key: RECAPTCHA_SITE_KEY
         value: 6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0
