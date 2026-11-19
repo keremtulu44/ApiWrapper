@@ -71,6 +71,12 @@ OpenAI-compatible istemcilerle çalışır.
 >     Telegram'a gelir. Canlıya alma bir restart'tır (9. madde): taze cURL ile
 >     **aynı anda** yapılır. Sözleşme: **[`docs/ASK_API.md`](docs/ASK_API.md)** ·
 >     canlıya alma adımları: `docs/ROLLBACK_2026_11_16.md §13`.
+> 12. **İkinci hesap desteği yazıldı — henüz canlıda DEĞİL (PR #56).**
+>     `UPSTREAM_CURL_2` verilirse istekler iki hesaba yarı yarıya bölünür, her
+>     hesap kendi sırasını işler ve kendi probe'unu alır; biri arıza verirse iş
+>     öbürüne gider. Verilmezse hiçbir şey değişmez. **Her restart'ta iki cURL de
+>     taze olmalı.** Rehber: **[`docs/TWO_ACCOUNTS.md`](docs/TWO_ACCOUNTS.md)** ·
+>     canlıya alma: `docs/ROLLBACK_2026_11_16.md §14`.
 >
 > Tam kayıt, ölçümler, kaldırılanların listesi ve ileri dönüş tarifi:
 > **[`docs/ROLLBACK_2026_11_16.md`](docs/ROLLBACK_2026_11_16.md)**

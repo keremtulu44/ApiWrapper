@@ -289,6 +289,7 @@ Pratik sonuçlar:
 | [`../README.md`](../README.md) | Genel bakış, mod tabloları, sık yapılan hatalar |
 | [`ENV_FULL.md`](ENV_FULL.md) | `API_KEYS`, `API_KEY_LABELS`, hız sınırı ayarları |
 | [`ASK_API.md`](ASK_API.md) | `/v1/ask`: otomatik sistemler için bekle / bitti / problem ucu, istek sırası |
+| [`TWO_ACCOUNTS.md`](TWO_ACCOUNTS.md) | İkinci hesap (`UPSTREAM_CURL_2`): isteklerin hesaplara bölünmesi; tüketici için değişen bir şey yok |
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Hata → çözüm tablosu |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | İstek akışı ve modül yapısı |
 | [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) | Ölçülmüş gerçekler (çerez ömrü, captcha, `mode`) |

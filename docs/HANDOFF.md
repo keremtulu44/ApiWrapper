@@ -32,6 +32,10 @@ Kurallar:
 > canlıda değil** (PR #56, taslak; merge = restart = oturum ölümü). Sözleşme:
 > `docs/ASK_API.md` · canlıya alma planı: `docs/ROLLBACK_2026_11_16.md §13` ·
 > uygulama sırasında ölçülenler: `docs/LESSONS_2026_11_14.md §17`.
+> **19 Kasım:** ikinci hesap (`UPSTREAM_CURL_2`) + hesaplar arası bölüşüm **yazıldı,
+> canlıda değil** (aynı PR). Rehber: `docs/TWO_ACCOUNTS.md` · canlıya alma:
+> `docs/ROLLBACK_2026_11_16.md §14` · ölçülenler ve kararlar:
+> `docs/LESSONS_2026_11_14.md §18` · kod: `app/services/lanes.py`.
 
 Merge kuralları dosyası: **`docs/MERGE_TARGET.md`** (82 satır).
 Kritik kural: merge = Render deploy, kullanıcı o turda açıkça onaylamadan merge yapılmaz (§"Onay kuralı").

@@ -249,6 +249,10 @@ curl -N https://<servis>.onrender.com/v1/ask \
 Upstream'e giden **bütün** istekler — `/v1/ask`, `/v1/chat/completions`, Telegram
 mesajları ve keepalive probe'u — tek sıradan geçer.
 
+> **İki hesap varsa** (`UPSTREAM_CURL_2`): bu bölümdeki kuralların hepsi **hesap
+> başına** geçerlidir — her hesabın kendi sırası ve kendi 5–10 sn aralığı vardır,
+> hesaplar birbirini beklemez. Bkz. §10.
+
 ```
 istek 1 ──▶ işleniyor ──▶ cevap ──▶ 5–10 sn bekleme ──▶ istek 2 ──▶ işleniyor ──▶ …
 istek 2 ──▶ sırada (wait, wait, …)
@@ -427,6 +431,12 @@ Probe ile ilgili değişenler:
 * Son aralıkta gerçek bir istek başarıyla cevaplandıysa **probe atılmaz**, o
   istekten bir aralık sonraya ertelenir (`UPSTREAM_KEEPALIVE_SKIP_WHEN_ACTIVE`).
   Gerçek trafik oturumu zaten tazeler; probe kotayı boşa harcamaz.
+  **Yani aralık son gerçek istekten sayılır:** istek 13.00'te geldiyse ve sonra
+  hiç istek gelmediyse probe 14.00'te atılır (`UPSTREAM_KEEPALIVE_INTERVAL_SECONDS=3600`
+  ise; ± `UPSTREAM_KEEPALIVE_JITTER_SECONDS`, varsayılan ± 5 dk — tam saat
+  istenirse `0`). "Gerçek istek": dış sistemin sorusu, Telegram mesajın, doğrudan
+  API isteği; **başarıyla** cevaplanmış olmalı (başarısız istek oturumu
+  tazelemez, probe'u ertelemez).
 * Sıra meşgulken probe bekler. Araya istek girerse sırada en çok 60 sn bekler;
   sıra yüzünden atlanan probe **arıza sayılmaz** ve yarım dakika sonra yeniden denenir.
 * Cevabı geciken probe artık `upstream_timeout` olarak bildirilir.
@@ -520,6 +530,8 @@ Tam liste ve açıklamalar: `.env.example` ("istek sırası" ve "/v1/ask" bölü
 | `REQUEST_GAP_MIN_SECONDS` / `…MAX…` | `5` / `10` | İstekler arası rastgele bekleme |
 | `REQUEST_QUEUE_MAX_WAITING` | `20` | Sıra derinliği |
 | `UPSTREAM_KEEPALIVE_SKIP_WHEN_ACTIVE` | `true` | Trafik varken probe atma |
+| `UPSTREAM_CURL_2` | boş | İkinci hesap (isteğe bağlı); istekler iki hesaba bölünür — §10 |
+| `ACCOUNT_FAILOVER` | `true` | Arızalı hesabın işi çalışan hesaba gitsin mi — `TWO_ACCOUNTS.md §5` |
 
 ### Karşı sisteme hangi anahtar verilir: `ASK_API_KEYS`
 
@@ -603,3 +615,27 @@ Bunlar "olabilir" diye değil, gerçek sunucuda **görülerek** bulundu
 | Upstream bir emojiyi iki parçaya bölerse akışsız uç HTTP 500 dönüyor, akışlı uç kesiliyordu | Yarımlar birleştiriliyor |
 | `SESSION_REUSE=true` iken alarm soruları birbirinin ve Telegram sohbetinin bağlamına karışıyordu | `/v1/ask` her soruda yeni sohbet açıyor |
 | Günlük akış kontrolü, gövde içinde bildirilen hatayı "veri aktı" diye başarı sayıyordu | Hata olarak sınıflanıyor; yanlış "düzeldi" mesajı üretmiyor |
+
+---
+
+## 10. İki hesapla çalışırken (`UPSTREAM_CURL_2`) — 19 Kasım
+
+İkinci bir hesap eklenirse (isteğe bağlı; ayrıntı: [`TWO_ACCOUNTS.md`](TWO_ACCOUNTS.md))
+**bu belgedeki sözleşme değişmez**: karşı sistem aynı isteği atar, aynı üç satırı
+okur, kaç hesap olduğunu göremez. Değişen, içeride olanlardır:
+
+| Konu | Tek hesap | İki hesap |
+|---|---|---|
+| İsteğin gittiği hesap | tek | sırayla (1, 2, 1, 2 …); o an en az işi olan |
+| Aynı anda işlenen istek | 1 | hesap başına 1 → toplam 2 |
+| 5–10 sn aralık | bütün istekler arasında | **aynı hesabın** istekleri arasında |
+| `problem` (arıza biliniyor) | hesap arızalıysa | **iki hesap da** arızalıysa |
+| Oturumu düşen / kotası dolan hesap | `problem` | istek öbür hesaba taşınır: `done` |
+| Telegram mesajı | "upstream …" | hangi hesap olduğu `Hesap:` satırında |
+| Probe | tek | hesap başına; aralık o hesabın son gerçek isteğinden sayılır |
+
+§4'teki süreler (`wait` 30/15 sn, işlem 180 sn, sıra 600 sn) aynıdır. Tek fark:
+bir hesaptan öbürüne **taşınan** isteğin öbür hesabın sırasında beklediği süre
+180 saniyesinden düşer.
+
+Karşı sisteme verilen talimat (§2) ve örnek istemci (§3) **aynen** geçerlidir.

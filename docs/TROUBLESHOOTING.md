@@ -497,3 +497,25 @@ bota yazdığın bir mesaj upstream'e gider; başarılı olursa bekletme o anda 
 
 **`wait` satırlarını elle görmek:** `curl -N` ile uzun süren bir soru gönder;
 30. saniyede ilk `data: {"status":"wait",…}` satırı görünmelidir.
+
+---
+
+## 9. İki hesap (`UPSTREAM_CURL_2`) — PR #56, henüz canlıda değil
+
+> Davranışın tamamı: [`TWO_ACCOUNTS.md`](TWO_ACCOUNTS.md). İlk bakılacak yer yine
+> `GET /v1/admin/queue` (§8); bu kez `accounts.lanes` bölümü.
+
+| Belirti | Olası neden | Nereye bak / ne yap |
+|---|---|---|
+| Deploy **başarısız**, logda `UPSTREAM_CURL_2 …` ile başlayan hata | İkinci cURL bozuk (URL/çerez yok) ya da **1. hesapla aynı hesaba ait** | Hata metni hangisi olduğunu söyler. Eski sürüm çalışmaya devam eder. Başka bir hesapla giriş yapıp cURL'ü yeniden al |
+| `accounts.count: 1` (iki bekliyordun) | `UPSTREAM_CURL_2` boş ya da yanlış adla girilmiş | Render → Environment. Log: `upstream_curl_loaded … accounts=[1]` |
+| Bir hatta `usable: false` | O hesap arızalı (`upstream_health.code`) ya da kota dinlenmesinde (`cooldown_remaining_seconds`) | Telegram'daki `Hesap: …` mesajı nedeni söyler. Geçiciyse **bekle**: hesap kendi probe'u başarılı olunca döner |
+| `assigned_total` sayıları birbirinden çok farklı | Bir hesap bir süre devre dışı kaldı; ya da trafiğin çoğu **sohbet yeniden kullanan** bir istemciden (`SESSION_REUSE`) | `account_switched` / `upstream_hold_started` logları. Sohbet bağlılığı beklenen davranıştır (`TWO_ACCOUNTS.md §3`) |
+| Telegram: **"bir hesap cevap veremedi; istek diğer hesaba taşındı"** | Hesabın oturumu düştü (`401`) ya da kotası doldu; istek öbür hesaptan cevaplandı | Karşı sistem etkilenmedi. `KALICI` ise: iki cURL'ü **birlikte** tazeleyip deploy et; acelesi yok |
+| Bir hesap **geri dönmüyor** | (a) Hâlâ arızalı: probe'u da başarısız. (b) Keepalive kapalı: 30 dk'da bir gerçek istekle denenir | (a) `upstream_keepalive_failed account=…`. (b) Beklemeden: `POST /v1/admin/accounts/<N>/resume` |
+| Karşı sistem **her istekte anında** `problem` alıyor | **İki hesap da** arızalı; bekletme sürüyor | `accounts.lanes[*].upstream_health`. Mesajdaki `Hesaplar:` satırı |
+| İsteklerin **yarısı** `problem` alıyor | `ACCOUNT_FAILOVER=false` ve bir hesap arızalı | Beklenen davranış (katı bölüşüm). İşin öbür hesaba gitmesini istiyorsan `ACCOUNT_FAILOVER=true` |
+| `problem`, `code=queue_timeout`, hemen ardından "istek diğer hesaba taşındı" mesajı | Taşınan istek öbür hesabın sırasında beklerken 180 sn'si doldu | Öbür hesap o an uzun bir işle meşguldü. Tek seferlikse yok say |
+| `400 … x-apiwrapper-account` | Sabitleme başlığında olmayan yuva ya da sayı olmayan değer | `1` ya da `2` yaz. Başlık `/v1/ask`'te yok sayılır |
+
+**Tek bir hesabı sınamak** (öbürüne dokunmadan): `TWO_ACCOUNTS.md §8`.
