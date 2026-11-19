@@ -133,10 +133,14 @@ class RequestQueue:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         rng: Callable[[float, float], float] = random.uniform,
         poll_seconds: float = _POLL_SECONDS,
+        name: str = "",
     ) -> None:
         low, high = max(0.0, float(min_gap)), max(0.0, float(max_gap))
         if low > high:
             low, high = high, low
+        #: Sıranın ait olduğu hesap (çok hesaplı kurulumda her hesabın kendi
+        #: sırası vardır); tek sırada boştur. Yalnız log ve metrik etiketidir.
+        self.name = name
         self.enabled = bool(enabled)
         self.min_gap = low
         self.max_gap = high
@@ -154,13 +158,14 @@ class RequestQueue:
         self._last_gap = 0.0
 
     @classmethod
-    def from_settings(cls, settings: Settings) -> RequestQueue:
+    def from_settings(cls, settings: Settings, name: str = "") -> RequestQueue:
         return cls(
             enabled=settings.request_queue_enabled,
             min_gap=settings.request_gap_min_seconds,
             max_gap=settings.request_gap_max_seconds,
             max_waiting=settings.request_queue_max_waiting,
             max_hold=settings.request_queue_max_hold_seconds,
+            name=name,
         )
 
     # ------------------------------------------------------------- durum
@@ -175,6 +180,14 @@ class RequestQueue:
             return False
         self._evict_stale(self._clock())
         return self._active is not None or bool(self._waiters)
+
+    @property
+    def load(self) -> int:
+        """İşlenen + bekleyen istek sayısı (hesaplar arası bölüşümün ölçütü)."""
+        if not self.enabled:
+            return 0
+        self._evict_stale(self._clock())
+        return (1 if self._active is not None else 0) + len(self._waiters)
 
     def untouched(self, label: str) -> bool:
         """Bu etiketli bir istek sırada mı, ya da sırası geldi ama upstream'e gitmedi mi?
@@ -244,6 +257,7 @@ class RequestQueue:
                 label=label,
                 position=len(self._waiters),
                 active=self._active.label if self._active is not None else None,
+                account=self.name or None,
             )
             try:
                 await self._wait_turn(waiter, max_wait)
@@ -370,6 +384,7 @@ class RequestQueue:
         logger.error(
             "request_queue_stale_slot",
             label=active.label,
+            account=self.name or None,
             held_seconds=round(held, 1),
             hint=(
                 "Bir istek sırayı serbest bırakmadı; sıra kendini kurtardı. "
@@ -380,4 +395,10 @@ class RequestQueue:
         self._grant_next(now)
 
     def _publish(self) -> None:
-        metrics.set_gauge("apiwrapper_request_queue_waiting", float(len(self._waiters)))
+        # Tek sırada etiket yok (eski seri adı korunur); hesap başına sırada her
+        # hesap kendi serisini yazar, aksi halde sıralar birbirinin değerini ezerdi.
+        metrics.set_gauge(
+            "apiwrapper_request_queue_waiting",
+            float(len(self._waiters)),
+            {"account": self.name} if self.name else None,
+        )

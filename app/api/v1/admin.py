@@ -70,6 +70,33 @@ async def reset_account_cooldown(
     return {"slot": slot, "name": account.label, "cooldown_remaining_seconds": 0.0}
 
 
+@router.post("/accounts/{slot}/resume", summary="Put a sidelined account back to work")
+async def resume_account(
+    slot: int, request: Request, accounts: AccountPool = Depends(get_accounts)
+) -> dict[str, Any]:
+    """Arıza kaydı yüzünden iş almayan hesabı elle yeniden devreye alır.
+
+    Hesabın arıza kaydını ve kota dinlenmesini kaldırır; bir sonraki istek ona da
+    gidebilir. Hesap gerçekten çalışmıyorsa ilk istekte yeniden devreden çıkar.
+    Normalde gerekmez (hesabı kendi keepalive denemesi geri getirir); keepalive
+    kapalıyken ya da beklemek istenmediğinde kullanılır.
+    """
+    lane = request.app.state.lanes.get(slot)
+    if lane is None:
+        raise InvalidRequestError(f"No account in slot {slot}.", param="slot")
+    was_failing = lane.health.failing
+    code = lane.health.code or None
+    lane.health.reset()
+    accounts.clear_cooldown(slot)
+    return {
+        "slot": slot,
+        "name": lane.label,
+        "was_failing": was_failing,
+        "cleared_code": code,
+        "usable": request.app.state.lanes.usable(lane),
+    }
+
+
 @router.post(
     "/upstream/login",
     summary="Kalıcı tarayıcı oturumunu tazele",
@@ -147,6 +174,7 @@ async def queue_status(request: Request) -> dict[str, Any]:
     gönderilmeden `problem` diye cevaplanır.
     """
     settings = request.app.state.settings
+    lanes = request.app.state.lanes
     alerter = getattr(request.app.state, "alerter", None)
     alerts: dict[str, Any] = {"enabled": alerter is not None}
     if alerter is not None:
@@ -157,9 +185,30 @@ async def queue_status(request: Request) -> dict[str, Any]:
             ask_problems=state.ask_problems,
             sent_total=state.total_alerts,
         )
+        # Çok hesaplı kurulumda her hesabın kendi arıza kaydı vardır.
+        per_account = {
+            scope: {
+                "active_code": policy.state.active_key,
+                "failures": policy.state.failures,
+                "ask_problems": policy.state.ask_problems,
+                "sent_total": policy.state.total_alerts,
+            }
+            for scope, policy in alerter.scopes.items()
+            if scope
+        }
+        if per_account:
+            alerts["accounts"] = per_account
     return {
+        # İlk hesabın sırası ve durumu (tek hesapta: tek sıra, upstream'in durumu).
         "queue": request.app.state.queue.snapshot(),
         "upstream_health": request.app.state.upstream_health.snapshot(),
+        # Hesap başına hat: sıra, durum, aldığı iş sayısı. `usable` yanlışsa o
+        # hesap şu an yeni iş almıyor (arızalı ya da kota dinlenmesinde).
+        "accounts": {
+            "count": len(lanes),
+            "failover": settings.account_failover,
+            "lanes": lanes.snapshot(),
+        },
         "ask": {
             "first_wait_seconds": settings.ask_first_wait_seconds,
             "wait_interval_seconds": settings.ask_wait_interval_seconds,

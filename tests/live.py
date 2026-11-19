@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 import threading
 import time
 from collections.abc import Iterator
@@ -49,6 +50,8 @@ class UpstreamScript:
     max_concurrent: int = 0
     #: Wrapper'ın cevabı beklemeden bağlantısını kapattığı istek sayısı.
     cancelled: int = 0
+    #: Gelen isteklerin ham gövdeleri (hangi sorunun hangi hesaba gittiğini görmek için).
+    bodies: list[str] = field(default_factory=list)
     _active: int = 0
 
     @property
@@ -71,26 +74,50 @@ def _ai_stream_lines(script: UpstreamScript) -> list[bytes]:
     return [line + b"\n" for line in lines]
 
 
-def build_upstream(script: UpstreamScript) -> Starlette:
-    """Hedef servisin akış ucunu taklit eden küçük uygulama."""
+def build_upstream(
+    script: UpstreamScript, accounts: dict[str, UpstreamScript] | None = None
+) -> Starlette:
+    """Hedef servisin akış ucunu taklit eden küçük uygulama.
+
+    ``accounts`` verilirse istek, `Authorization`/`Cookie` başlığında geçen
+    işarete göre o hesabın senaryosuyla cevaplanır (hesap başına ayrı sayaç);
+    ``script`` bu durumda bütün isteklerin toplam sayacıdır.
+    """
+
+    def tracked(request: Request) -> tuple[UpstreamScript, list[UpstreamScript]]:
+        if not accounts:
+            return script, [script]
+        identity = request.headers.get("authorization", "") + request.headers.get("cookie", "")
+        for marker, candidate in accounts.items():
+            if marker in identity:
+                return candidate, [script, candidate]
+        return script, [script]
 
     async def stream(request: Request) -> Response:
-        await request.body()
-        script.started_at.append(time.monotonic())
-        script._active += 1
-        script.max_concurrent = max(script.max_concurrent, script._active)
+        body = (await request.body()).decode("utf-8", errors="replace")
+        current, counters = tracked(request)
+        now = time.monotonic()
+        for counter in counters:
+            counter.bodies.append(body)
+            counter.started_at.append(now)
+            counter._active += 1
+            counter.max_concurrent = max(counter.max_concurrent, counter._active)
         try:
-            remaining = script.delay
-            while remaining > 0:
-                if await request.is_disconnected():
-                    # Wrapper bağlantıyı kapattı (süre sınırı ya da istemcisi koptu).
-                    script.cancelled += 1
-                    return Response(status_code=499)
-                step = min(0.02, remaining)
-                await asyncio.sleep(step)
-                remaining -= step
+            return await respond(request, current)
         finally:
-            script._active -= 1
+            for counter in counters:
+                counter._active -= 1
+
+    async def respond(request: Request, script: UpstreamScript) -> Response:
+        remaining = script.delay
+        while remaining > 0:
+            if await request.is_disconnected():
+                # Wrapper bağlantıyı kapattı (süre sınırı ya da istemcisi koptu).
+                script.cancelled += 1
+                return Response(status_code=499)
+            step = min(0.02, remaining)
+            await asyncio.sleep(step)
+            remaining -= step
         if script.status != 200:
             return PlainTextResponse(script.body, status_code=script.status)
 
@@ -127,13 +154,20 @@ def build_upstream(script: UpstreamScript) -> Starlette:
     )
 
 
+def free_port() -> int:
+    """Şu an boş olan bir TCP portu (wrapper kendi adresini önceden bilmeli)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
 @contextmanager
-def serve(app: Any) -> Iterator[int]:
-    """Uygulamayı rastgele bir portta gerçek uvicorn ile çalıştırır; portu verir."""
+def serve(app: Any, port: int = 0) -> Iterator[int]:
+    """Uygulamayı gerçek uvicorn ile çalıştırır (port 0 = rastgele); portu verir."""
     config = uvicorn.Config(
         app,
         host="127.0.0.1",
-        port=0,
+        port=port,
         log_level="error",
         lifespan="on",
         # `auto` uvloop'u süreç genelinde olay döngüsü politikası yapabilir (eski
@@ -164,6 +198,8 @@ class LiveWrapper:
     base_url: str
     script: UpstreamScript
     app: Any
+    #: Çok hesaplı kurulumda hesap işareti → o hesabın senaryosu/sayaçları.
+    accounts: dict[str, UpstreamScript] = field(default_factory=dict)
 
     @property
     def headers(self) -> dict[str, str]:
@@ -181,15 +217,40 @@ def wait_until(predicate: Any, timeout: float = 3.0, interval: float = 0.01) -> 
 
 
 @contextmanager
-def live_wrapper(script: UpstreamScript | None = None, **overrides: Any) -> Iterator[LiveWrapper]:
+def live_wrapper(
+    script: UpstreamScript | None = None,
+    accounts: dict[str, UpstreamScript] | None = None,
+    **overrides: Any,
+) -> Iterator[LiveWrapper]:
     """Sahte upstream'i ve ona bağlı wrapper'ı gerçek soketlerde ayağa kaldırır."""
     script = script if script is not None else UpstreamScript()
-    with serve(build_upstream(script)) as upstream_port:
+    with serve(build_upstream(script, accounts)) as upstream_port:
+        # Probe kendi servisine `settings.port` üzerinden bağlanır: port, uygulama
+        # kurulmadan önce belli olmalı.
+        own_port = free_port()
         settings = make_settings(
             target_domain=f"127.0.0.1:{upstream_port}",
             upstream_scheme="http",
+            port=own_port,
             **overrides,
         )
         app = create_app(settings)
-        with serve(app) as port:
-            yield LiveWrapper(f"http://127.0.0.1:{port}", script, app)
+        with serve(app, own_port) as port:
+            yield LiveWrapper(f"http://127.0.0.1:{port}", script, app, accounts or {})
+
+
+#: İki hesaplı canlı testlerde hesapları ayırt eden erişim token'ları.
+TOKEN_ONE = "TOKEN-ONE"
+TOKEN_TWO = "TOKEN-TWO"
+
+
+def two_accounts(**overrides: Any) -> dict[str, Any]:
+    """`live_wrapper` için iki hesaplı ayarlar (hesaplar token'la ayırt edilir)."""
+    base: dict[str, Any] = {
+        "upstream_access_token": TOKEN_ONE,
+        "upstream_account_name": "bir",
+        "upstream_access_token_2": TOKEN_TWO,
+        "upstream_account_2_name": "iki",
+    }
+    base.update(overrides)
+    return base

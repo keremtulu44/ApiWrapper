@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     #: verilir; doluysa aşağıdaki ayrı upstream alanlarının yerine başlangıçta
     #: ayrıştırılır. Ham değer loglanmaz veya diske yazılmaz.
     upstream_curl: str = ""
+    #: 2.–4. hesabın tam cURL'ü (isteğe bağlı, aynı servisin **başka** hesabı).
+    #: Boşsa servis tek hesapla eskisi gibi çalışır. Doluysa o hesabın kimliği
+    #: (çerez/token, tarayıcı başlıkları, statik captcha token'ı) bu cURL'den
+    #: okunur; akış yolu, `mode` gibi ortak alanlar 1. hesabın cURL'ünden gelir.
+    #: İstekler hesaplar arasında eşit bölünür (bkz. `app/services/lanes.py`).
+    upstream_curl_2: str = ""
+    upstream_curl_3: str = ""
+    upstream_curl_4: str = ""
     #: Örn. "example-llm.com" (şemasız!). Zorunlu alan.
     target_domain: str = "localhost"
     upstream_scheme: Literal["https", "http"] = "https"
@@ -191,9 +199,9 @@ class Settings(BaseSettings):
     upstream_account_4_name: str = ""
 
     #: Upstream'in hesap başına izin verdiği tahmini mesaj sayısı (kayan pencere).
-    #: Bu **yumuşak** bir bütçedir: hangi hesabın tercih edileceğini belirler,
-    #: isteği engellemez. Gerçek sınır öğrenilince (`_learned_limit`) bu değer
-    #: yalnızca başlangıç tahmini olarak kalır.
+    #: Bu bir **gözlemdir**: isteği engellemez, hesap seçimini de belirlemez
+    #: (bölüşüm `app/services/lanes.py` içindedir). Kilitlerden öğrenilen tavanla
+    #: (`learned_limit`) birlikte `/v1/admin/accounts` çıktısında görünür.
     account_msg_budget: int = 15
     #: Kota penceresinin uzunluğu (saniye). Hedef 20 dk kilitliyorsa 1200.
     account_quota_window_seconds: float = 1200.0
@@ -205,6 +213,12 @@ class Settings(BaseSettings):
     account_cooldown_seconds: float = 1200.0
     #: Tek bir istemci isteğinde en fazla kaç kez hesap değiştirilsin.
     account_max_switches: int = 2
+    #: Birden çok hesap varken arızalı hesabın işi çalışan hesaba verilsin mi?
+    #: True (varsayılan): arızalı hesap yeni istek almaz; kimlik/kota/captcha
+    #: reddi alan istek cevap gönderilmeden çalışan hesaba taşınır. False: katı
+    #: bölüşüm — her hesap yalnız kendi payını işler, arızalı hesabın payı
+    #: hata/"problem" alır. Tek hesapta etkisizdir.
+    account_failover: bool = True
 
     # -------------------------------------------------------------- timeouts
     connect_timeout: float = 10.0
@@ -231,23 +245,27 @@ class Settings(BaseSettings):
     #: Günde bir kez `stream: true` ile gerçek akış yolunu dene (0 = kapalı).
     #: Non-stream probe, streaming ucundaki bir kırılmayı (SSE/parçalama) görmez.
     upstream_keepalive_stream_smoke_interval_seconds: float = 86400.0
-    #: True ise probe yalnız upstream **boştayken** atılır: son aralıkta gerçek bir
-    #: istek başarıyla cevaplandıysa probe, o istekten bir aralık sonraya ertelenir.
-    #: Gerçek istek oturumu zaten tazelediği için probe kotayı boşuna harcamaz.
+    #: True ise probe yalnız hesap **boştayken** atılır: aralık, o hesabın son
+    #: başarılı gerçek isteğinden sayılır (istek 13.00'te geldiyse ve başka istek
+    #: gelmediyse probe 14.00'te atılır; araya istek girdikçe ertelenir). Gerçek
+    #: istek oturumu zaten tazelediği için probe kotayı boşuna harcamaz. İki
+    #: hesapta her hesabın sayacı ayrıdır.
     upstream_keepalive_skip_when_active: bool = True
 
     # ---------------------------------------------------------- istek sırası
-    #: Upstream'e giden tamamlamalar tek sıraya alınsın mı? Açıkken aynı anda
-    #: yalnız bir istek işlenir (dış sistem, Telegram mesajları ve probe aynı
-    #: sırayı paylaşır); diğerleri geliş sırasıyla bekler.
+    #: Upstream'e giden tamamlamalar sıraya alınsın mı? Açıkken **hesap başına**
+    #: aynı anda yalnız bir istek işlenir (dış sistem, Telegram mesajları ve probe
+    #: aynı sırayı paylaşır); diğerleri geliş sırasıyla bekler. Tek hesapta bu,
+    #: bütün trafiğin tek sırası demektir; iki hesapta her hesabın kendi sırası
+    #: vardır ve hesaplar birbirini beklemez.
     request_queue_enabled: bool = True
     #: Bir istek bitince sıradaki, bu aralıktan rastgele seçilen süre (saniye)
     #: kadar bekletilir. Yalnız upstream'e gerçekten gidilmiş isteklerden sonra
     #: uygulanır; yerelde reddedilen istek sırayı bekletmez.
     request_gap_min_seconds: float = 5.0
     request_gap_max_seconds: float = 10.0
-    #: Aynı anda sırada bekleyebilecek en fazla istek (0 = sınırsız). Dolunca
-    #: yeni istek beklemeden reddedilir (`queue_full`).
+    #: Bir hesabın sırasında aynı anda bekleyebilecek en fazla istek (0 =
+    #: sınırsız). Dolunca yeni istek beklemeden reddedilir (`queue_full`).
     request_queue_max_waiting: int = 20
     #: Emniyet supabı: bir istek sırayı bundan uzun tutarsa (sızmış slot) sıra
     #: kendini kurtarır ve bir sonrakine geçer.

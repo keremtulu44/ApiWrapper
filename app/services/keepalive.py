@@ -18,6 +18,11 @@ güvenli kılar:
   zaten tazelenmiştir; probe o istekten bir aralık sonraya ertelenir
   (`UPSTREAM_KEEPALIVE_SKIP_WHEN_ACTIVE`). Böylece probe kotayı boşuna harcamaz
   ve "son başarılı istekten bu yana en çok bir aralık" kuralı korunur.
+* **Hesap başına:** birden çok hesap varken (`UPSTREAM_CURL_2`) her hesabın
+  kendi probe döngüsü vardır. Probe, hesabına sabitlenir (`x-apiwrapper-account`)
+  ve "boşta" olup olmadığına o hesabın **kendi** son başarılı isteğine bakarak
+  karar verir. Arıza verip devreden çıkan hesap, kendi probe'u başarılı olunca
+  yeniden iş almaya başlar.
 * **Sıra doluyken bekle:** bir istek işlenirken probe sıraya girip kendi
   180 sn'lik süresini doldurmasın diye sıra boşalana dek ertelenir. Yine de
   araya istek girerse probe sırada en çok 60 sn bekler
@@ -33,6 +38,7 @@ import asyncio
 import json
 import random
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx
@@ -40,6 +46,7 @@ import httpx
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.services.alerting import ProbeResult, TelegramAlerter
+from app.services.lanes import ACCOUNT_HEADER
 from app.services.request_queue import SOURCE_HEADER, RequestQueue
 from app.services.upstream_health import UpstreamHealth
 
@@ -279,6 +286,10 @@ async def run_upstream_keepalive(
     *,
     health: UpstreamHealth | None = None,
     queue: RequestQueue | None = None,
+    account_slot: int | None = None,
+    scope: str = "",
+    start_delay: float = 0.0,
+    notes: Callable[[ProbeResult], tuple[str, ...]] | None = None,
 ) -> None:
     """Belirli aralıklarla kısa bir non-stream completion gönder.
 
@@ -288,6 +299,13 @@ async def run_upstream_keepalive(
 
     ``health`` ve ``queue`` verilirse probe yalnız upstream boştayken atılır
     (bkz. modül açıklaması) ve cevapsız kalan probe sağlık kaydına işlenir.
+
+    Çok hesaplı kurulumda her hesap için ayrı bir döngü çalışır: ``account_slot``
+    probe'u o hesaba sabitler, ``health``/``queue`` o hesabın kaydı ve sırasıdır,
+    ``scope`` bildirimlerde hesabın adıdır. ``start_delay`` ilk probe'ları
+    hesaplar arasında kaydırır (iki hesap aynı saniyede yoklanmasın). ``notes``
+    başarısız probe'un bildirimine eklenecek satırları üretir (öbür hesapların
+    durumu, deploy notu).
     """
     interval = settings.upstream_keepalive_interval_seconds
     if interval <= 0:
@@ -300,6 +318,8 @@ async def run_upstream_keepalive(
 
     headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
     headers[SOURCE_HEADER] = "keepalive"
+    if account_slot is not None:
+        headers[ACCOUNT_HEADER] = str(account_slot)
     base_url = f"http://127.0.0.1:{settings.port}"
     initial_delay = max(0.0, settings.upstream_keepalive_initial_delay_seconds)
     jitter = max(0.0, settings.upstream_keepalive_jitter_seconds)
@@ -312,11 +332,14 @@ async def run_upstream_keepalive(
         stream_smoke_interval_seconds=smoke_interval,
         alerts=alerter is not None,
         skip_when_active=settings.upstream_keepalive_skip_when_active and health is not None,
+        account=scope or None,
     )
 
     first = True
     retry_soon = False
-    prompt_index = 0
+    # Hesaplar aynı istem sırasını aynı adımdan izlemesin (iki hesapta aynı
+    # cümlelerin aynı sırayla görünmesi ortak bir iz olurdu).
+    prompt_index = account_slot or 0
     # İlk stream kontrolü bir sonraki güne planlanır: deploy anında upstream'i
     # gereksiz yere dürtmeyelim.
     next_smoke_at = time.monotonic() + smoke_interval if smoke_interval > 0 else None
@@ -329,7 +352,7 @@ async def run_upstream_keepalive(
             # İlk turda en fazla bir aralık beklenir: interval < initial_delay
             # ise (testler/kısa aralıklar) ilk probe yine de hızlı çalışır.
             if first:
-                delay = min(initial_delay, interval)
+                delay = min(initial_delay, interval) + max(0.0, start_delay)
             elif retry_soon:
                 # Önceki probe sıra yüzünden atlandı: tam aralığı bekleme.
                 delay = min(_RETRY_AFTER_SKIP_SECONDS, interval)
@@ -360,13 +383,14 @@ async def run_upstream_keepalive(
                 if use_stream:
                     # Akış yolu kontrolü kendi hata/probe dönüşünü üretir.
                     result = await stream_smoke(client, headers, settings)
+                    result.scope = scope
                     next_smoke_at = time.monotonic() + smoke_interval
                     if _never_served(queue, result):
                         retry_soon = True
                         continue
                     _report_health(health, result)
                     if alerter is not None:
-                        await alerter.notify(result)
+                        await alerter.notify(_with_notes(result, notes))
                     continue
                 response = await client.post(
                     "/v1/chat/completions",
@@ -383,6 +407,7 @@ async def run_upstream_keepalive(
                     error_type=type(exc).__name__,
                     code=transport_failure_code(exc),
                     duration_ms=duration_ms,
+                    account=scope or None,
                 )
                 result = ProbeResult(
                     ok=False,
@@ -394,7 +419,11 @@ async def run_upstream_keepalive(
                 duration_ms = round((time.monotonic() - started) * 1000, 2)
                 result = classify_response(response, duration_ms)
                 if result.ok:
-                    logger.info("upstream_keepalive_completed", duration_ms=duration_ms)
+                    logger.info(
+                        "upstream_keepalive_completed",
+                        duration_ms=duration_ms,
+                        account=scope or None,
+                    )
                 else:
                     # Kod, logdan tek bakışta teşhis edilebilsin: "status 409"
                     # yerine "code=upstream_refresh_required".
@@ -403,14 +432,25 @@ async def run_upstream_keepalive(
                         status=result.status_code,
                         code=result.code or None,
                         duration_ms=duration_ms,
+                        account=scope or None,
                     )
 
+            result.scope = scope
             if _never_served(queue, result):
                 retry_soon = True
                 continue
             _report_health(health, result)
             if alerter is not None:
-                await alerter.notify(result)
+                await alerter.notify(_with_notes(result, notes))
+
+
+def _with_notes(
+    result: ProbeResult, notes: Callable[[ProbeResult], tuple[str, ...]] | None
+) -> ProbeResult:
+    """Başarısız probe sonucuna çağıranın ek satırlarını ekler (varsa)."""
+    if notes is not None and not result.ok:
+        result.details = (*result.details, *notes(result))
+    return result
 
 
 def _never_served(queue: RequestQueue | None, result: ProbeResult) -> bool:

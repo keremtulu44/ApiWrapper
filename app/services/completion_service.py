@@ -5,8 +5,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import time
-from collections.abc import AsyncIterator, Callable, Coroutine
-from dataclasses import dataclass
+from collections.abc import AsyncIterator, Coroutine
+from dataclasses import dataclass, field
 from typing import Any, TypeVar
 
 from app.adapters.openai_to_upstream import build_upstream_request, validate_request
@@ -20,8 +20,10 @@ from app.adapters.upstream_to_openai import (
     make_usage_chunk,
 )
 from app.core.config import Settings
+from app.core.diagnostics import explain_failure
 from app.core.errors import (
     APIWrapperError,
+    InvalidRequestError,
     QueueFullError,
     QueueTimeoutError,
     RecaptchaError,
@@ -35,12 +37,20 @@ from app.core.metrics import metrics
 from app.schemas.openai import ChatCompletionRequest, ChatCompletionResponse
 from app.schemas.upstream import EventType, StreamEvent
 from app.services.account import Account, AccountPool
+from app.services.alerting import ProbeResult
+from app.services.lanes import ACCOUNT_HEADER, Lane, LaneSet
 from app.services.model_registry import ModelRegistry
 from app.services.recaptcha.base import RecaptchaProvider
-from app.services.request_queue import QueueFull, QueueTimeout, RequestQueue, Ticket
+from app.services.request_queue import (
+    QueueAbandoned,
+    QueueFull,
+    QueueTimeout,
+    RequestQueue,
+    Ticket,
+)
 from app.services.session_manager import SessionManager
 from app.services.upstream_health import UpstreamHealth
-from app.upstream.client import UpstreamClient
+from app.upstream.client import UpstreamClient, error_excerpt
 from app.upstream.exceptions import (
     CircuitOpen,
     RecaptchaRejected,
@@ -67,6 +77,21 @@ T = TypeVar("T")
 _LOCAL_ERROR_CODES = frozenset({"queue_full", "queue_timeout", "client_closed_request"})
 
 
+@dataclass(frozen=True, slots=True)
+class Reroute:
+    """İşi yarıda kalan isteğin bir hesaptan öbürüne taşınması (bildirim için)."""
+
+    #: İsteği cevaplayamayan hesap.
+    scope: str
+    #: O hesaptaki arızanın kodu ve wrapper'ın iç durum kodu.
+    code: str
+    status_code: int
+    #: Upstream'in o hesaba verdiği cevabın özeti (varsa; gizli değer taşımaz).
+    upstream_line: str | None
+    #: İsteğin taşındığı hesap.
+    moved_to: str
+
+
 @dataclass(slots=True)
 class Admission:
     """Bir isteğin sıraya giriş koşulları ve (çıkışta) ölçülen süreleri."""
@@ -78,14 +103,38 @@ class Admission:
     #: Sıra geldikten **sonraki** işlem süresi sınırı (saniye). ``None``/0 = yalnız
     #: upstream toplam sınırı (`TOTAL_REQUEST_TIMEOUT`) geçerli.
     deadline: float | None = None
-    #: True dönerse istek sıradan çıkar (`QueueAbandoned`); örn. arıza öğrenildi.
-    should_leave: Callable[[], bool] | None = None
-    #: Servis doldurur: sırada (aralık dahil) beklenen süre.
+    #: True (`/v1/ask`): arızası bilinen hesaba gidilmez. Hiçbir hesap kabul
+    #: etmiyorsa `LaneUnavailable`, beklerken hesap arızalanır ve gidecek başka
+    #: hesap kalmazsa `QueueAbandoned` fırlar; çağıran beklemeden "problem" der.
+    respect_hold: bool = False
+    #: İsteği bu hesap yuvasına sabitler (probe, elle sınama); ``None`` = bölüşüm.
+    account_slot: int | None = None
+    #: Servis doldurur: sırada (aralık dahil) beklenen toplam süre.
     waited: float = 0.0
     #: Servis doldurur: işlemin başladığı an (`time.monotonic()`); 0 = hiç başlamadı.
     started_at: float = 0.0
     #: Servis doldurur: işlemde geçen süre.
     duration: float = 0.0
+    #: Servis doldurur: isteği işleyen hesabın adı (tek hesapta boş) ve yuvası.
+    scope: str = ""
+    slot: int | None = None
+    #: Servis doldurur: istek bir hesaptan öbürüne taşındıysa her taşıma.
+    reroutes: list[Reroute] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class Turn:
+    """Bir isteğin o an tuttuğu hat ve sıra izni (taşınırsa ikisi de değişir)."""
+
+    lane: Lane
+    admission: Admission
+    ticket: Ticket | None = None
+    #: Bu isteğin daha önce denediği hesap yuvaları (aynı hesaba geri dönülmez).
+    tried: set[int] = field(default_factory=set)
+
+    @property
+    def pinned(self) -> bool:
+        return self.admission.account_slot is not None
 
 
 def _retry_after_seconds(error: APIWrapperError) -> float | None:
@@ -186,6 +235,7 @@ class CompletionService:
         accounts: AccountPool | None = None,
         queue: RequestQueue | None = None,
         health: UpstreamHealth | None = None,
+        lanes: LaneSet | None = None,
     ) -> None:
         self.settings = settings
         self.upstream = upstream
@@ -193,14 +243,33 @@ class CompletionService:
         self.sessions = sessions
         self.recaptcha = recaptcha
         self.accounts = accounts if accounts is not None else AccountPool(settings)
-        #: Bütün tamamlamaların geçtiği tek sıra (bkz. `RequestQueue`).
-        self.queue = queue if queue is not None else RequestQueue.from_settings(settings)
-        #: Tamamlama sonuçlarının bildirildiği sağlık kaydı (bkz. `UpstreamHealth`).
-        self.health = (
-            health
-            if health is not None
-            else UpstreamHealth(settings.ask_problem_hold_seconds)
-        )
+        #: Hesap başına bir hat: sıra + sağlık kaydı (bkz. `app/services/lanes.py`).
+        #: Tek hesapta tek hat vardır; bütün tamamlamalar o sıradan geçer.
+        if lanes is None:
+            lanes = LaneSet.from_settings(settings, self.accounts)
+            if queue is not None:
+                lanes.primary.queue = queue
+            if health is not None:
+                lanes.primary.health = health
+        self.lanes = lanes
+
+    @property
+    def queue(self) -> RequestQueue:
+        """İlk hattın sırası (tek hesapta: bütün isteklerin geçtiği tek sıra)."""
+        return self.lanes.primary.queue
+
+    @property
+    def health(self) -> UpstreamHealth:
+        """İlk hattın sağlık kaydı (tek hesapta: upstream'in bilinen durumu)."""
+        return self.lanes.primary.health
+
+    def lane_of(self, admission: Admission) -> Lane:
+        """İsteği (en son) işleyen hat; hiç hatta girmediyse ilk hat."""
+        if admission.slot is not None:
+            lane = self.lanes.get(admission.slot)
+            if lane is not None:
+                return lane
+        return self.lanes.primary
 
     # ------------------------------------------------------------ helpers
     @property
@@ -297,17 +366,71 @@ class CompletionService:
         return UpstreamError(f"Unexpected upstream failure: {exc}")
 
     # ------------------------------------------------------ sıra ve sonuç
-    async def _admit(self, admission: Admission) -> Ticket:
-        """İsteği sıraya alır; sırası (ve istekler arası bekleme) gelince döner.
+    def _sticky_key(
+        self, request: ChatCompletionRequest, client_identity: str | None
+    ) -> str | None:
+        """Sohbet yeniden kullanılıyorsa istekleri aynı hesapta tutan anahtar."""
+        if not self.lanes.multi:
+            return None
+        return self.sessions.base_key(request.conversation_id, client_identity)
 
-        Sıra hataları API hatasına çevrilir. `should_leave` ile ayrılan istek
-        `QueueAbandoned` olarak çağırana aynen ulaşır (koşulu o verdi).
+    async def _admit(self, admission: Admission, sticky_key: str | None = None) -> Turn:
+        """İsteği bir hesabın hattına atar; sırası (ve istekler arası bekleme) gelince döner.
+
+        Sıra hataları API hatasına çevrilir. Hiçbir hesap isteği kabul etmiyorsa
+        (`respect_hold`) `LaneUnavailable` çağırana aynen ulaşır. İstek beklerken
+        hattı arızalanırsa çalışan başka bir hatta geçer; yoksa `QueueAbandoned`.
         """
+        while True:
+            try:
+                lane = self.lanes.choose(
+                    admission,
+                    respect_hold=admission.respect_hold,
+                    pinned_slot=admission.account_slot,
+                    sticky_key=sticky_key,
+                )
+            except LookupError as exc:
+                raise InvalidRequestError(
+                    f"No upstream account in slot {admission.account_slot}.",
+                    param=ACCOUNT_HEADER,
+                ) from exc
+            turn = Turn(lane=lane, admission=admission)
+            try:
+                await self._enter(turn)
+            except QueueAbandoned:
+                lane.health.release_trial(admission)
+                if not turn.pinned and self.lanes.failover and self.lanes.others_usable(lane):
+                    # Beklediği hesap arızalandı: iş çalışan hesaba verilir.
+                    logger.info(
+                        "request_reassigned",
+                        label=admission.label,
+                        from_account=lane.label or None,
+                        waited_seconds=round(admission.waited, 2),
+                    )
+                    continue
+                raise
+            except BaseException:
+                lane.health.release_trial(admission)
+                raise
+            return turn
+
+    async def _enter(self, turn: Turn) -> None:
+        """`turn.lane` sırasına girer; izin gelince `turn.ticket` dolar."""
+        admission, lane = turn.admission, turn.lane
+        max_wait = admission.max_wait or None
+        if max_wait is not None:
+            # Süre sınırı isteğe aittir: başka hatta beklenen süre düşülür.
+            max_wait = max(0.001, max_wait - admission.waited)
+        should_leave = None
+        if admission.respect_hold and not turn.pinned:
+            # Sırada beklerken hesabın arızası öğrenilirse (öndeki istek başarısız
+            # oldu) bekleyenler tek tek denenmesin: hepsi hattan ayrılsın.
+            def should_leave(health: UpstreamHealth = lane.health) -> bool:
+                return health.blocked() is not None
+
         try:
-            ticket = await self.queue.acquire(
-                admission.label,
-                max_wait=admission.max_wait or None,
-                should_leave=admission.should_leave,
+            ticket = await lane.queue.acquire(
+                admission.label, max_wait=max_wait, should_leave=should_leave
             )
         except QueueFull as exc:
             raise QueueFullError(
@@ -316,13 +439,137 @@ class CompletionService:
                 headers={"retry-after": "30"},
             ) from exc
         except QueueTimeout as exc:
-            admission.waited = exc.waited
+            admission.waited += exc.waited
             raise QueueTimeoutError(
-                f"The request waited {int(exc.waited)}s in the queue without being served."
+                f"The request waited {int(admission.waited)}s in the queue "
+                "without being served."
             ) from exc
-        admission.waited = ticket.waited
-        admission.started_at = time.monotonic()
-        return ticket
+        except QueueAbandoned as exc:
+            admission.waited += exc.waited
+            raise
+        turn.ticket = ticket
+        admission.waited += ticket.waited
+        if admission.started_at <= 0:
+            admission.started_at = time.monotonic()
+        admission.scope = self.lanes.scope(lane)
+        admission.slot = lane.slot
+
+    def _release(self, turn: Turn | None) -> None:
+        """Hattın sırasını (ve varsa deneme hakkını) bırakır; her çıkış yolunda çağrılır."""
+        if turn is None:
+            return
+        turn.lane.queue.release(turn.ticket)
+        turn.ticket = None
+        # Deneme isteği sonuç bildirmeden bittiyse (iptal) hakkı sıradakine bırak.
+        turn.lane.health.release_trial(turn.admission)
+
+    async def _reroute(self, turn: Turn, exc: Exception, reason: str) -> bool:
+        """Hesaba özgü ret alan isteği çalışan başka bir hesaba taşır.
+
+        Yalnız istemciye henüz içerik gönderilmediyse çağrılır. Taşınan istek yeni
+        hesabın sırasına girer (o hesap da aynı anda tek istek işler); bu bekleyiş
+        isteğin işlem süresi sınırından düşer. Sabitlenmiş istek (probe) taşınmaz:
+        o, kendi hesabını sınamak içindir. True dönerse `turn` yeni hattadır.
+        """
+        if turn.pinned:
+            return False
+        old = turn.lane
+        turn.tried.add(old.slot)
+        lane = self.lanes.alternative(turn.tried)
+        if lane is None:
+            return False
+        # Arıza, yeni hattın sırası beklenmeden kayda geçer ki bu hesap yeni iş almasın.
+        api_error = self._translate(exc)
+        self._record_outcome(old, api_error)
+        admission = turn.admission
+        status = getattr(exc, "status_code", None)
+        body = str(getattr(exc, "body", "") or "")
+        upstream_line = None
+        if status is not None:
+            excerpt = error_excerpt(body) if body else ""
+            upstream_line = f"Upstream cevabı: HTTP {status}" + (
+                f" · {excerpt}" if excerpt else ""
+            )
+        # Taşıma, yeni sıra beklenmeden not edilir: istek orada süresini doldursa
+        # bile operatör bu hesabın neden devreden çıktığını öğrenir.
+        move = Reroute(
+            scope=old.label,
+            code=api_error.code or f"http_{api_error.status_code}",
+            status_code=api_error.status_code,
+            upstream_line=upstream_line,
+            moved_to=lane.label,
+        )
+        admission.reroutes.append(move)
+        # Eski hattın sırası bırakılır (upstream'e gidildi: aralık uygulanır),
+        # yeni hattın sırası beklenir.
+        old.queue.release(turn.ticket)
+        turn.ticket = None
+        turn.lane = lane
+        try:
+            await self._enter(turn)
+        except QueueAbandoned:
+            # Beklerken yeni hesap da arızalandı: istek ilk hatasıyla biter.
+            turn.lane = old
+            admission.reroutes.remove(move)
+            return False
+        logger.warning(
+            "account_switched",
+            from_account=old.label or None,
+            to_account=lane.label or None,
+            switch=len(admission.reroutes),
+            reason=reason,
+        )
+        # Etiketler eski seriyle aynı: kota kilidi `report_quota` içinde "quota"
+        # olarak sayılır, kota yüzünden yapılan geçiş "switch", kimlik reddi "auth".
+        metrics.inc(
+            "apiwrapper_account_switches_total",
+            labels={"reason": "switch" if reason == "quota" else reason},
+        )
+        return True
+
+    def reroute_reports(
+        self, admission: Admission, *, request_id: str, answered: bool, source: str = "ask"
+    ) -> list[ProbeResult]:
+        """Başka hesaba taşınan isteğin geride bıraktığı hesap arızalarının bildirimleri.
+
+        Karşı taraf bu arızayı görmez (istek öbür hesaptan cevaplanır); operatör
+        ise bir hesabın devreden çıktığını bilmelidir. Her taşıma için, arızalanan
+        hesabın kaydına işlenecek bir sonuç döner.
+        """
+        lanes = self.lanes
+        reports: list[ProbeResult] = []
+        unharmed = (
+            'karşı sisteme "problem" dönmedi' if source == "ask" else "istemciye hata dönmedi"
+        )
+        for move in admission.reroutes:
+            outcome = (
+                f"İstek {request_id} {move.moved_to} hesabından cevaplandı; {unharmed}."
+                if answered
+                else f"İstek {request_id} {move.moved_to} hesabına taşındı ama orada da "
+                "cevaplanamadı."
+            )
+            details = [line for line in (move.upstream_line, outcome) if line]
+            failed = next((lane for lane in lanes.lanes if lane.label == move.scope), None)
+            if failed is not None:
+                critical = (
+                    explain_failure(move.status_code, move.code).severity == "critical"
+                )
+                outlook = lanes.outlook(failed)
+                if outlook:
+                    details.append(outlook)
+                details.extend(lanes.incident_notes(failed, critical=critical))
+            reports.append(
+                ProbeResult(
+                    ok=False,
+                    status_code=move.status_code,
+                    code=move.code,
+                    source=source,
+                    details=tuple(details),
+                    scope=move.scope,
+                    rerouted=True,
+                )
+            )
+        return reports
 
     @staticmethod
     async def _within_deadline(work: Coroutine[Any, Any, T], deadline: float | None) -> T:
@@ -351,20 +598,21 @@ class CompletionService:
             )
         return task.result()
 
-    def _record_outcome(self, error: Exception | None) -> None:
-        """Tamamlamanın sonucunu sağlık kaydına bildirir.
+    def _record_outcome(self, lane: Lane, error: Exception | None) -> None:
+        """Tamamlamanın sonucunu işi yapan hesabın sağlık kaydına bildirir.
 
         İsteğe özgü hatalar (geçersiz gövde, bilinmeyen model) ve wrapper'ın kendi
         yük sınırları upstream hakkında bir şey söylemez; kayda geçmez.
         """
+        health = lane.health
         if error is None:
-            self.health.record_success()
+            health.record_success()
             return
         if not isinstance(error, APIWrapperError):
             return
         if error.err_type == "invalid_request_error" or error.code in _LOCAL_ERROR_CODES:
             return
-        self.health.record_failure(
+        health.record_failure(
             error.code or f"http_{error.status_code}", _retry_after_seconds(error)
         )
 
@@ -433,46 +681,54 @@ class CompletionService:
         )
         return entry, built
 
-    def _pick_account(self, exclude_slot: int | None = None) -> Account | None:
-        """Kullanılabilir bir hesap seçer; havuz boşsa `None` (eski davranış)."""
-        account = self.accounts.pick(exclude_slot=exclude_slot)
-        if account is None and self.accounts.size:
-            # Tüm hesaplar dinlenmede: ne zaman açılacağını söyleyerek reddet.
-            wait = self.accounts.next_cooldown_end()
-            raise UpstreamQuotaExceeded(
-                "All upstream accounts are temporarily locked by the provider. "
-                f"Earliest retry in {int(wait)}s.",
-                retry_after=wait or None,
-            )
-        return account
+    def _refuse_if_cooling(self, account: Account | None) -> None:
+        """Hesap kota dinlenmesindeyse isteği upstream'e göndermeden reddeder.
+
+        Kilitli hesapla zorlamak kilidi uzatır. Bölüşüm dinlenen hesabı zaten
+        atlar; buraya yalnız gidecek başka hesap kalmadığında (ya da istek bu
+        hesaba sabitlendiğinde) gelinir.
+        """
+        if account is None:
+            return
+        wait = self.accounts.cooldown_remaining(account.slot)
+        if wait <= 0:
+            return
+        raise UpstreamQuotaExceeded(
+            "All upstream accounts are temporarily locked by the provider. "
+            f"Earliest retry in {int(wait)}s.",
+            retry_after=wait,
+        )
 
     async def _events(
         self,
         request: ChatCompletionRequest,
         client_identity: str | None = None,
-        ticket: Ticket | None = None,
+        turn: Turn | None = None,
     ) -> AsyncIterator[StreamEvent]:
         """Upstream olay akışı.
 
-        Üç otomatik kurtarma yolu vardır: captcha reddinde token bir kez
-        yenilenir, hesap kısıtlamasında başka hesaba geçilir. Devir ve captcha
-        yenileme **yalnızca istemciye henüz tek bir olay gönderilmediyse**
-        yapılır; aksi halde iki farklı yanıtın parçaları birbirine karışırdı.
+        İstek, `turn` ile gelen hattın hesabıyla gönderilir. İki otomatik kurtarma
+        yolu vardır: captcha reddinde (dinamik sağlayıcıda) token bir kez yenilenir;
+        hesaba özgü rette (kota, kimlik) istek çalışan başka bir hesaba taşınır
+        (`_reroute`). İkisi de **yalnızca istemciye henüz tek bir olay
+        gönderilmediyse** yapılır; aksi halde iki farklı yanıtın parçaları
+        birbirine karışırdı.
 
         Kota tespiti de burada yapılır (HTTP hata gövdesi + hata olayı + düz
         metin delta'sı) ki `report_quota` her yolda çağrılsın.
         """
-        # Geçersiz istekleri hesap seçimi, sohbet açma ve CAPTCHA üretiminden
-        # önce reddet. Aksi halde örneğin boş `messages`, hesaplar cooldown'dayken
-        # doğru 400 yerine yanıltıcı bir 429 döndürür ve gereksiz iş yapar.
+        # Geçersiz istekleri sohbet açma ve CAPTCHA üretiminden önce reddet. Aksi
+        # halde örneğin boş `messages`, hesap dinlenmedeyken doğru 400 yerine
+        # yanıltıcı bir 429 döndürür ve gereksiz iş yapar.
         validate_request(request, self.settings)
         max_switches = max(0, self.settings.account_max_switches)
         switches = 0
         captcha_retried = False
         emitted = 0
-        account = self._pick_account()
 
         while True:
+            account = turn.lane.account if turn is not None else None
+            self._refuse_if_cooling(account)
             # Kota taraması burada yapılır — çağıran tarafta değil. Aksi halde
             # istisna `except UpstreamQuotaExceeded` bloğunun *dışında* fırlar
             # ve hesap devri/cooldown/AIMD hiç devreye girmez (HTTP hata
@@ -503,10 +759,10 @@ class CompletionService:
                 prompt_chars=len(built.prompt),
                 url=request_settings.stream_url(built.chat_id),
             )
-            if ticket is not None:
+            if turn is not None and turn.ticket is not None:
                 # Upstream'e gerçekten gidiliyor: bu istekten sonra sıradaki,
                 # istekler arası bekleme kadar bekletilecek.
-                ticket.touched = True
+                turn.ticket.touched = True
             try:
                 async with self.upstream.stream_completion(
                     built.chat_id,
@@ -543,51 +799,22 @@ class CompletionService:
                             emitted += 1
                         yield event
                 return
-            except UpstreamQuotaExceeded:
+            except UpstreamQuotaExceeded as exc:
                 if account is not None:
                     self.accounts.report_quota(account.slot)
-                retryable = emitted == 0 and switches < max_switches
-                replacement = self._pick_account() if retryable else None
-                if replacement is None or (
-                    account is not None and replacement.slot == account.slot
-                ):
+                movable = emitted == 0 and switches < max_switches
+                if turn is None or not movable or not await self._reroute(turn, exc, "quota"):
                     raise
                 switches += 1
-                logger.warning(
-                    "account_switched",
-                    from_account=account_label,
-                    to_account=replacement.label,
-                    switch=switches,
-                )
-                metrics.inc(
-                    "apiwrapper_account_switches_total", labels={"reason": "switch"}
-                )
-                account = replacement
                 continue
-            except UpstreamAuthRejected:
-                # Oturum kimliği reddedildi (401). Kota yolundan farkı: hesabı
-                # cezalandırmıyoruz (token global olarak düşmüş olabilir), ama
-                # başka hesap varsa onu denemek toplam kesintiyi önler.
-                retryable = emitted == 0 and switches < max_switches and account is not None
-                replacement = (
-                    self._pick_account(exclude_slot=account.slot)
-                    if retryable and account is not None
-                    else None
-                )
-                if replacement is None:
+            except UpstreamAuthRejected as exc:
+                # Oturum kimliği reddedildi (401). Kota yolundan farkı: hesap
+                # dinlenmeye alınmaz; arızası sağlık kaydına işlenir ve çalışan
+                # başka hesap varsa istek oradan tamamlanır.
+                movable = emitted == 0 and switches < max_switches
+                if turn is None or not movable or not await self._reroute(turn, exc, "auth"):
                     raise
                 switches += 1
-                metrics.inc(
-                    "apiwrapper_account_switches_total", labels={"reason": "auth"}
-                )
-                logger.warning(
-                    "account_switched",
-                    from_account=account_label,
-                    to_account=replacement.label,
-                    switch=switches,
-                    reason="auth_rejected",
-                )
-                account = replacement
                 continue
             except RecaptchaRejected:
                 self.recaptcha.invalidate()
@@ -614,26 +841,33 @@ class CompletionService:
         # Geçersiz istek sıraya hiç girmesin: ne sırayı ne aralığı harcasın.
         self.registry.resolve(request.model)
         validate_request(request, self.settings)
-        ticket = await self._admit(admission)
+        turn = await self._admit(admission, self._sticky_key(request, client_identity))
         try:
             response = await self._within_deadline(
-                self._create_completion(request, client_identity, ticket),
+                self._create_completion(request, client_identity, turn),
                 admission.deadline,
             )
         except Exception as exc:
-            self._record_outcome(exc)
+            if turn.ticket is None and isinstance(exc, UpstreamTimeoutError):
+                # Süre, isteğin taşındığı hesabın sırası beklenirken doldu. Bu bir
+                # upstream arızası değil yoğunluktur: o hesap isteği hiç görmedi.
+                raise QueueTimeoutError(
+                    "The request deadline expired while it was waiting for another "
+                    "account's queue."
+                ) from exc
+            self._record_outcome(turn.lane, exc)
             raise
         finally:
             admission.duration = max(0.0, time.monotonic() - admission.started_at)
-            self.queue.release(ticket)
-        self._record_outcome(None)
+            self._release(turn)
+        self._record_outcome(turn.lane, None)
         return response
 
     async def _create_completion(
         self,
         request: ChatCompletionRequest,
         client_identity: str | None = None,
-        ticket: Ticket | None = None,
+        turn: Turn | None = None,
     ) -> ChatCompletionResponse:
         """Sırası gelmiş isteği upstream'e taşır ve yanıtı biriktirir."""
         started = time.monotonic()
@@ -651,7 +885,7 @@ class CompletionService:
                                                           "stream": "false"})
         try:
             async for event in self._events(
-                request, client_identity=client_identity, ticket=ticket
+                request, client_identity=client_identity, turn=turn
             ):
                 if event.type is EventType.ERROR:
                     # Kota işaretleri `_events` içinde yakalanıp devir denenir;
@@ -731,7 +965,7 @@ class CompletionService:
         sırası gelince başlar ve sıra akış bitene dek tutulur.
         """
         admission = admission if admission is not None else Admission()
-        ticket: Ticket | None = None
+        turn: Turn | None = None
         events: AsyncIterator[StreamEvent] | None = None
         started = time.monotonic()
         completion_id = new_completion_id()
@@ -759,8 +993,8 @@ class CompletionService:
             try:
                 # Geçersiz istek sırayı beklemeden reddedilsin.
                 validate_request(request, self.settings)
-                ticket = await self._admit(admission)
-                events = self._events(request, client_identity=client_identity, ticket=ticket)
+                turn = await self._admit(admission, self._sticky_key(request, client_identity))
+                events = self._events(request, client_identity=client_identity, turn=turn)
                 async for event in events:
                     if is_disconnected is not None and await is_disconnected():
                         logger.info(
@@ -814,7 +1048,8 @@ class CompletionService:
 
             except Exception as exc:
                 api_error = self._translate(exc)
-                self._record_outcome(api_error)
+                if turn is not None:
+                    self._record_outcome(turn.lane, api_error)
                 logger.warning(
                     "stream_failed",
                     completion_id=completion_id,
@@ -836,7 +1071,8 @@ class CompletionService:
                 stream_failed = True
 
             if not stream_failed:
-                self._record_outcome(None)
+                if turn is not None:
+                    self._record_outcome(turn.lane, None)
                 yield sse_event(
                     _dump(
                         make_finish_chunk(completion_id, entry.id, created, finish_reason)
@@ -892,7 +1128,7 @@ class CompletionService:
                         await events.aclose()  # type: ignore[attr-defined]
             finally:
                 # Sıra her çıkış yolunda bırakılır (bitti, hata, istemci koptu, iptal).
-                self.queue.release(ticket)
+                self._release(turn)
                 metrics.inc("apiwrapper_active_streams", -1.0)
                 metrics.observe(
                     "apiwrapper_request_duration_seconds",

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -13,6 +13,7 @@ from fastapi.middleware.gzip import GZipMiddleware
 
 from app.api.v1 import admin, ask, chat, health, models
 from app.core.config import Settings, get_settings
+from app.core.diagnostics import explain_failure
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import (
@@ -22,14 +23,13 @@ from app.core.middleware import (
     RequestIDMiddleware,
 )
 from app.services.account import build_account_pool
-from app.services.alerting import build_alerter
+from app.services.alerting import ProbeResult, build_alerter
 from app.services.completion_service import CompletionService
 from app.services.keepalive import run_upstream_keepalive
+from app.services.lanes import Lane, LaneSet
 from app.services.model_registry import ModelEntry, ModelRegistry
 from app.services.recaptcha import create_recaptcha_provider
-from app.services.request_queue import RequestQueue
 from app.services.session_manager import SessionManager
-from app.services.upstream_health import UpstreamHealth
 from app.telegram.bot import TelegramSettings, run_from_settings
 from app.upstream.browser_login import SessionKeeper, login_configured, run_session_keeper
 from app.upstream.client import UpstreamClient
@@ -142,9 +142,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         entry.upstream_id = model_id
         logger.info("upstream_curl_model_loaded", model=entry.id)
     accounts = build_account_pool(settings)
-    # Bütün tamamlamalar tek sıradan geçer; sonuçları tek sağlık kaydına işlenir.
-    queue = RequestQueue.from_settings(settings)
-    upstream_health = UpstreamHealth(settings.ask_problem_hold_seconds)
+    # Hesap başına bir hat: kendi sırası ve kendi sağlık kaydı. İstekler hatlar
+    # arasında eşit bölünür; tek hesapta tek hat vardır ve bütün tamamlamalar o
+    # sıradan geçer (bkz. `app/services/lanes.py`).
+    lanes = LaneSet.from_settings(settings, accounts)
+    queue = lanes.primary.queue
+    upstream_health = lanes.primary.health
     # Tek bildirimci: probe ve `/v1/ask` aynı arıza kaydını paylaşır ki aynı
     # arıza iki kaynaktan iki ayrı mesaj üretmesin.
     alerter = build_alerter(settings)
@@ -155,6 +158,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.sessions = sessions
     app.state.registry = registry
     app.state.accounts = accounts
+    app.state.lanes = lanes
+    # İlk hattın sırası ve sağlık kaydı: tek hesaplı kurulumda "sıra" ve "upstream
+    # durumu" tam olarak bunlardır.
     app.state.queue = queue
     app.state.upstream_health = upstream_health
     app.state.alerter = alerter
@@ -166,8 +172,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         sessions=sessions,
         recaptcha=recaptcha,
         accounts=accounts,
-        queue=queue,
-        health=upstream_health,
+        lanes=lanes,
     )
 
     telegram_task: asyncio.Task[None] | None = None
@@ -196,15 +201,43 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             hint="UPSTREAM_LOGIN_EMAIL / UPSTREAM_LOGIN_PASSWORD eksik.",
         )
 
-    keepalive_task: asyncio.Task[None] | None = None
-    if settings.upstream_keepalive_interval_seconds > 0:
-        # Aynı görev hem canlılık denemesi hem teşhis/bildirim kaynağıdır.
-        keepalive_task = asyncio.create_task(
-            run_upstream_keepalive(
-                settings, alerter=alerter, health=upstream_health, queue=queue
-            ),
-            name="upstream-keepalive",
-        )
+    keepalive_tasks: list[asyncio.Task[None]] = []
+    keepalive_interval = settings.upstream_keepalive_interval_seconds
+    if keepalive_interval > 0:
+        # Aynı görev hem canlılık denemesi hem teşhis/bildirim kaynağıdır. Her
+        # hesabın kendi döngüsü vardır: probe o hesaba sabitlenir ve o hesabın son
+        # başarılı isteğine göre ertelenir. İlk probe'lar hesaplar arasında
+        # kaydırılır ki iki hesap aynı saniyede yoklanmasın.
+        stagger = min(60.0, keepalive_interval / len(lanes))
+
+        def probe_notes(lane: Lane) -> Callable[[ProbeResult], tuple[str, ...]]:
+            def build(result: ProbeResult) -> tuple[str, ...]:
+                critical = explain_failure(result.status_code, result.code).severity == "critical"
+                outlook = lanes.outlook(lane)
+                return (
+                    *((outlook,) if outlook else ()),
+                    *lanes.incident_notes(lane, critical=critical),
+                )
+
+            return build
+
+        for lane in lanes.lanes:
+            pinned = lane.slot if lanes.multi else None
+            keepalive_tasks.append(
+                asyncio.create_task(
+                    run_upstream_keepalive(
+                        settings,
+                        alerter=alerter,
+                        health=lane.health,
+                        queue=lane.queue,
+                        account_slot=pinned,
+                        scope=lanes.scope(lane),
+                        start_delay=lane.index * stagger,
+                        notes=probe_notes(lane) if lanes.multi else None,
+                    ),
+                    name=f"upstream-keepalive-{lane.index + 1}",
+                )
+            )
 
     logger.info(
         "application_started",
@@ -213,6 +246,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         recaptcha_provider=recaptcha.name,
         upstream=settings.base_url,
         accounts=accounts.size,
+        lanes=[lane.label for lane in lanes.lanes if lane.label],
+        account_failover=settings.account_failover if lanes.multi else None,
     )
     try:
         yield
@@ -223,8 +258,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await keeper_task
             with contextlib.suppress(Exception):
                 await app.state.session_keeper.shutdown()
-        if keepalive_task is not None:
+        for keepalive_task in keepalive_tasks:
             keepalive_task.cancel()
+        for keepalive_task in keepalive_tasks:
             with contextlib.suppress(asyncio.CancelledError):
                 await keepalive_task
         if telegram_task is not None:

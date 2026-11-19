@@ -161,6 +161,9 @@ class UpstreamClient:
         self.deployment = DeploymentIdResolver(settings)
         #: Upstream'den görülen son hata (bkz. `UpstreamErrorNote`).
         self.last_error: UpstreamErrorNote | None = None
+        #: Aynı kayıt hesap yuvası başına (0 = hesap havuzu yok). Hesaplar aynı
+        #: anda çalıştığı için bir hesabın arıza bildirimine öbürünün hatası karışmasın.
+        self._account_errors: dict[int, UpstreamErrorNote] = {}
 
     # ----------------------------------------------------------- lifecycle
     async def startup(self) -> None:
@@ -242,12 +245,19 @@ class UpstreamClient:
         return client
 
     # ------------------------------------------------------------- helpers
-    def _note_error(self, status: int | None, detail: str) -> None:
-        self.last_error = UpstreamErrorNote(time.monotonic(), status, error_excerpt(detail))
+    def _note_error(
+        self, status: int | None, detail: str, account: Account | None = None
+    ) -> None:
+        note = UpstreamErrorNote(time.monotonic(), status, error_excerpt(detail))
+        self.last_error = note
+        self._account_errors[account.slot if account is not None else 0] = note
 
-    def error_since(self, since: float) -> UpstreamErrorNote | None:
-        """``since`` anından (monotonic) sonra görülen son upstream hatası."""
-        note = self.last_error
+    def error_since(self, since: float, slot: int | None = None) -> UpstreamErrorNote | None:
+        """``since`` anından (monotonic) sonra görülen son upstream hatası.
+
+        ``slot`` verilirse yalnız o hesabın (0 = hesap havuzu yok) hatasına bakılır.
+        """
+        note = self.last_error if slot is None else self._account_errors.get(slot)
         return note if note is not None and note.at >= since else None
 
     def _log_referer_hint(self) -> None:
@@ -533,12 +543,12 @@ class UpstreamClient:
                     )
                 except httpx.TimeoutException as exc:
                     last_error = UpstreamTimeout(f"Upstream timed out: {exc}", url=url)
-                    self._note_error(None, type(exc).__name__)
+                    self._note_error(None, type(exc).__name__, account)
                 except httpx.HTTPError as exc:
                     last_error = UpstreamNetworkError(
                         f"Upstream network error: {exc}", url=url
                     )
-                    self._note_error(None, type(exc).__name__)
+                    self._note_error(None, type(exc).__name__, account)
                 else:
                     status = response.status_code
                     if 300 <= status < 400:
@@ -599,7 +609,7 @@ class UpstreamClient:
                         url=url,
                         body=error_body[:300],
                     )
-                    self._note_error(status, error_body)
+                    self._note_error(status, error_body, account)
                     if self._cx_flag(status, error_body):
                         metrics.inc(
                             "apiwrapper_upstream_cx_flags_total",

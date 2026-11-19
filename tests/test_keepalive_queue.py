@@ -236,7 +236,9 @@ def fake_client(post):
     return FakeClient
 
 
-async def run_one_probe(monkeypatch, post, *, queue: RequestQueue, health: UpstreamHealth):
+async def run_one_probe(
+    monkeypatch, post, *, queue: RequestQueue, health: UpstreamHealth, **loop_kwargs: Any
+):
     """Keepalive döngüsünü ilk probe bitene dek çalıştırır; alerter'ı döndürür."""
     posted = asyncio.Event()
 
@@ -258,6 +260,7 @@ async def run_one_probe(monkeypatch, post, *, queue: RequestQueue, health: Upstr
             alerter=alerter,  # type: ignore[arg-type]
             health=health,
             queue=queue,
+            **loop_kwargs,
         )
     )
     await asyncio.wait_for(posted.wait(), timeout=2)
@@ -468,3 +471,106 @@ async def test_answer_text_that_mentions_errors_is_not_mistaken_for_one():
     result = await keepalive_module.stream_smoke(sse_client(response), {}, make_settings())
 
     assert result.ok is True
+
+
+# ------------------------------------------------------- hesap başına probe
+class OkResponse:
+    status_code = 200
+
+
+async def test_probe_pins_itself_to_its_account(monkeypatch):
+    """Çok hesaplı kurulumda probe hangi hesabı sınadığını başlıkla söyler."""
+    seen: dict[str, Any] = {}
+
+    async def post(_url: str, **kwargs: Any) -> Any:
+        seen.update(headers=kwargs["headers"], prompt=kwargs["json"]["messages"][0]["content"])
+        return OkResponse()
+
+    alerter = await run_one_probe(
+        monkeypatch,
+        post,
+        queue=RequestQueue(min_gap=0.0, max_gap=0.0),
+        health=UpstreamHealth(300.0),
+        account_slot=2,
+        scope="hesap-2",
+    )
+
+    assert seen["headers"]["x-apiwrapper-account"] == "2"
+    assert seen["headers"]["x-apiwrapper-source"] == "keepalive"
+    assert [result.scope for result in alerter.results] == ["hesap-2"]
+    # Hesaplar istem listesine farklı yerden başlar (aynı cümle sırası ortak iz olmasın).
+    assert seen["prompt"] == keepalive_module.pick_prompt(2)
+    assert keepalive_module.pick_prompt(2) != keepalive_module.pick_prompt(1)
+
+
+async def test_single_account_probe_is_not_pinned(monkeypatch):
+    seen: dict[str, Any] = {}
+
+    async def post(_url: str, **kwargs: Any) -> Any:
+        seen.update(headers=kwargs["headers"], prompt=kwargs["json"]["messages"][0]["content"])
+        return OkResponse()
+
+    alerter = await run_one_probe(
+        monkeypatch,
+        post,
+        queue=RequestQueue(min_gap=0.0, max_gap=0.0),
+        health=UpstreamHealth(300.0),
+    )
+
+    assert "x-apiwrapper-account" not in seen["headers"]
+    assert [result.scope for result in alerter.results] == [""]
+    assert seen["prompt"] == keepalive_module.pick_prompt(0)
+
+
+async def test_failed_probe_carries_the_notes_of_its_account(monkeypatch):
+    """Arıza mesajına hesapların durumu eklenir; başarılı probe'a eklenmez."""
+
+    async def failing(_url: str, **_kwargs: Any) -> Any:
+        raise httpx.ReadTimeout("180 sn doldu")
+
+    def notes(result: ProbeResult) -> tuple[str, ...]:
+        return (f"Hesaplar: {result.scope} ARIZALI",)
+
+    alerter = await run_one_probe(
+        monkeypatch,
+        failing,
+        queue=RequestQueue(min_gap=0.0, max_gap=0.0),
+        health=UpstreamHealth(300.0),
+        scope="hesap-2",
+        notes=notes,
+    )
+    assert alerter.results[0].details == ("Hesaplar: hesap-2 ARIZALI",)
+
+    async def working(_url: str, **_kwargs: Any) -> Any:
+        return OkResponse()
+
+    alerter = await run_one_probe(
+        monkeypatch,
+        working,
+        queue=RequestQueue(min_gap=0.0, max_gap=0.0),
+        health=UpstreamHealth(300.0),
+        scope="hesap-2",
+        notes=notes,
+    )
+    assert alerter.results[0].details == ()
+
+
+async def test_start_delay_shifts_the_first_probe(monkeypatch):
+    """İkinci hesabın ilk probe'u kaydırılır: iki hesap aynı saniyede yoklanmaz."""
+    started = time.monotonic()
+    at: list[float] = []
+
+    async def post(_url: str, **_kwargs: Any) -> Any:
+        at.append(time.monotonic() - started)
+        return OkResponse()
+
+    await run_one_probe(
+        monkeypatch,
+        post,
+        queue=RequestQueue(min_gap=0.0, max_gap=0.0),
+        health=UpstreamHealth(300.0),
+        start_delay=0.3,
+    )
+
+    # Gecikmeye ±%15 sapma eklenir; kaydırma olmasaydı ilk probe hemen atılırdı.
+    assert at[0] >= 0.25

@@ -22,6 +22,10 @@ cümleyle anlatılır, hiçbir gizli değer (cookie/token) mesaja girmez.
 
 Upstream arızası olmayan yerel olaylar (sıra dolu, sırada zaman aşımı) arıza
 kaydı açmaz; `notify_event` ile tür başına seyreltilmiş tek mesaj olarak gider.
+
+Birden çok hesap varken her hesabın **kendi** arıza kaydı vardır (`scope`): bir
+hesabın düşmesi ve düzelmesi öbürününkine karışmaz, mesajlar hangi hesaptan söz
+ettiğini `Hesap:` satırıyla söyler. Tek hesapta `scope` boştur ve metinler aynıdır.
 """
 
 from __future__ import annotations
@@ -78,6 +82,11 @@ class ProbeResult:
     source: str = "probe"
     #: Arıza mesajına eklenecek satırlar (upstream'in cevabı, istek kimliği, süreler).
     details: tuple[str, ...] = ()
+    #: Çok hesaplı kurulumda sonucun ait olduğu hesap; tek hesapta boş.
+    scope: str = ""
+    #: True ise istek başka bir hesaba taşındı: bu hesap cevap veremedi ama karşı
+    #: sisteme (bu yüzden) "problem" dönmedi. "Problem alan istek" sayılmaz.
+    rerouted: bool = False
 
     @property
     def key(self) -> str:
@@ -180,9 +189,14 @@ def format_rejected(
 class AlertPolicy:
     """Hangi durumda mesaj üretileceğine karar verir (yan etkisiz)."""
 
-    def __init__(self, repeat_seconds: float = 21600.0) -> None:
+    def __init__(self, repeat_seconds: float = 21600.0, scope: str = "") -> None:
         self.repeat_seconds = max(0.0, float(repeat_seconds))
+        #: Bu kaydın ait olduğu hesap (tek hesapta boş).
+        self.scope = scope
         self.state = _AlertState()
+
+    def _account_line(self) -> tuple[str, ...]:
+        return (f"Hesap: {self.scope}",) if self.scope else ()
 
     def evaluate(
         self, result: ProbeResult, now: float | None = None
@@ -202,11 +216,19 @@ class AlertPolicy:
             state.active_since = 0.0
             state.ask_problems = 0
             hint = explain_failure(result.status_code, previous)
-            text = (
-                "✅ ApiWrapper — upstream yeniden çalışıyor.\n"
-                f"Önceki arıza: {previous} ({hint.title})\n"
-                f"Süre: {_human_duration(elapsed)} · {result.checked_at} · "
-                f"{_http_label(result.status_code)}"
+            headline = (
+                "✅ ApiWrapper — hesap yeniden çalışıyor ve yeniden iş alıyor."
+                if self.scope
+                else "✅ ApiWrapper — upstream yeniden çalışıyor."
+            )
+            text = "\n".join(
+                (
+                    headline,
+                    *self._account_line(),
+                    f"Önceki arıza: {previous} ({hint.title})",
+                    f"Süre: {_human_duration(elapsed)} · {result.checked_at} · "
+                    f"{_http_label(result.status_code)}",
+                )
             )
             if affected:
                 text += f'\nArıza boyunca "problem" cevabı alan dış istek: {affected}'
@@ -215,6 +237,8 @@ class AlertPolicy:
         key = result.key
         hint = explain_failure(result.status_code, result.code)
         from_ask = result.source == "ask"
+        # Başka hesaba taşınan istek karşı sisteme "problem" olarak dönmedi.
+        counts_as_problem = from_ask and not result.rerouted
 
         if state.active_key != key:
             # Yeni arıza ya da arıza türü değişti: her zaman bildir.
@@ -224,22 +248,23 @@ class AlertPolicy:
                 state.ask_problems = 0
             state.active_key = key
             state.failures += 1
-            if from_ask:
+            if counts_as_problem:
                 state.ask_problems += 1
             state.last_sent_at = current
             state.total_alerts += 1
             severity = "🔴" if hint.severity == "critical" else "⚠️"
-            headline = (
-                'dış istek cevaplanamadı; karşı sisteme "problem" döndü.'
-                if from_ask
-                else "upstream isteği başarısız."
-            )
+            if result.rerouted:
+                headline = "bir hesap cevap veremedi; istek diğer hesaba taşındı."
+            elif from_ask:
+                headline = 'dış istek cevaplanamadı; karşı sisteme "problem" döndü.'
+            else:
+                headline = "upstream isteği başarısız."
             # Dış istekte wrapper'ın iç durum kodu (örn. 401 için 502) yazılmaz:
             # karşı sistem HTTP 200 + "problem" görmüştür ve hemen üstteki satır
             # upstream'in kendi cevabını zaten taşır; iki farklı kod kafa karıştırır.
             footer = (
                 result.checked_at
-                if from_ask
+                if from_ask or result.rerouted
                 else (
                     f"{_http_label(result.status_code)} · {result.checked_at} · "
                     f"{_human_duration(result.duration_ms / 1000)}"
@@ -247,6 +272,7 @@ class AlertPolicy:
             )
             lines = [
                 f"{severity} ApiWrapper — {headline}",
+                *self._account_line(),
                 f"Ne oldu: {hint.title} [{key}]",
                 _kind_line(hint.severity),
                 f"Yapılacak: {hint.action}",
@@ -257,18 +283,21 @@ class AlertPolicy:
 
         # Aynı arıza sürüyor: yalnızca hatırlatma aralığı dolduysa yaz.
         state.failures += 1
-        if from_ask:
+        if counts_as_problem:
             state.ask_problems += 1
         if self.repeat_seconds <= 0 or current - state.last_sent_at >= self.repeat_seconds:
             state.last_sent_at = current
             state.total_alerts += 1
-            text = (
-                "⏳ ApiWrapper — arıza sürüyor.\n"
-                f"Ne oldu: {hint.title} [{key}]\n"
-                f"Yapılacak: {hint.action}\n"
-                f"Üst üste {state.failures}. başarısız deneme · {result.checked_at} · "
-                f"başlangıçtan {_human_duration(current - state.active_since)} "
-                "önce başladı"
+            text = "\n".join(
+                (
+                    "⏳ ApiWrapper — arıza sürüyor.",
+                    *self._account_line(),
+                    f"Ne oldu: {hint.title} [{key}]",
+                    f"Yapılacak: {hint.action}",
+                    f"Üst üste {state.failures}. başarısız deneme · {result.checked_at} · "
+                    f"başlangıçtan {_human_duration(current - state.active_since)} "
+                    "önce başladı",
+                )
             )
             if state.ask_problems:
                 text += f'\nŞimdiye dek "problem" cevabı alan dış istek: {state.ask_problems}'
@@ -290,7 +319,10 @@ class TelegramAlerter:
         self.bot_token = bot_token.strip()
         self.chat_id = chat_id
         self.timeout = timeout
+        #: Tek hesaplı kurulumun (ve hesaba bağlı olmayan sonuçların) arıza kaydı.
         self.policy = AlertPolicy(repeat_seconds)
+        #: Hesap adı → o hesabın arıza kaydı ("" = `self.policy`).
+        self._policies: dict[str, AlertPolicy] = {"": self.policy}
         #: Yerel olay türü → son bildirim anı / o günden beri bastırılan olay sayısı.
         self._event_sent_at: dict[str, float] = {}
         self._event_suppressed: dict[str, int] = {}
@@ -299,20 +331,35 @@ class TelegramAlerter:
     def enabled(self) -> bool:
         return bool(self.bot_token) and self.chat_id is not None
 
+    def policy_for(self, scope: str = "") -> AlertPolicy:
+        """Hesabın arıza kaydı (ilk kullanımda açılır); boş ad ortak kayıttır."""
+        policy = self._policies.get(scope)
+        if policy is None:
+            policy = AlertPolicy(self.policy.repeat_seconds, scope=scope)
+            self._policies[scope] = policy
+        return policy
+
+    @property
+    def scopes(self) -> dict[str, AlertPolicy]:
+        """Açılmış bütün arıza kayıtları (hesap adı → kayıt)."""
+        return dict(self._policies)
+
     def evaluate(self, result: ProbeResult, now: float | None = None) -> str | None:
-        return self.policy.evaluate(result, now)
+        return self.policy_for(result.scope).evaluate(result, now)
 
     async def notify(self, result: ProbeResult) -> str | None:
         """Gerekliyse mesajı gönderir; gönderilen metni döndürür."""
-        text = self.evaluate(result)
+        policy = self.policy_for(result.scope)
+        text = policy.evaluate(result)
         if text is None:
             logger.debug(
                 "telegram_alert_suppressed",
                 code=result.key,
-                failures=self.policy.state.failures,
+                account=result.scope or None,
+                failures=policy.state.failures,
             )
             return None
-        await self.send(text)
+        await self.send(text, label=policy.state.active_key or "recovered")
         return text
 
     async def notify_event(
@@ -364,7 +411,7 @@ class TelegramAlerter:
         logger.info(
             "telegram_alert_sent",
             code=label or self.policy.state.active_key or "recovered",
-            alerts=self.policy.state.total_alerts,
+            alerts=sum(policy.state.total_alerts for policy in self._policies.values()),
         )
         return True
 

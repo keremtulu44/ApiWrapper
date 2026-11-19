@@ -1,13 +1,20 @@
 """Upstream hesap havuzu: çoklu çerez, kota penceresi ve AIMD ile öğrenilen bütçe.
 
 `scripts/curl_to_env.py` her cURL'ü ayrı bir hesap yuvasına yazar (1. hesap
-soneksiz, 2. hesap ``_2`` soneksli anahtarlar). Bu modül o yuvaları okur ve
-istekleri hesaplar arasında dağıtır.
+soneksiz, 2. hesap ``_2`` soneksli anahtarlar); Render'da aynı yuvalar
+``UPSTREAM_CURL`` / ``UPSTREAM_CURL_2`` secret'larından doldurulur
+(`app/upstream/curl_runtime.py`). Bu modül o yuvaları okur, hesap başına kota
+penceresini sayar ve kilitlenen hesabı dinlendirir.
+
+İsteğin **hangi hesaba gideceğine burada karar verilmez**: bölüşüm
+`app/services/lanes.py` içindedir (en az işi olan hesap, eşitlikte en uzun
+süredir iş almayan). Havuz ona yalnız "bu hesap dinleniyor mu" bilgisini verir.
 
 Tasarım notları:
 
-* **Bütçe yumuşaktır.** Upstream'in gerçek sınırını bilmiyoruz; ``account_msg_budget``
-  yalnızca hangi hesabın tercih edileceğini belirler, isteği engellemez. Sert kısıt
+* **Bütçe bir gözlemdir.** Upstream'in gerçek sınırını bilmiyoruz;
+  ``account_msg_budget`` ve kilitlerden öğrenilen tavan (`learned_limit`)
+  `/v1/admin/accounts` çıktısında görünür, isteği engellemez. Sert kısıt
   yalnızca gerçek bir kilit algılandığında devreye giren cooldown'dur.
 * **AIMD ile öğrenme.** Bir hesap pencere içinde N. mesajda kilitlendiyse gerçek
   sınır N'den küçüktür; öğrenilen tavan ``N - 1`` olur (çarpan azaltma). Pencere
@@ -193,48 +200,6 @@ class AccountPool:
         """Öğrenilen tavan varsa onu, yoksa yapılandırılmış bütçeyi döndürür."""
         learned = self.state(slot).learned_limit
         return learned if learned > 0 else max(1, self.settings.account_msg_budget)
-
-    # -------------------------------------------------------------- seçim
-    def pick(
-        self, now: float | None = None, exclude_slot: int | None = None
-    ) -> Account | None:
-        """Kullanılabilir en uygun hesabı döndürür; hepsi dinlenmedeyse `None`.
-
-        Sıralama ölçütü: pencere içi mesaj sayısı (az olan önce), eşitlikte en
-        uzun süredir kullanılmayan. Böylece bütçe bir engelden çok bir tercih
-        sırası olarak çalışır — tek hesaplı kurulumda istek hiçbir zaman
-        reddedilmez.
-
-        ``exclude_slot`` verilirse o yuva (örn. az önce 401 alan hesap) atlanır;
-        aksi halde devir aynı hesabı seçip sonsuz döngü üretebilirdi.
-        """
-        current = time.time() if now is None else now
-        usable = [
-            account
-            for account in self.accounts
-            if account.is_configured
-            and account.slot != exclude_slot
-            and self.cooldown_remaining(account.slot, current) <= 0
-        ]
-        if not usable:
-            return None
-        usable.sort(
-            key=lambda a: (
-                self.messages_in_window(a.slot, current),
-                self.state(a.slot).last_used_at,
-            )
-        )
-        return usable[0]
-
-    def next_cooldown_end(self, now: float | None = None) -> float:
-        """Cooldown'daki hesapların en erken açılma anına kalan süre."""
-        current = time.time() if now is None else now
-        remaining = [
-            self.cooldown_remaining(a.slot, current)
-            for a in self.accounts
-            if self.cooldown_remaining(a.slot, current) > 0
-        ]
-        return min(remaining) if remaining else 0.0
 
     # ------------------------------------------------------------- kayıt
     def record_message(self, slot: int, now: float | None = None) -> None:

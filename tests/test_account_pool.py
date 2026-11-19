@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.services.account import Account, AccountPool, load_accounts
+from app.services.lanes import LaneSet, LaneUnavailable
 from app.services.session_manager import SessionManager
 from app.upstream.auth import parse_cookie_header
 from tests.conftest import TEST_API_KEY, UPSTREAM_DOMAIN, ai_stream, make_settings
@@ -124,57 +125,51 @@ def test_effective_settings_recomputes_urls_from_account_domain():
     assert account.slot == 1  # orijinal değişmedi
 
 
-# ------------------------------------------------------------------ seçim
-def test_pick_prefers_the_least_used_account():
-    pool = AccountPool(two_account_settings())
-    assert pool.pick().label == "bir"
-    pool.record_message(1)
-    assert pool.pick().label == "iki"
-
-
-def test_pick_respects_the_budget_as_a_preference():
-    pool = AccountPool(two_account_settings(account_msg_budget=2))
-    pool.record_message(1)
-    pool.record_message(1)
-    # 1. hesap bütçeyi doldurdu ama isteği engellemez; sadece sıra değişir.
-    assert pool.pick().label == "iki"
-    assert pool.effective_budget(1) == 2
-
-
-def test_single_account_is_never_blocked_by_budget():
-    pool = AccountPool(
-        make_settings(
-            target_domain=UPSTREAM_DOMAIN, upstream_cookie="C1", account_msg_budget=1
-        )
-    )
+# ------------------------------------------------------- dinlenme ve seçim
+# Hesap seçimi `app/services/lanes.py` içindedir (yük + sıra; kuralları
+# tests/test_lanes.py sınar). Havuz ona yalnız dinlenme bilgisini verir.
+def test_budget_never_blocks_an_account():
+    """Bütçe bir gözlemdir: dolsa da hesap iş almaya devam eder."""
+    settings = two_account_settings(account_msg_budget=2)
+    pool = AccountPool(settings)
+    lanes = LaneSet.from_settings(settings, pool)
     for _ in range(5):
         pool.record_message(1)
-    assert pool.pick().slot == 1
+
+    assert pool.effective_budget(1) == 2
+    assert lanes.usable(lanes.get(1)) is True
+    assert sorted(lanes.choose(object()).label for _ in range(2)) == ["bir", "iki"]
 
 
-# --------------------------------------------------------------- cooldown
 def test_cooled_account_is_skipped_and_returns_after_cooldown():
-    pool = AccountPool(two_account_settings())
+    settings = two_account_settings()
+    pool = AccountPool(settings)
+    lanes = LaneSet.from_settings(settings, pool)
     now = 1_000.0
     pool.record_message(1, now=now)
     pool.report_quota(1, now=now)
 
     assert pool.cooldown_remaining(1, now=now) == pytest.approx(COOLDOWN)
-    assert pool.pick(now=now).label == "iki"
-    # Cooldown bitince 1. hesap yeniden adaydır; seçim en az kullanılandan yana
-    # olduğu için penceresi boş olan 2. hesap tercih edilmeye devam eder.
     assert pool.cooldown_remaining(1, now=now + COOLDOWN + 1) == 0.0
-    pool.record_message(2, now=now + COOLDOWN + 1)
-    pool.record_message(2, now=now + COOLDOWN + 1)
-    assert pool.pick(now=now + COOLDOWN + 1).label == "bir"
+
+    # Dinlenen hesap iş almaz (gerçek saatle: az önce kilitlendi).
+    pool.report_quota(1)
+    assert [lanes.choose(object()).label for _ in range(3)] == ["iki", "iki", "iki"]
+    pool.clear_cooldown(1)
+    assert sorted(lanes.choose(object()).label for _ in range(2)) == ["bir", "iki"]
 
 
-def test_pick_returns_none_when_every_account_is_cooling():
-    pool = AccountPool(two_account_settings())
-    pool.report_quota(1, now=1_000.0)
-    pool.report_quota(2, now=1_000.0)
-    assert pool.pick(now=1_000.0) is None
-    assert pool.next_cooldown_end(now=1_000.0) == pytest.approx(COOLDOWN)
+def test_no_account_is_offered_when_every_account_is_cooling():
+    settings = two_account_settings()
+    pool = AccountPool(settings)
+    lanes = LaneSet.from_settings(settings, pool)
+    pool.report_quota(1)
+    pool.report_quota(2)
+
+    with pytest.raises(LaneUnavailable) as caught:
+        lanes.choose(object(), respect_hold=True)
+
+    assert caught.value.hold.remaining == pytest.approx(COOLDOWN, abs=2)
 
 
 # ------------------------------------------------------------------- AIMD
@@ -515,8 +510,15 @@ def test_each_account_gets_a_separate_upstream_chat():
     )
     with client as test_client:
         test_client.headers.update({"Authorization": f"Bearer {TEST_API_KEY}"})
-        for _ in range(4):
-            test_client.post("/v1/chat/completions", json=chat_body())
+        # Sohbet yeniden kullanılırken aynı istemcinin istekleri tek hesapta kalır
+        # (bkz. tests/test_two_accounts.py); iki hesabı da çalıştırmak için istekler
+        # hesaplara tek tek sabitlenir.
+        for slot in (1, 2, 1, 2):
+            test_client.post(
+                "/v1/chat/completions",
+                json=chat_body(),
+                headers={"x-apiwrapper-account": str(slot)},
+            )
 
     per_cookie: dict[str, set[str]] = {}
     for call in route.calls:

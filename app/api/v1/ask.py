@@ -30,6 +30,10 @@ Süreler:
 * Sırada en çok `ASK_MAX_QUEUE_WAIT_SECONDS` (600 sn) beklenir; dolarsa "problem".
 * Arıza zaten biliniyorsa (`UpstreamHealth`) istek upstream'e hiç gitmeden,
   beklemeden "problem" alır.
+* Birden çok hesap varsa (`UPSTREAM_CURL_2`) istekler hesaplar arasında bölünür
+  ve her hesap kendi sırasını işler (`app/services/lanes.py`). Bir hesap arıza
+  verirse iş çalışan hesaba gider; "problem" yalnız cevap verebilecek hesap
+  kalmadığında söylenir. Sözleşme değişmez: karşı sistem hesapları görmez.
 
 Çağıranın kendi hatası (yanlış anahtar, boş `prompt`, bilinmeyen model) akış
 başlamadan düz HTTP 4xx olarak döner; istemci için bu da "problem"dir. Arıza
@@ -56,6 +60,7 @@ from app.api.deps import get_completion_service
 from app.api.disconnect import wait_for_disconnect
 from app.api.streaming import GuardedStreamingResponse
 from app.core.config import Settings
+from app.core.diagnostics import explain_failure
 from app.core.errors import APIWrapperError, InvalidRequestError
 from app.core.logging import get_logger
 from app.core.metrics import metrics
@@ -69,6 +74,7 @@ from app.services.alerting import (
     human_duration,
 )
 from app.services.completion_service import Admission, CompletionService
+from app.services.lanes import Lane, LaneUnavailable
 from app.services.request_queue import QueueAbandoned
 from app.services.upstream_health import Hold
 from app.upstream.client import error_excerpt
@@ -273,48 +279,52 @@ class AskRunner:
     # --------------------------------------------------------------- iş
     async def _work(self) -> AskOutcome:
         """İsteği işler. İptal dışında istisna fırlatmaz: her sonuç bir `AskOutcome`."""
-        health = self._service.health
-        hold = health.admit(self)
-        if hold is not None:
-            # Arıza biliniyor: upstream'e gitmeden, beklemeden cevapla.
-            return self._held(hold, reason="held")
-
         settings = self._settings
+        service = self._service
         admission = Admission(
             label="ask",
             max_wait=settings.ask_max_queue_wait_seconds,
             deadline=settings.ask_request_timeout_seconds,
-            # Sırada beklerken arıza öğrenilirse (öndeki istek başarısız oldu)
-            # bekleyenler tek tek denenmesin: hepsi hemen "problem" alsın.
-            should_leave=lambda: health.blocked() is not None,
+            # Arızası bilinen hesaba gidilmez; sırada beklerken hesabın arızası
+            # öğrenilirse (öndeki istek başarısız oldu) bekleyenler tek tek
+            # denenmez. Cevap verebilecek hesap kalmadıysa hemen "problem".
+            respect_hold=True,
         )
         try:
-            completion = await self._service.create_completion(
+            completion = await service.create_completion(
                 self._chat_request,
                 client_identity=self._client_identity,
                 admission=admission,
             )
-        except QueueAbandoned as exc:
-            admission.waited = exc.waited
-            current = health.blocked()
+        except LaneUnavailable as exc:
+            # Arıza biliniyor: upstream'e gitmeden, beklemeden cevapla.
+            waited = admission.waited > 0
+            return self._held(
+                exc.hold,
+                reason="drained" if waited else "held",
+                lane=exc.lane,
+                admission=admission if waited else None,
+            )
+        except QueueAbandoned:
+            lane = service.lane_of(admission)
+            current = lane.health.blocked()
             if current is None:  # pragma: no cover - koşulu sağlayan kayıt az önce kalktı
                 current = Hold("upstream_failure", 0.0, 0.0)
-            return self._held(current, reason="drained", admission=admission)
+            return self._held(current, reason="drained", lane=lane, admission=admission)
         except APIWrapperError as exc:
+            self._report_reroutes(admission, answered=False)
             return self._failed(exc, admission)
         except asyncio.CancelledError:
             raise
         except Exception as exc:
             logger.exception("ask_internal_error", ask_id=self.request_id, error=str(exc))
             return self._local_problem("internal_error", 500, admission, reason="internal")
-        finally:
-            # Deneme isteği sonuç bildirmeden bittiyse (iptal) hakkı geri ver.
-            health.release_trial(self)
 
         choice = completion.choices[0] if completion.choices else None
         text = (choice.message.content or "") if choice is not None else ""
         if not text.strip():
-            health.record_failure("empty_response")
+            self._report_reroutes(admission, answered=False)
+            service.lane_of(admission).health.record_failure("empty_response")
             return self._incident(
                 "empty_response", 200, admission, reason="empty", upstream_line=None
             )
@@ -323,12 +333,14 @@ class AskRunner:
             "ask_done",
             ask_id=self.request_id,
             model=completion.model,
+            account=admission.scope or None,
             content_chars=len(text),
             waited_ms=round(admission.waited * 1000, 2),
             duration_ms=round(admission.duration * 1000, 2),
         )
         metrics.inc("apiwrapper_ask_total", labels={"status": "done"})
-        self._notify_recovery()
+        self._report_reroutes(admission, answered=True)
+        self._notify_recovery(admission.scope)
         return AskOutcome("done", text=text, model=completion.model)
 
     # ---------------------------------------------------------- sonuçlar
@@ -355,7 +367,7 @@ class AskRunner:
             excerpt = error_excerpt(str(body)) if body else ""
             return f"Upstream cevabı: HTTP {status}" + (f" · {excerpt}" if excerpt else "")
         if admission.started_at > 0:
-            note = self._service.upstream.error_since(admission.started_at)
+            note = self._service.upstream.error_since(admission.started_at, admission.slot)
             if note is not None:
                 return f"Upstream'den görülen son hata: {note.describe()}"
         return None
@@ -369,14 +381,23 @@ class AskRunner:
             f"işlem {human_duration(admission.duration)}"
         )
 
-    def _hold_line(self) -> str | None:
-        hold = self._service.health.blocked()
+    def _hold_line(self, lane: Lane) -> str | None:
+        """Operatöre "bundan sonra ne olacak" sorusunun cevabı."""
+        lanes = self._service.lanes
+        if lanes.multi:
+            return lanes.outlook(lane)
+        hold = lane.health.blocked()
         if hold is None:
             return None
         return (
             f"Bundan sonra: dış isteklere {human_duration(math.ceil(hold.remaining))} boyunca "
             'upstream\'e gidilmeden "problem" denir; sonra tek istek denenir.'
         )
+
+    def _lane_lines(self, lane: Lane, status_code: int | None, code: str) -> tuple[str, ...]:
+        """Çok hesaplı kurulumda mesaja eklenen satırlar (hesap durumu, deploy notu)."""
+        critical = explain_failure(status_code, code).severity == "critical"
+        return self._service.lanes.incident_notes(lane, critical=critical)
 
     def _incident(
         self,
@@ -388,9 +409,15 @@ class AskRunner:
         upstream_line: str | None,
     ) -> AskOutcome:
         """Upstream kaynaklı arıza: arıza kaydına işlenir (ilkinde mesaj, sonra sayım)."""
+        lane = self._service.lane_of(admission)
         details = [
             line
-            for line in (upstream_line, self._request_line(admission), self._hold_line())
+            for line in (
+                upstream_line,
+                self._request_line(admission),
+                self._hold_line(lane),
+                *self._lane_lines(lane, status_code, code),
+            )
             if line
         ]
         self._log_problem(code, status_code, reason, admission, upstream_line)
@@ -402,14 +429,43 @@ class AskRunner:
                 duration_ms=admission.duration * 1000,
                 source="ask",
                 details=tuple(details),
+                scope=admission.scope,
             )
         )
         return AskOutcome("problem", code=code)
 
+    def _report_reroutes(self, admission: Admission, *, answered: bool) -> None:
+        """Başka hesaba taşınan isteğin geride bıraktığı hesap arızalarını bildirir.
+
+        Karşı sistem bu arızayı görmez (istek öbür hesaptan cevaplanır); operatör
+        ise bir hesabın devreden çıktığını bilmelidir.
+        """
+        reports = self._service.reroute_reports(
+            admission, request_id=self.request_id, answered=answered
+        )
+        for move, report in zip(admission.reroutes, reports, strict=True):
+            logger.warning(
+                "ask_rerouted",
+                ask_id=self.request_id,
+                from_account=move.scope,
+                to_account=move.moved_to,
+                code=move.code,
+                answered=answered,
+            )
+            metrics.inc("apiwrapper_ask_total", labels={"status": "rerouted", "code": move.code})
+            self._notify(report)
+
     def _held(
-        self, hold: Hold, *, reason: str, admission: Admission | None = None
+        self,
+        hold: Hold,
+        *,
+        reason: str,
+        lane: Lane | None = None,
+        admission: Admission | None = None,
     ) -> AskOutcome:
         """Arıza zaten biliniyordu: istek upstream'e gönderilmedi."""
+        service = self._service
+        lane = lane if lane is not None else service.lanes.primary
         if hold.trial_in_flight:
             when = "bir deneme isteği şu an işleniyor"
         else:
@@ -420,10 +476,13 @@ class AskRunner:
         ]
         # Arızayı başka bir istek (Telegram mesajı, probe) ortaya çıkardıysa bu
         # mesaj olayın ilk bildirimi olabilir: upstream'in o andaki cevabını ekle.
-        note = self._service.upstream.error_since(time.monotonic() - hold.failing_for - 1.0)
+        note = service.upstream.error_since(
+            time.monotonic() - hold.failing_for - 1.0, lane.slot
+        )
         if note is not None:
             details.append(f"Upstream'den görülen son hata: {note.describe()}")
         details.append(self._request_line(admission))
+        details.extend(self._lane_lines(lane, None, hold.code))
         self._log_problem(hold.code, None, reason, admission, None)
         self._notify(
             ProbeResult(
@@ -432,6 +491,7 @@ class AskRunner:
                 code=hold.code,
                 source="ask",
                 details=tuple(details),
+                scope=service.lanes.scope(lane),
             )
         )
         return AskOutcome("problem", code=hold.code)
@@ -453,11 +513,11 @@ class AskRunner:
             return
         self._tasks.spawn(self._alerter.notify(result), name="ask-alert")
 
-    def _notify_recovery(self) -> None:
+    def _notify_recovery(self, scope: str = "") -> None:
         alerter = self._alerter
-        if alerter is None or alerter.policy.state.active_key is None:
+        if alerter is None or alerter.policy_for(scope).state.active_key is None:
             return  # açık arıza yok: ağ çağrısı da görev de gerekmez
-        self._notify(ProbeResult(ok=True, status_code=200, source="ask"))
+        self._notify(ProbeResult(ok=True, status_code=200, source="ask", scope=scope))
 
     def _log_problem(
         self,

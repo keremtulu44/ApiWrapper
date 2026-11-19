@@ -92,3 +92,58 @@ def test_keepalive_starts_and_stops_with_web_service(monkeypatch):
     assert seen["interval"] == 10800
     assert seen["shared_queue"] == 1.0
     assert seen["shared_health"] == 1.0
+
+
+def test_each_account_gets_its_own_keepalive_loop(monkeypatch):
+    """İki hesapta iki döngü: her biri kendi hesabına sabitli, kendi sırası ve kaydıyla."""
+    started = threading.Event()
+    loops: list[dict[str, Any]] = []
+
+    async def fake_run(settings, alerter=None, **wiring):
+        loops.append(wiring)
+        if len(loops) == 2:
+            started.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(main_module, "run_upstream_keepalive", fake_run)
+    app = create_app(
+        make_settings(
+            upstream_cookie="A",
+            upstream_cookie_2="B",
+            upstream_keepalive_interval_seconds=3600,
+        )
+    )
+
+    with TestClient(app):
+        assert started.wait(2)
+        lanes = app.state.lanes.lanes
+        assert [loop["account_slot"] for loop in loops] == [1, 2]
+        assert [loop["scope"] for loop in loops] == ["hesap-1", "hesap-2"]
+        assert [loop["queue"] for loop in loops] == [lane.queue for lane in lanes]
+        assert [loop["health"] for loop in loops] == [lane.health for lane in lanes]
+        # İlk probe'lar bir dakika arayla; her döngü bildirimine hesap notu ekleyebilir.
+        assert [loop["start_delay"] for loop in loops] == [0.0, 60.0]
+        assert all(callable(loop["notes"]) for loop in loops)
+
+
+def test_single_account_keepalive_loop_is_not_pinned(monkeypatch):
+    started = threading.Event()
+    loops: list[dict[str, Any]] = []
+
+    async def fake_run(settings, alerter=None, **wiring):
+        loops.append(wiring)
+        started.set()
+        await asyncio.Future()
+
+    monkeypatch.setattr(main_module, "run_upstream_keepalive", fake_run)
+    app = create_app(
+        make_settings(upstream_cookie="A", upstream_keepalive_interval_seconds=3600)
+    )
+
+    with TestClient(app):
+        assert started.wait(2)
+        assert len(loops) == 1
+        assert loops[0]["account_slot"] is None
+        assert loops[0]["scope"] == ""
+        assert loops[0]["notes"] is None
+        assert loops[0]["start_delay"] == 0.0

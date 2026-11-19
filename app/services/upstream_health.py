@@ -124,6 +124,27 @@ class UpstreamHealth:
     def failing(self) -> bool:
         return self._failing_since is not None
 
+    @property
+    def code(self) -> str:
+        """Süren arızanın kodu (arıza yoksa boş)."""
+        return self._code
+
+    def since_last_failure(self) -> float | None:
+        """Son arızanın üzerinden geçen süre (saniye); arıza yoksa ``None``."""
+        if self._failing_since is None or self._last_failure_at is None:
+            return None
+        return max(0.0, self._clock() - self._last_failure_at)
+
+    def reset(self) -> None:
+        """Arıza kaydını elle kaldırır (operatör kararı); son başarı anına dokunmaz."""
+        if self._failing_since is not None:
+            logger.info("upstream_hold_reset", code=self._code or None, failures=self._failures)
+        self._failing_since = None
+        self._failures = 0
+        self._code = ""
+        self._hold_until = 0.0
+        self._trial_owner = None
+
     def blocked(self) -> Hold | None:
         """Bekletme **şu an** sürüyor mu? (Durum değiştirmez.)"""
         if self._failing_since is None or self.hold_seconds <= 0:
@@ -134,14 +155,8 @@ class UpstreamHealth:
             return None
         return Hold(self._code, remaining, now - self._failing_since)
 
-    def admit(self, owner: object) -> Hold | None:
-        """Bir `/v1/ask` isteği upstream'e gidebilir mi?
-
-        ``None`` → gidebilir. Arıza biliniyorsa ve bekletme dolduysa çağıran
-        **deneme** isteği olur; sonucu bildirene (ya da `release_trial` çağırana)
-        dek diğer istekler `Hold` alır. Bekletme kapalıysa (``hold_seconds`` 0)
-        her istek denenir.
-        """
+    def peek(self, owner: object) -> Hold | None:
+        """`admit` ile aynı kararı verir ama durum değiştirmez (deneme hakkı almaz)."""
         if self._failing_since is None or self.hold_seconds <= 0:
             return None
         now = self._clock()
@@ -154,9 +169,23 @@ class UpstreamHealth:
             and now - self._trial_started_at < _TRIAL_TTL_SECONDS
         ):
             return Hold(self._code, 0.0, now - self._failing_since, trial_in_flight=True)
-        self._trial_owner = owner
-        self._trial_started_at = now
-        logger.info("upstream_trial_started", code=self._code or None)
+        return None
+
+    def admit(self, owner: object) -> Hold | None:
+        """Bir `/v1/ask` isteği upstream'e gidebilir mi?
+
+        ``None`` → gidebilir. Arıza biliniyorsa ve bekletme dolduysa çağıran
+        **deneme** isteği olur; sonucu bildirene (ya da `release_trial` çağırana)
+        dek diğer istekler `Hold` alır. Bekletme kapalıysa (``hold_seconds`` 0)
+        her istek denenir.
+        """
+        hold = self.peek(owner)
+        if hold is not None or self._failing_since is None or self.hold_seconds <= 0:
+            return hold
+        if self._trial_owner is not owner:
+            self._trial_owner = owner
+            self._trial_started_at = self._clock()
+            logger.info("upstream_trial_started", code=self._code or None)
         return None
 
     def release_trial(self, owner: object) -> None:

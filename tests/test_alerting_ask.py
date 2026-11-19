@@ -223,3 +223,108 @@ def test_human_duration():
     assert human_duration(45.9) == "45 sn"
     assert human_duration(300) == "5 dk"
     assert human_duration(3 * 3600) == "3 sa"
+
+
+# ------------------------------------------------------ hesap başına kayıt
+class SilentAlerter(TelegramAlerter):
+    """Gerçek politika; gönderim yerine metni saklar."""
+
+    def __init__(self) -> None:
+        super().__init__("123:test-token", 42, repeat_seconds=21600)
+        self.sent: list[str] = []
+
+    async def send(self, text: str, *, label: str | None = None) -> bool:
+        self.sent.append(text)
+        return True
+
+
+async def test_each_account_has_its_own_incident():
+    """Bir hesabın arızası ve düzelmesi öbürününkine karışmaz."""
+    alerter = SilentAlerter()
+
+    await alerter.notify(ask_failure("upstream_unauthorized", 502, scope="hesap-1"))
+    await alerter.notify(ask_failure("upstream_quota_reached", 429, scope="hesap-2"))
+    # Öbür hesabın başarısı bu hesabın arızasını kapatmaz.
+    assert await alerter.notify(ProbeResult(ok=True, status_code=200, scope="hesap-2"))
+    assert alerter.policy_for("hesap-1").state.active_key == "upstream_unauthorized"
+    assert alerter.policy_for("hesap-2").state.active_key is None
+    # Tek hesaplı kurulumun ortak kaydı hiç kullanılmadı.
+    assert alerter.policy.state.active_key is None
+
+    assert len(alerter.sent) == 3
+    assert alerter.sent[0].split("\n")[1] == "Hesap: hesap-1"
+    assert alerter.sent[1].split("\n")[1] == "Hesap: hesap-2"
+    assert alerter.sent[2].startswith("✅ ApiWrapper — hesap yeniden çalışıyor")
+    assert alerter.sent[2].split("\n")[1] == "Hesap: hesap-2"
+    assert sorted(alerter.scopes) == ["", "hesap-1", "hesap-2"]
+
+
+def test_same_failure_on_two_accounts_is_two_incidents():
+    """Aynı kod iki hesapta görülürse ikisi de bildirilir (biri öbürünü bastırmaz)."""
+    alerter = SilentAlerter()
+
+    first = alerter.evaluate(probe_failure_for("hesap-1"))
+    second = alerter.evaluate(probe_failure_for("hesap-2"))
+    repeat = alerter.evaluate(probe_failure_for("hesap-1"))
+
+    assert first is not None and "Hesap: hesap-1" in first
+    assert second is not None and "Hesap: hesap-2" in second
+    assert repeat is None  # aynı hesapta süren arıza: mesaj yok
+
+
+def probe_failure_for(scope: str) -> ProbeResult:
+    return ProbeResult(ok=False, status_code=502, code="upstream_unauthorized", scope=scope)
+
+
+def test_request_moved_to_another_account_is_not_counted_as_a_problem():
+    """Karşı sistem "problem" görmediyse sayaç artmaz; mesaj bunu açıkça söyler."""
+    policy = AlertPolicy(repeat_seconds=21600, scope="hesap-1")
+
+    text = policy.evaluate(
+        ask_failure(
+            "upstream_unauthorized",
+            502,
+            scope="hesap-1",
+            rerouted=True,
+            details=("İstek req_1 hesap-2 hesabından cevaplandı.",),
+        ),
+        now=0.0,
+    )
+
+    assert text is not None
+    assert text.startswith("🔴 ApiWrapper — bir hesap cevap veremedi; istek diğer hesaba taşındı.")
+    assert 'karşı sisteme "problem" döndü' not in text
+    assert "HTTP 502" not in text  # iç durum kodu yazılmaz
+    assert policy.state.ask_problems == 0
+    assert policy.state.failures == 1
+
+    # Aynı arıza sürerken gerçekten "problem" alan istek sayılır.
+    again = ask_failure("upstream_unauthorized", 502, scope="hesap-1")
+    assert policy.evaluate(again, now=1.0) is None
+    assert policy.state.ask_problems == 1
+
+    recovered = policy.evaluate(ProbeResult(ok=True, status_code=200, scope="hesap-1"), now=60.0)
+    assert 'Arıza boyunca "problem" cevabı alan dış istek: 1' in recovered
+
+
+def test_reminder_for_an_account_names_it():
+    policy = AlertPolicy(repeat_seconds=100, scope="hesap-2")
+    policy.evaluate(probe_failure_for("hesap-2"), now=0.0)
+
+    reminder = policy.evaluate(probe_failure_for("hesap-2"), now=101.0)
+
+    assert reminder is not None
+    assert reminder.split("\n")[:2] == ["⏳ ApiWrapper — arıza sürüyor.", "Hesap: hesap-2"]
+
+
+def test_messages_without_an_account_are_unchanged():
+    """Tek hesaplı kurulumun metinlerinde `Hesap:` satırı yoktur."""
+    policy = AlertPolicy(repeat_seconds=100)
+
+    failure = policy.evaluate(probe_failure(), now=0.0)
+    reminder = policy.evaluate(probe_failure(), now=101.0)
+    recovered = policy.evaluate(ok("probe"), now=200.0)
+
+    for text in (failure, reminder, recovered):
+        assert text is not None and "Hesap" not in text
+    assert recovered.startswith("✅ ApiWrapper — upstream yeniden çalışıyor.")
