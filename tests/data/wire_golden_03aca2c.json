@@ -1,0 +1,4255 @@
+{
+ "source_commit": "03aca2c",
+ "about": "Canlı sürümün upstream'e gönderdikleri. tests/wire_capture.py ile üretilir; elle düzenlenmez. Yalnız operatör gönderme tarafında bir değişikliği bilerek onayladığında, canlıda kanıtlanmış commit'ten yeniden üretilir.",
+ "scenarios": {
+  "01_iki_akissiz_istek": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95",
+   "4107cf5794c3",
+   "781a931df06d"
+  ],
+  "02_akisli_istek": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "351ea09192e3"
+  ],
+  "03_cok_turlu_ve_parametreli": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "37ef58f2212f"
+  ],
+  "04_eski_completions_ucu": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f5e282d68d7e"
+  ],
+  "05_ic_basliklar_tasinmaz": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95"
+  ],
+  "06_hedef_401": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95",
+   "935861fa33e3",
+   "0c02e6e0b4fc"
+  ],
+  "07_hedef_403_captcha": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95",
+   "935861fa33e3",
+   "0c02e6e0b4fc"
+  ],
+  "08_hedef_429_duz": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95",
+   "f37525f83e95",
+   "f37525f83e95",
+   "935861fa33e3",
+   "0c02e6e0b4fc",
+   "0c02e6e0b4fc",
+   "0c02e6e0b4fc"
+  ],
+  "09_hedef_429_bilinen_kota": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95"
+  ],
+  "10_hedef_429_spend_limit": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95",
+   "f37525f83e95",
+   "f37525f83e95",
+   "935861fa33e3",
+   "0c02e6e0b4fc",
+   "0c02e6e0b4fc",
+   "0c02e6e0b4fc"
+  ],
+  "11_hedef_500": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95",
+   "f37525f83e95",
+   "f37525f83e95",
+   "935861fa33e3",
+   "0c02e6e0b4fc",
+   "0c02e6e0b4fc",
+   "0c02e6e0b4fc"
+  ],
+  "12_hedef_409_refresh": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95",
+   "4aa11fe3e29b",
+   "d0ff8363e32c",
+   "45562474cea1",
+   "1cf17adaeff8",
+   "5ec77c2cea71",
+   "985b21077540"
+  ],
+  "13_hedef_400_zod": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95",
+   "935861fa33e3",
+   "0c02e6e0b4fc"
+  ],
+  "14_bir_kez_409_sonra_basari": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95",
+   "4aa11fe3e29b",
+   "d0ff8363e32c",
+   "45562474cea1",
+   "1cf17adaeff8"
+  ],
+  "15_bir_kez_500_sonra_basari": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95",
+   "f37525f83e95",
+   "eefc476d1533",
+   "33e11529d9a5"
+  ],
+  "16_mode_suz_curl": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "60f4758056a3",
+   "4107cf5794c3",
+   "452c03d698bb"
+  ],
+  "17_mode_direct": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "48e314248cdb",
+   "4107cf5794c3",
+   "21bff24ff0ee"
+  ],
+  "18_authorization_baslikli_curl": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "04fd2c00bd1b",
+   "4107cf5794c3",
+   "7c666576259f"
+  ],
+  "19_surum_basliksiz_curl": [
+   "c72588b41e19",
+   "6491ccacb2b2",
+   "e409c6258c1d",
+   "9842434342dd"
+  ],
+  "20_eski_yol_sohbet_kimlikli": [
+   "1e9f84273447",
+   "a6e5ceaf4281",
+   "8c7651c14bfe",
+   "673bc02c53d9",
+   "4b5319a665da"
+  ],
+  "21_captcha_siz_curl": [
+   "ed6da7021f0e",
+   "0c4d1d70cbbc"
+  ],
+  "22_ek_baslikli_data_binary_curl": [
+   "ed6da7021f0e",
+   "a6e5ceaf4281",
+   "f37525f83e95",
+   "4107cf5794c3",
+   "781a931df06d"
+  ]
+ },
+ "requests": {
+  "ed6da7021f0e": {
+   "method": "GET",
+   "url": "https://llm.example/text/direct",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19"
+    ]
+   ]
+  },
+  "a6e5ceaf4281": {
+   "method": "GET",
+   "url": "https://llm.example/",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-1"
+    ]
+   ]
+  },
+  "f37525f83e95": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ],
+    [
+     "Content-Length",
+     "440"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:1>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:2>",
+    "modelAMessageId": "<uuid:3>",
+    "userMessage": {
+     "content": "Merhaba",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "4107cf5794c3": {
+   "method": "GET",
+   "url": "https://llm.example/text/direct",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=rot-post-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ]
+   ]
+  },
+  "781a931df06d": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=rot-post-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-3"
+    ],
+    [
+     "Content-Length",
+     "450"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:4>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:5>",
+    "modelAMessageId": "<uuid:6>",
+    "userMessage": {
+     "content": "İkinci soru 🙂",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "351ea09192e3": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ],
+    [
+     "Content-Length",
+     "447"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:1>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:2>",
+    "modelAMessageId": "<uuid:3>",
+    "userMessage": {
+     "content": "Akışlı soru",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "37ef58f2212f": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ],
+    [
+     "Content-Length",
+     "539"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:1>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:2>",
+    "modelAMessageId": "<uuid:3>",
+    "userMessage": {
+     "content": "System:\nKısa cevap ver.\n\nUser: 2+2?\n\nAssistant: 4\n\nUser: Peki 3+3?\n\nAssistant:",
+     "experimental_attachments": [],
+     "metadata": {
+      "user": "musteri-7"
+     }
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "f5e282d68d7e": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ],
+    [
+     "Content-Length",
+     "446"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:1>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:2>",
+    "modelAMessageId": "<uuid:3>",
+    "userMessage": {
+     "content": "Tamamla: gök",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "935861fa33e3": {
+   "method": "GET",
+   "url": "https://llm.example/text/direct",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ]
+   ]
+  },
+  "0c02e6e0b4fc": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-3"
+    ],
+    [
+     "Content-Length",
+     "461"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:4>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:5>",
+    "modelAMessageId": "<uuid:6>",
+    "userMessage": {
+     "content": "Hemen ardından ikinci istek",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "4aa11fe3e29b": {
+   "method": "GET",
+   "url": "https://llm.example/",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ]
+   ]
+  },
+  "d0ff8363e32c": {
+   "method": "GET",
+   "url": "https://llm.example/text/direct",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-3"
+    ]
+   ]
+  },
+  "45562474cea1": {
+   "method": "GET",
+   "url": "https://llm.example/text/direct",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-4"
+    ]
+   ]
+  },
+  "1cf17adaeff8": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-5"
+    ],
+    [
+     "Content-Length",
+     "461"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:4>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:5>",
+    "modelAMessageId": "<uuid:6>",
+    "userMessage": {
+     "content": "Hemen ardından ikinci istek",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "5ec77c2cea71": {
+   "method": "GET",
+   "url": "https://llm.example/",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-5"
+    ]
+   ]
+  },
+  "985b21077540": {
+   "method": "GET",
+   "url": "https://llm.example/text/direct",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-6"
+    ]
+   ]
+  },
+  "eefc476d1533": {
+   "method": "GET",
+   "url": "https://llm.example/text/direct",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=rot-post-2; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ]
+   ]
+  },
+  "33e11529d9a5": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=rot-post-2; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-3"
+    ],
+    [
+     "Content-Length",
+     "461"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:4>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:5>",
+    "modelAMessageId": "<uuid:6>",
+    "userMessage": {
+     "content": "Hemen ardından ikinci istek",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "60f4758056a3": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ],
+    [
+     "Content-Length",
+     "417"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:1>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:2>",
+    "modelAMessageId": "<uuid:3>",
+    "userMessage": {
+     "content": "Merhaba",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "452c03d698bb": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=rot-post-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-3"
+    ],
+    [
+     "Content-Length",
+     "427"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:4>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:5>",
+    "modelAMessageId": "<uuid:6>",
+    "userMessage": {
+     "content": "İkinci soru 🙂",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "48e314248cdb": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ],
+    [
+     "Content-Length",
+     "433"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:1>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:2>",
+    "modelAMessageId": "<uuid:3>",
+    "userMessage": {
+     "content": "Merhaba",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "21bff24ff0ee": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=rot-post-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-3"
+    ],
+    [
+     "Content-Length",
+     "443"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:4>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:5>",
+    "modelAMessageId": "<uuid:6>",
+    "userMessage": {
+     "content": "İkinci soru 🙂",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "04fd2c00bd1b": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "authorization",
+     "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTEiLCJleHAiOjQxMDI0NDQ4MDB9.sig"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ],
+    [
+     "Content-Length",
+     "440"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:1>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:2>",
+    "modelAMessageId": "<uuid:3>",
+    "userMessage": {
+     "content": "Merhaba",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "7c666576259f": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "authorization",
+     "Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1c2VyLTEiLCJleHAiOjQxMDI0NDQ4MDB9.sig"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=rot-post-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-3"
+    ],
+    [
+     "Content-Length",
+     "450"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:4>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:5>",
+    "modelAMessageId": "<uuid:6>",
+    "userMessage": {
+     "content": "İkinci soru 🙂",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "c72588b41e19": {
+   "method": "GET",
+   "url": "https://llm.example/text/direct",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19"
+    ]
+   ]
+  },
+  "6491ccacb2b2": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-1"
+    ],
+    [
+     "Content-Length",
+     "440"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:1>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:2>",
+    "modelAMessageId": "<uuid:3>",
+    "userMessage": {
+     "content": "Merhaba",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "e409c6258c1d": {
+   "method": "GET",
+   "url": "https://llm.example/text/direct",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=rot-post-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-1"
+    ]
+   ]
+  },
+  "9842434342dd": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/text/direct"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=rot-post-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ],
+    [
+     "Content-Length",
+     "450"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:4>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:5>",
+    "modelAMessageId": "<uuid:6>",
+    "userMessage": {
+     "content": "İkinci soru 🙂",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "1e9f84273447": {
+   "method": "GET",
+   "url": "https://llm.example/c/<uuid:1>",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19"
+    ]
+   ]
+  },
+  "8c7651c14bfe": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/post-to-evaluation/<uuid:1>",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/c/<uuid:1>"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ],
+    [
+     "Content-Length",
+     "440"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:1>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:2>",
+    "modelAMessageId": "<uuid:3>",
+    "userMessage": {
+     "content": "Merhaba",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "673bc02c53d9": {
+   "method": "GET",
+   "url": "https://llm.example/c/<uuid:4>",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=rot-post-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-2"
+    ]
+   ]
+  },
+  "4b5319a665da": {
+   "method": "POST",
+   "url": "https://llm.example/nextjs-api/stream/post-to-evaluation/<uuid:4>",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "*/*"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "content-type",
+     "text/plain;charset=UTF-8"
+    ],
+    [
+     "origin",
+     "https://llm.example"
+    ],
+    [
+     "referer",
+     "https://llm.example/c/<uuid:4>"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "empty"
+    ],
+    [
+     "sec-fetch-mode",
+     "cors"
+    ],
+    [
+     "sec-fetch-site",
+     "same-origin"
+    ],
+    [
+     "priority",
+     "u=1, i"
+    ],
+    [
+     "traceparent",
+     "00-<trace>-<span>-01"
+    ],
+    [
+     "tracestate",
+     "dd=s:1;o:rum"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_NEW7654321"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_NEW7654321"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=rot-post-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-3"
+    ],
+    [
+     "Content-Length",
+     "450"
+    ]
+   ],
+   "body_keys": [
+    "id",
+    "modelAId",
+    "userMessageId",
+    "modelAMessageId",
+    "userMessage",
+    "modality",
+    "mode",
+    "recaptchaV3Token"
+   ],
+   "body": {
+    "id": "<uuid:4>",
+    "modelAId": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+    "userMessageId": "<uuid:5>",
+    "modelAMessageId": "<uuid:6>",
+    "userMessage": {
+     "content": "İkinci soru 🙂",
+     "experimental_attachments": [],
+     "metadata": {}
+    },
+    "modality": "chat",
+    "mode": "direct-battle",
+    "recaptchaV3Token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   }
+  },
+  "0c4d1d70cbbc": {
+   "method": "GET",
+   "url": "https://llm.example/text/direct",
+   "headers": [
+    [
+     "Host",
+     "llm.example"
+    ],
+    [
+     "Accept-Encoding",
+     "<httpx-default>"
+    ],
+    [
+     "Connection",
+     "keep-alive"
+    ],
+    [
+     "accept",
+     "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    ],
+    [
+     "accept-language",
+     "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7"
+    ],
+    [
+     "user-agent",
+     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36"
+    ],
+    [
+     "sec-ch-ua",
+     "\"Chromium\";v=\"141\", \"Not?A_Brand\";v=\"24\", \"Google Chrome\";v=\"141\""
+    ],
+    [
+     "sec-ch-ua-mobile",
+     "?0"
+    ],
+    [
+     "sec-ch-ua-platform",
+     "\"Windows\""
+    ],
+    [
+     "sec-fetch-dest",
+     "document"
+    ],
+    [
+     "sec-fetch-mode",
+     "navigate"
+    ],
+    [
+     "sec-fetch-site",
+     "none"
+    ],
+    [
+     "upgrade-insecure-requests",
+     "1"
+    ],
+    [
+     "dnt",
+     "1"
+    ],
+    [
+     "x-arena-web-deployment",
+     "dpl_OLD1234567"
+    ],
+    [
+     "x-deployment-id",
+     "dpl_OLD1234567"
+    ],
+    [
+     "Cookie",
+     "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19; sidebar_state=get-1"
+    ]
+   ]
+  }
+ },
+ "curl": {
+  "tam_curl": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "mode_yok": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "mode_yok_env_mode_var": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "mode_direct_env_farkli": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "referer_yok": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/c/{chat_id}",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/c/CHAT",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/c/CHAT"
+    }
+   ]
+  },
+  "captcha_yok": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": ""
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "captcha_v2_alani": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV2Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "authorization_bearer": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1IiwiZXhwIjo0MTAyNDQ0ODAwfQ.sig",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "authorization_semasiz": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1IiwiZXhwIjo0MTAyNDQ0ODAwfQ.sig",
+    "upstream_auth_scheme": "",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {
+      "upstream_auth_scheme": "Bearer"
+     },
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "cerezsiz_authorization": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ1IiwiZXhwIjo0MTAyNDQ0ODAwfQ.sig",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "oturum_cerezi_yok": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "surum_basligi_yok": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "eski_yol_sohbet_kimlikli": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/post-to-evaluation/{chat_id}",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/post-to-evaluation/CHAT",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/post-to-evaluation/CHAT",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "data_binary": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "data_duz": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "ek_basliklar": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "env_stream_path_farkli": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "env_saglayici_browser": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "browser",
+    "recaptcha_static_token": ""
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "env_saglayici_noop": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "noop",
+    "recaptcha_static_token": ""
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "env_saglayici_external": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "external",
+    "recaptcha_static_token": ""
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "env_unutulmus_ikinci_yuva": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "env_eski_kimlik_alanlari": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "tr,en;q=0.9,en-GB;q=0.8,en-US;q=0.7",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "baska_tarayici_ve_dil": {
+   "model_id": "019b24bb-5caf-71c3-b854-37d0c7086f21",
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/create-evaluation",
+    "upstream_referer_path": "/text/direct",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "en-US,en;q=0.9",
+    "upstream_user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "dnt=1;x-arena-web-deployment=dpl_OLD1234567;x-deployment-id=dpl_OLD1234567",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT"
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+   "referer_url": "https://llm.example/text/direct",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "0cAFcWeA6_TTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTTT",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/create-evaluation",
+     "referer_url": "https://llm.example/text/direct"
+    }
+   ]
+  },
+  "curl_yok_env_ile": {
+   "model_id": null,
+   "settings": {
+    "target_domain": "llm.example",
+    "upstream_scheme": "https",
+    "upstream_stream_path": "/nextjs-api/stream/post-to-evaluation/{chat_id}",
+    "upstream_referer_path": "/c/{chat_id}",
+    "upstream_mode": "direct-battle",
+    "upstream_recaptcha_field": "recaptchaV3Token",
+    "upstream_accept_language": "en-US,en;q=0.9",
+    "upstream_user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36",
+    "upstream_extra_headers": "",
+    "upstream_cookie": "_ga=GA1.1.9; cf_clearance=CFxyz; __cf_bm=cfbm-user-1; arena-auth-prod-v1.0=base64-eyJhY2Nlc3NfdG9rZW4iOiAiZXlKaGJHY2lPaUpJVXpJMU5pSXNJblI1Y0NJNklrcFhWQ0o5LmV5SnpkV0lpT2lKMWMyVnlMVEVpTENKbGVIQWlPalF4TURJME5EUTRN; arena-auth-prod-v1.1=REI5LnNpZyIsICJyZWZyZXNoX3Rva2VuIjogInJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnJycnIiLCAidXNlciI6IHsiaWQiOiAidXNlci0xIn19",
+    "upstream_auth_from_cookie": false,
+    "upstream_access_token": "",
+    "upstream_auth_scheme": "Bearer",
+    "recaptcha_provider": "static",
+    "recaptcha_static_token": ""
+   },
+   "stream_url": "https://llm.example/nextjs-api/stream/post-to-evaluation/CHAT",
+   "referer_url": "https://llm.example/c/CHAT",
+   "origin": "https://llm.example",
+   "accounts": [
+    {
+     "slot": 1,
+     "configured": true,
+     "captcha": "",
+     "differs_from_settings": {},
+     "stream_url": "https://llm.example/nextjs-api/stream/post-to-evaluation/CHAT",
+     "referer_url": "https://llm.example/c/CHAT"
+    }
+   ]
+  },
+  "HATA_adres_yok": {
+   "error_type": "ValueError",
+   "error": "UPSTREAM_CURL içinden hedef URL ve akış yolu çıkarılamadı; tam create-evaluation cURL'ünü yapıştırın."
+  },
+  "HATA_kimlik_yok": {
+   "error_type": "ValueError",
+   "error": "UPSTREAM_CURL içinde cookie veya authorization başlığı yok; siteye giriş yapmışken tamamlanmış sohbet isteğini kopyalayın."
+  },
+  "HATA_curl_degil": {
+   "error_type": "ValueError",
+   "error": "UPSTREAM_CURL içinden hedef URL ve akış yolu çıkarılamadı; tam create-evaluation cURL'ünü yapıştırın."
+  }
+ }
+}

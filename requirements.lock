@@ -1,0 +1,133 @@
+# requirements.lock — üretim imajının Python paketleri, TAM sürümleriyle.
+#
+# NEDEN
+#   pyproject.toml sürüm ARALIĞI verir. Kilit olmadan her imaj derlemesi aralıktaki
+#   en yeni sürümü kurar ve upstream'e giden istek (HTTP yığını, TLS, gövdenin
+#   üretilişi) kod değişmeden değişebilir. Operatör kararı (19 Kasım 2026):
+#   paket sürümleri ve taban imaj sabitlenir. Ayrıntı: docs/LESSONS_2026_11_14.md §20.6.
+#
+# NE
+#   `pip install ".[tokens,browser]"` kurulumunun Python 3.12 / linux x86_64 için
+#   tam kapanışı. Sürümler, canlıdaki commit'in (03aca2c) yayına alındığı andaki
+#   PyPI durumuna (17 Kasım 2026 07:55 UTC) göre çözülmüştür: o derlemenin kurmuş
+#   olması gereken küme. Upstream'e gönderen yığın (httpx, httpcore, h2, hpack,
+#   hyperframe, h11, certifi, anyio, idna) o günden bu yana hiç sürüm çıkarmadı.
+#
+# NASIL KULLANILIR
+#   Dockerfile paketleri `pip install -c requirements.lock ...` ile kurar; ardından
+#   scripts/verify_lock.py kurulu her paketi bu dosyayla karşılaştırır. Kilitte
+#   olmayan ya da sürümü farklı tek bir paket derlemeyi BAŞARISIZ kılar: sessiz
+#   değişiklik olmaz. CI aynı kurulumu Python 3.12'de yapıp bütün testleri koşar.
+#
+# NASIL GÜNCELLENİR — yalnız bilerek; güncelleme gönderme tarafını değiştirebilir
+#   uv pip compile pyproject.toml --extra tokens --extra browser \
+#       --python-version 3.12 --python-platform x86_64-unknown-linux-gnu \
+#       --exclude-newer <ISO tarih> --no-header -o /tmp/yeni.txt
+#   Bu başlığı koruyarak aşağıdaki listeyi değiştirin. Sonra
+#   tests/test_requirements_lock.py ve tests/test_wire_contract.py geçmeli.
+#   Canlıya alma bir restart'tır: taze cURL ile aynı anda yapılır.
+#
+# ELLE DÜZENLEMEYİN (sürüm satırları üretilmiştir).
+#
+annotated-doc==0.0.6
+    # via fastapi
+annotated-types==0.8.0
+    # via pydantic
+anyio==4.16.0
+    # via
+    #   fastapi
+    #   httpx
+    #   starlette
+    #   watchfiles
+certifi==2026.10.23
+    # via
+    #   httpcore
+    #   httpx
+    #   requests
+charset-normalizer==3.5.2
+    # via requests
+click==8.5.1
+    # via uvicorn
+fastapi==0.163.1
+    # via apiwrapper (pyproject.toml)
+greenlet==3.5.6
+    # via playwright
+h11==0.16.0
+    # via
+    #   httpcore
+    #   uvicorn
+h2==4.4.1
+    # via httpx
+hpack==4.2.0
+    # via h2
+httpcore==1.0.9
+    # via httpx
+httptools==0.9.0
+    # via uvicorn
+httpx==0.28.1
+    # via apiwrapper (pyproject.toml)
+hyperframe==6.1.0
+    # via h2
+idna==3.20
+    # via
+    #   anyio
+    #   httpx
+    #   requests
+opentelemetry-api==1.45.2
+    # via fastapi
+playwright==1.65.2
+    # via apiwrapper (pyproject.toml)
+pydantic==2.14.3
+    # via
+    #   apiwrapper (pyproject.toml)
+    #   fastapi
+    #   pydantic-settings
+pydantic-core==2.50.4
+    # via pydantic
+pydantic-settings==2.16.3
+    # via apiwrapper (pyproject.toml)
+python-dotenv==1.2.4
+    # via
+    #   pydantic-settings
+    #   uvicorn
+python-multipart==0.0.34
+    # via apiwrapper (pyproject.toml)
+pyyaml==6.0.3
+    # via
+    #   apiwrapper (pyproject.toml)
+    #   uvicorn
+regex==2026.11.15
+    # via tiktoken
+requests==2.34.2
+    # via tiktoken
+starlette==1.10.0
+    # via fastapi
+structlog==25.5.0
+    # via apiwrapper (pyproject.toml)
+tiktoken==0.14.0
+    # via apiwrapper (pyproject.toml)
+typing-extensions==4.16.0
+    # via
+    #   anyio
+    #   fastapi
+    #   opentelemetry-api
+    #   pydantic
+    #   pydantic-core
+    #   pydantic-settings
+    #   starlette
+    #   typing-inspection
+typing-inspection==0.4.5
+    # via
+    #   fastapi
+    #   pydantic
+    #   pydantic-settings
+urllib3==2.8.0
+    # via requests
+uvicorn==0.54.0
+    # via apiwrapper (pyproject.toml)
+uvloop==0.23.0
+    # via uvicorn
+watchfiles==1.3.0
+    # via uvicorn
+websockets==17.4
+    # via uvicorn

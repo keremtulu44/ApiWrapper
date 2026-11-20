@@ -33,8 +33,12 @@ class UpstreamPayload(BaseModel):
     user_message: UserMessage = Field(alias="userMessage")
     modality: str = "chat"
     recaptcha_v3_token: str = Field(default="", alias="recaptchaV3Token")
-    #: Hedef servisin beklediği `mode`. Tarayıcı cURL'ündeki gerçek değer
-    #: `UPSTREAM_MODE` ile ezilir; boş bırakılırsa bu varsayılan gönderilir.
+    #: Hedef servisin beklediği `mode` (zorunlu alan: eksikse `400 ZodError`).
+    #: DİKKAT: bu varsayılan yalnız alan **hiç verilmediğinde** geçerlidir.
+    #: Adaptör (`openai_to_upstream.py`) alanı her zaman verir ve boş ayarı
+    #: `None` olarak geçirir; `to_wire(exclude_none=True)` o zaman alanı gövdeden
+    #: **düşürür**. Yani pratikte değer ayardan gelir: `UPSTREAM_CURL` doluysa
+    #: cURL'ün gövdesinden, değilse `UPSTREAM_MODE`'dan.
     mode: str | None = "direct-battle"
 
     def to_wire(self, recaptcha_field: str = "recaptchaV3Token") -> dict[str, Any]:

@@ -17,6 +17,22 @@
 > **Güncel ve doğru model:** [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ·
 > kısa özet: [`INDEX.md`](INDEX.md) § "Önce bunu oku".
 
+> ## ⚠️ 19 Kasım 2026 — yukarıdaki notun da üç satırı eskidi
+>
+> | Yukarıda yazan | Güncel bilgi |
+> |---|---|
+> | "Otomatik yenileme kapalı (`UPSTREAM_REFRESH_ENABLED=false`)" | Kapalı değil, **yok**: yenileme kodu 16/17 Kasım geri dönüşüyle kalktı; o ad bu sürümde okunmuyor |
+> | "Token yaşı sorun değil: hedef `exp` alanını denetlemiyor" | **Dayanağı çürütüldü** (16 Kasım, `LESSONS §13`): "aynı token saatlerce çalıştı" sanılıyordu; erişim token'ı ~20 dakikada bir **yenileniyor** — hedef, isteklerimize `Set-Cookie` ile yenisini koyuyor. Süresi geçmiş token'la başarılı istek o ölçümde görülmedi |
+> | "Aynı çerezle 15+ saat" | Oturum 15 saat+ ve **~28 saat** yaşadı; üst sınır bilinmiyor (`ROLLBACK §12.2`) |
+> | "Çerezi öldüren şey çakışma" | Doğru; bilinen **ikinci** öldürücü **restart**'tır (env değişikliği, deploy, merge): çerez yalnız bellekte yaşar |
+>
+> Bu sayfanın anlattığı "ölmesine izin verme" düzeninin parçaları — otomatik
+> yenileme, `RENDER_API_KEY` kalıcılığı, §5'teki telefon komutları (`/tani`,
+> `/yenile`, `/cookie`, `/curl`, `/token`, `/apikey`) — bu sürümde **yok**.
+> Oturum ölünce tek yol: taze Google cURL → Render `UPSTREAM_CURL` → yeniden
+> deploy. §2'deki üç katman ayrımı bilgi olarak geçerlidir.
+> Geçerli işletim kuralları: [`LESSONS_2026_11_14.md §19.1`](LESSONS_2026_11_14.md).
+
 ## 1. Sorun
 
 Upstream oturumu, çerezin içinde **≈1 saatlik** bir `access_token` taşıyor

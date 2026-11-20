@@ -1,5 +1,22 @@
 # Oturum devir dosyası (HANDOFF)
 
+> ## 🗄️ ARŞİV (19 Kasım 2026)
+>
+> Bu harita `arena/cd32810d-apiwrapper` / `635d502` ağacına aittir: satır
+> numaraları, dal adları, "açık PR #28" ve §9 (kalıcılık: `state_store.py`,
+> Render env) bugünkü ağaçla **eşleşmez**. Yeni bir oturum buradan başlamasın.
+>
+> **Bugünkü durum için sıra:** [`ROLLBACK_2026_11_16.md`](ROLLBACK_2026_11_16.md)
+> (§12 süren deney, §13-§14 canlıya alma planı) → [`LESSONS_2026_11_14.md §19.1`](LESSONS_2026_11_14.md) (geçerli kurallar) →
+> [`ASK_API.md`](ASK_API.md), [`TWO_ACCOUNTS.md`](TWO_ACCOUNTS.md) (PR #56).
+>
+> **Verilmiş ve henüz uygulanmamış karar (operatör, 19 Kasım):** PR #56 önce
+> **tek hesapla** canlıya alınır ve **12 saat** denenir; ikinci hesap
+> (`UPSTREAM_CURL_2`) ancak ondan sonra, ayrı bir restart'la eklenir. 12 saat
+> dolmadan oturum ölürse ikinci hesap eklenmez; yine tek hesapla denenir
+> (`ROLLBACK §14.1-§14.2`). Merge = deploy = restart = oturum ölümü: açık onay ve
+> taze cURL olmadan merge yapılmaz ([`MERGE_TARGET.md`](MERGE_TARGET.md)).
+
 Bu dosya, yeni bir oturumun (veya başka bir modelin) depoyu **kendi başına**
 anlaması için gereken dosya yollarını ve satır konumlarını listeler.
 
@@ -21,6 +38,21 @@ Kurallar:
 | `main` | `df2577b` — dokunulmaz |
 | Açık PR | **#28** `Stop reporting generic 403s as CAPTCHA rejections`, MERGEABLE |
 | Açık PR değişen dosya | 9 dosya, +129 / −25 |
+
+> **🔴 BAYAT KAYIT:** bu tablo o günün fotoğrafıdır. PR #28 **merge edildi**
+> (`mergedAt=2026-11-06T05:02:43Z`), yani artık "açık PR" değil. Merge hedefi de
+> değişti: canlı dal **`arena/1kasim-test`**, `main` dokunulmaz. Aşağıdaki
+> **onay kuralı geçerliliğini koruyor.** Güncel durum:
+> `docs/ROLLBACK_2026_11_16.md §11`.
+> **18 Kasım:** ep3'ün kesin sonucu ve ep4 → `docs/ROLLBACK_2026_11_16.md §12`.
+> **18 Kasım (akşam):** `/v1/ask` + tek istek sırası + arıza bildirimi **yazıldı,
+> canlıda değil** (PR #56, taslak; merge = restart = oturum ölümü). Sözleşme:
+> `docs/ASK_API.md` · canlıya alma planı: `docs/ROLLBACK_2026_11_16.md §13` ·
+> uygulama sırasında ölçülenler: `docs/LESSONS_2026_11_14.md §17`.
+> **19 Kasım:** ikinci hesap (`UPSTREAM_CURL_2`) + hesaplar arası bölüşüm **yazıldı,
+> canlıda değil** (aynı PR). Rehber: `docs/TWO_ACCOUNTS.md` · canlıya alma:
+> `docs/ROLLBACK_2026_11_16.md §14` · ölçülenler ve kararlar:
+> `docs/LESSONS_2026_11_14.md §18` · kod: `app/services/lanes.py`.
 
 Merge kuralları dosyası: **`docs/MERGE_TARGET.md`** (82 satır).
 Kritik kural: merge = Render deploy, kullanıcı o turda açıkça onaylamadan merge yapılmaz (§"Onay kuralı").
@@ -296,6 +328,6 @@ python3 -m venv .venv && .venv/bin/pip install -e ".[dev]"
 | 1 | `recaptcha_provider` `PERSISTED_FIELDS` içinde değil | `app/upstream/state_store.py:67` |
 | 2 | `recaptcha_token_ttl` = 100 sn cache | `app/core/config.py:324`, `app/services/recaptcha/base.py:51` |
 | 3 | `cx` varsayılan gönderilmiyor | `app/core/config.py:89` |
-| 4 | `render.yaml` site key blueprint değeri | `render.yaml:37` |
+| 4 | `render.yaml` site key blueprint değeri | `render.yaml` → `RECAPTCHA_SITE_KEY` |
 | 5 | URL-encoded JSON çerez biçimi (`unquote` yok) | `app/upstream/auth.py:122` |
 | 6 | `_is_user_missing` / `_is_auth_body` sıralaması | `app/upstream/client.py:643,668` |

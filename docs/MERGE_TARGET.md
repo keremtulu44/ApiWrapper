@@ -106,3 +106,34 @@ buraya bağlamak iki yönün birleşimidir ve **çakışma normaldir**. Bilinen
 
 Merge'den sonra **tam test paketi** çalıştırılmadan push edilmez: iki haftalık
 kod farkı birleştiği için derleyici/lint temiz görünse bile davranış bozulabilir.
+
+---
+
+## 19 Kasım 2026 eki — bu sürümde merge'ün bedeli
+
+Merge hedefi ve onay kuralı **aynen geçerli**. Değişen, merge'ün bedelidir:
+
+1. **Merge = deploy = restart = oturum ölümü.** 16/17 Kasım geri dönüşünden beri
+   kalıcılık katmanı yok: dönen çerez yalnız bellekte yaşar, restart env'deki
+   (o anda bayat) cURL'e döner. Yukarıdaki "merge = 2-3 dakika içinde canlı"
+   cümlesi doğru ama eksik: canlıya çıkan kod, **taze `UPSTREAM_CURL` env'e
+   girilmemişse cevap veremez** (`ROLLBACK_2026_11_16.md §6`, `§12.1`).
+2. Bu yüzden onay tek başına yetmez; merge'den **önce** Google ile giriş yapılmış
+   tarayıcıdan taze cURL alınıp Render env'ine girilir ("Save only"), sonra
+   merge edilir. Adımlar: `ROLLBACK §13.3`.
+3. **Sıradaki merge (PR #56) için verilmiş karar (operatör, 19 Kasım):** önce
+   **tek hesapla** alınır ve **12 saat** denenir; ikinci hesap
+   (`UPSTREAM_CURL_2`) ayrı bir restart'la, yalnız env değişikliğiyle eklenir
+   (`ROLLBACK §14`).
+4. Süren bir ölçüm varken (ep4, hedef 21 Kasım 12:00 UTC) bu dala hiçbir şey
+   merge edilmez (`ROLLBACK §12.6`).
+5. Son tablodaki `python -m scripts.env_template` ve `tests/test_env_template.py`
+   bu ağaçta **yok**; `docs/ENV_FULL.md` yeniden üretilemez (başındaki nota bak).
+
+**"Geçmiş" tablosuna eklenmemiş merge'ler** (bu oturumun kayıtlarından):
+
+| PR | Hedef | Merge commit | Not |
+|---|---|---|---|
+| #49–#54 | `arena/1kasim-test` | sonuncusu `77d4011` | 15-16 Kasım |
+| #55 | `arena/1kasim-test` | `03aca2c` | 17 Kasım 07:55 UTC — **geri dönüş** (`ROLLBACK_2026_11_16.md`); canlıdaki sürüm |
+| #56 | `arena/1kasim-test` | — | Açık, taslak: `/v1/ask`, istek sırası, ikinci hesap |

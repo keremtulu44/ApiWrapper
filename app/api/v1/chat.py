@@ -8,16 +8,68 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.deps import get_completion_service
+from app.api.disconnect import cancel_on_disconnect
+from app.api.streaming import GuardedStreamingResponse
 from app.core.errors import InvalidRequestError
 from app.core.logging import get_logger
 from app.core.security import api_key_dependency
 from app.schemas.openai import ChatCompletionRequest, ChatCompletionResponse, ChatMessage
-from app.services.completion_service import CompletionService
+from app.services.completion_service import Admission, CompletionService
+from app.services.lanes import ACCOUNT_HEADER
+from app.services.request_queue import SOURCE_HEADER, max_queue_wait, source_label
 from app.utils.sse import SSE_HEADERS
 
 logger = get_logger(__name__)
 
 router = APIRouter(tags=["chat"], dependencies=[Depends(api_key_dependency)])
+
+
+def _pinned_slot(request: Request) -> int | None:
+    """`x-apiwrapper-account: N` başlığı isteği N. hesaba sabitler (yoksa ``None``).
+
+    Keepalive her hesabı kendi probe'uyla dener; operatör de tek bir hesabı elle
+    sınayabilir. Sabitlenen istek hesabın sağlığına bakılmadan gönderilir ve
+    başka hesaba taşınmaz.
+    """
+    raw = (request.headers.get(ACCOUNT_HEADER) or "").strip()
+    if not raw:
+        return None
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise InvalidRequestError(
+            f"'{ACCOUNT_HEADER}' must be an account slot number (1, 2, ...).",
+            param=ACCOUNT_HEADER,
+        ) from exc
+
+
+def _report_reroutes(
+    request: Request, service: CompletionService, admission: Admission, *, answered: bool
+) -> None:
+    """İstek başka hesaba taşındıysa arızalanan hesabı operatöre bildirir.
+
+    İstemci (ör. Telegram sohbeti) normal bir cevap görür; bildirim olmazsa bir
+    hesabın devreden çıktığı o hesabın bir sonraki probe'una dek fark edilmezdi.
+    """
+    if not admission.reroutes:
+        return
+    alerter = getattr(request.app.state, "alerter", None)
+    tasks = getattr(request.app.state, "tasks", None)
+    if alerter is None or tasks is None:
+        return
+    request_id = getattr(request.state, "request_id", None) or "-"
+    for report in service.reroute_reports(
+        admission, request_id=request_id, answered=answered, source="chat"
+    ):
+        tasks.spawn(alerter.notify(report), name="chat-alert")
+
+
+def _admission(request: Request) -> Admission:
+    """İsteğin sıra etiketi: servisin kendi probe'u/botu ya da dış API istemcisi."""
+    label = source_label(request.headers.get(SOURCE_HEADER))
+    return Admission(
+        label=label, max_wait=max_queue_wait(label), account_slot=_pinned_slot(request)
+    )
 
 
 @router.post(
@@ -42,15 +94,35 @@ async def create_chat_completion(
             except Exception:  # pragma: no cover - transport'a bağlı
                 return False
 
-        return StreamingResponse(
+        # Korumalı yanıt: akış yarıda biterse üretici kapatılır, sıra bırakılır.
+        return GuardedStreamingResponse(
             service.stream_completion(
-                body, is_disconnected=is_disconnected, client_identity=client_identity
+                body,
+                is_disconnected=is_disconnected,
+                client_identity=client_identity,
+                admission=_admission(request),
             ),
             media_type="text/event-stream",
             headers={k: v for k, v in SSE_HEADERS.items() if k != "Content-Type"},
         )
 
-    return await service.create_completion(body, client_identity=client_identity)
+    # İstekler sıradan geçer: cevabı beklemekten vazgeçmiş bir istemcinin isteği
+    # sırada kalmasın. Upstream'e gönderilmiş istek ise yarıda kesilmez; canlı
+    # sürümdeki gibi sonuna kadar sürer (bkz. `app/api/disconnect.py`).
+    admission = _admission(request)
+    answered = False
+    try:
+        completion = await cancel_on_disconnect(
+            request,
+            service.create_completion(
+                body, client_identity=client_identity, admission=admission
+            ),
+            committed=lambda: admission.sent,
+        )
+        answered = True
+        return completion
+    finally:
+        _report_reroutes(request, service, admission, answered=answered)
 
 
 @router.post(
@@ -88,13 +160,21 @@ async def create_text_completion(
             except Exception:  # pragma: no cover
                 return False
 
-        return StreamingResponse(
-            service.stream_completion(chat_body, is_disconnected=is_disconnected),
+        # Korumalı yanıt: akış yarıda biterse üretici kapatılır, sıra bırakılır.
+        return GuardedStreamingResponse(
+            service.stream_completion(
+                chat_body, is_disconnected=is_disconnected, admission=_admission(request)
+            ),
             media_type="text/event-stream",
             headers={k: v for k, v in SSE_HEADERS.items() if k != "Content-Type"},
         )
 
-    completion = await service.create_completion(chat_body)
+    admission = _admission(request)
+    completion = await cancel_on_disconnect(
+        request,
+        service.create_completion(chat_body, admission=admission),
+        committed=lambda: admission.sent,
+    )
     return {
         "id": completion.id.replace("chatcmpl-", "cmpl-"),
         "object": "text_completion",

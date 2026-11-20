@@ -70,6 +70,33 @@ async def reset_account_cooldown(
     return {"slot": slot, "name": account.label, "cooldown_remaining_seconds": 0.0}
 
 
+@router.post("/accounts/{slot}/resume", summary="Put a sidelined account back to work")
+async def resume_account(
+    slot: int, request: Request, accounts: AccountPool = Depends(get_accounts)
+) -> dict[str, Any]:
+    """Arıza kaydı yüzünden iş almayan hesabı elle yeniden devreye alır.
+
+    Hesabın arıza kaydını ve kota dinlenmesini kaldırır; bir sonraki istek ona da
+    gidebilir. Hesap gerçekten çalışmıyorsa ilk istekte yeniden devreden çıkar.
+    Normalde gerekmez (hesabı kendi keepalive denemesi geri getirir); keepalive
+    kapalıyken ya da beklemek istenmediğinde kullanılır.
+    """
+    lane = request.app.state.lanes.get(slot)
+    if lane is None:
+        raise InvalidRequestError(f"No account in slot {slot}.", param="slot")
+    was_failing = lane.health.failing
+    code = lane.health.code or None
+    lane.health.reset()
+    accounts.clear_cooldown(slot)
+    return {
+        "slot": slot,
+        "name": lane.label,
+        "was_failing": was_failing,
+        "cleared_code": code,
+        "usable": request.app.state.lanes.usable(lane),
+    }
+
+
 @router.post(
     "/upstream/login",
     summary="Kalıcı tarayıcı oturumunu tazele",
@@ -135,6 +162,71 @@ async def invalidate_recaptcha(
 async def reset_breaker(upstream: UpstreamClient = Depends(get_upstream)) -> dict[str, Any]:
     upstream.breaker.reset()
     return {"status": "closed"}
+
+
+@router.get("/queue", summary="Request queue, upstream health and /v1/ask settings")
+async def queue_status(request: Request) -> dict[str, Any]:
+    """Sıranın, bilinen upstream durumunun ve `/v1/ask` ayarlarının anlık görünümü.
+
+    "Dış sistem neden `problem` alıyor?" sorusunun ilk bakılacağı yer:
+    `upstream_health.failing` doğruysa arıza biliniyordur ve
+    `hold_remaining_seconds` dolana dek `/v1/ask` istekleri upstream'e
+    gönderilmeden `problem` diye cevaplanır.
+    """
+    settings = request.app.state.settings
+    lanes = request.app.state.lanes
+    alerter = getattr(request.app.state, "alerter", None)
+    alerts: dict[str, Any] = {"enabled": alerter is not None}
+    if alerter is not None:
+        state = alerter.policy.state
+        alerts.update(
+            active_code=state.active_key,
+            failures=state.failures,
+            ask_problems=state.ask_problems,
+            sent_total=state.total_alerts,
+        )
+        # Çok hesaplı kurulumda her hesabın kendi arıza kaydı vardır.
+        per_account = {
+            scope: {
+                "active_code": policy.state.active_key,
+                "failures": policy.state.failures,
+                "ask_problems": policy.state.ask_problems,
+                "sent_total": policy.state.total_alerts,
+            }
+            for scope, policy in alerter.scopes.items()
+            if scope
+        }
+        if per_account:
+            alerts["accounts"] = per_account
+    return {
+        # İlk hesabın sırası ve durumu (tek hesapta: tek sıra, upstream'in durumu).
+        "queue": request.app.state.queue.snapshot(),
+        "upstream_health": request.app.state.upstream_health.snapshot(),
+        # Hesap başına hat: sıra, durum, aldığı iş sayısı. `usable` yanlışsa o
+        # hesap şu an yeni iş almıyor (arızalı ya da kota dinlenmesinde).
+        "accounts": {
+            "count": len(lanes),
+            "failover": settings.account_failover,
+            "lanes": lanes.snapshot(),
+        },
+        "ask": {
+            "first_wait_seconds": settings.ask_first_wait_seconds,
+            "wait_interval_seconds": settings.ask_wait_interval_seconds,
+            "request_timeout_seconds": settings.ask_request_timeout_seconds,
+            "max_queue_wait_seconds": settings.ask_max_queue_wait_seconds,
+            "problem_hold_seconds": settings.ask_problem_hold_seconds,
+            "default_model": settings.ask_default_model or None,
+            # Yalnız sayı: anahtarların kendisi hiçbir uçta gösterilmez.
+            "scoped_keys": len(settings.ask_api_keys),
+            # Süren `/v1/ask` işleri + gönderilmekte olan bildirimler.
+            "background_tasks": len(request.app.state.tasks),
+        },
+        "keepalive": {
+            "interval_seconds": settings.upstream_keepalive_interval_seconds,
+            "skip_when_active": settings.upstream_keepalive_skip_when_active,
+        },
+        "alerts": alerts,
+    }
 
 
 @router.get("/config", summary="Effective non-sensitive configuration")

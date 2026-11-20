@@ -114,6 +114,16 @@ class SessionManager:
         )
         return session
 
+    def base_key(
+        self, conversation_id: str | None, client_identity: str | None
+    ) -> str | None:
+        """Sohbetin hesaptan bağımsız anahtarı; durumsuz modda ``None``.
+
+        Çok hesaplı kurulumda aynı sohbetin isteklerini aynı hesapta tutmak için
+        kullanılır (bkz. `app/services/lanes.py`, "sohbet bağlılığı").
+        """
+        return self._session_key(conversation_id, client_identity, None)
+
     def _session_key(
         self,
         conversation_id: str | None,

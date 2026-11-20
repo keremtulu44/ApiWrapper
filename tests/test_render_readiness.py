@@ -90,13 +90,16 @@ def test_shipped_max_model_uses_the_observed_stable_upstream_id():
     assert registry.resolve(None) is entry
 
 
-def test_render_blueprint_is_single_instance_always_on_and_secret_free():
+def test_render_blueprint_is_single_instance_free_plan_and_secret_free():
     data = yaml.safe_load(Path("render.yaml").read_text())
     assert len(data["services"]) == 1
     service = data["services"][0]
     assert service["type"] == "web"
     assert service["runtime"] == "docker"
-    assert service["plan"] == "starter"
+    # Operatör kararı (19 Kasım 2026): blueprint canlı servisin gerçek planını
+    # yazar. Free plan hareketsizlikte uyur; servisi dışarıdaki zamanlayıcı
+    # (cron-job.org) uyanık tutar (docs/RENDER.md, ROLLBACK §12.8).
+    assert service["plan"] == "free"
     assert service["numInstances"] == 1
     assert service["healthCheckPath"] == "/readyz"
     assert service["dockerfilePath"] == "./Dockerfile"
@@ -115,7 +118,10 @@ def test_render_blueprint_is_single_instance_always_on_and_secret_free():
         "UPSTREAM_STREAM_PATH",
         "UPSTREAM_EXTRA_HEADERS",
     } & env.keys()
-    assert env["RECAPTCHA_PROVIDER"]["value"] == "browser"
+    # Kalıcı değer `static`: sunucuda üretilen token (`browser`) hedefte 403 alıyor
+    # (14 Kasım 2026 ölçümü, docs/LESSONS §3). `browser` yazılıysa cURL içe aktarımı
+    # statik token'ı atar; blueprint'ten kurulan servis hiç cevap veremezdi.
+    assert env["RECAPTCHA_PROVIDER"]["value"] == "static"
     # Site key public'tir; gerçek cookie/token değerleri sync:false kalır.
     assert env["RECAPTCHA_SITE_KEY"]["value"] == "6LeTGMcsAAAAALuIlkVwIxaAuZA8VledA6d3Nnb0"
     assert env["RECAPTCHA_VERSION"]["value"] == "enterprise"

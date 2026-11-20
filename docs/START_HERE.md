@@ -1,5 +1,19 @@
 # Başlangıç dosyası (START HERE)
 
+> ## 🗄️ ARŞİV (19 Kasım 2026) — buradan başlama
+>
+> Bu dosya `arena/cd32810d-apiwrapper` / `a0e49a1` ağacı için yazıldı. Satır
+> numaraları, "açık PR", test sayıları ve §5'teki tespit adımlarının dayandığı
+> uçlar/betikler bugünkü ağaçla **eşleşmez**.
+>
+> **Bugün nereden başlanır:** [`INDEX.md`](INDEX.md) (hangi belge geçerli) →
+> [`ROLLBACK_2026_11_16.md`](ROLLBACK_2026_11_16.md) (bu sürümün kaydı; §12 süren
+> deney, §13-§14 canlıya alma planı) → [`LESSONS_2026_11_14.md §19.1`](LESSONS_2026_11_14.md) (geçerli işletim kuralları).
+>
+> Kurulum ve doğrulama komutları bugün: `pip install -e ".[dev,tokens]"` ·
+> `ruff check app tests scripts` · `mypy app` · `pytest -q` (CI her push'ta
+> üçünü Python 3.10 / 3.11 / 3.12 ile koşar).
+
 Bu dosya, sonraki oturumun **tek başına** işe başlayabilmesi için gereken her şeyi
 sıraya koyar: önce oku, sonra çalıştır, sonra tespit et, sonra düzelt.
 
@@ -133,7 +147,7 @@ Aynı cevapta `recaptcha` bloğu (`app/api/v1/admin.py:636-673`):
 | `provider == "noop"` | alan hiç gönderilmiyor | `app/schemas/upstream.py:43` |
 
 Site key kaynağı: `app/upstream/curl_import.py:452-457` (`_RECAPTCHA_SITE_KEY_RE`,
-satır 155). Sabit blueprint değeri: `render.yaml:37`.
+satır 155). Sabit blueprint değeri: `render.yaml` → `RECAPTCHA_SITE_KEY`.
 
 ### 5.4 Hangi hata kodu, hangi katman
 ```
@@ -226,7 +240,7 @@ Olay adları: `upstream_request`, `upstream_http_error`, `upstream_refresh_requi
 | 1 | ~~`recaptcha_provider` kalıcı alanlar listesinde değil~~ cURL yüklemesi `static`'e döndürüyordu | `app/upstream/state_store.py:67` | **düzeltildi** (PERSISTED_FIELDS + snapshot_fields içine eklendi; restart'ta seçilen sağlayıcı korunuyor) |
 | 2 | CAPTCHA token cache TTL 100 sn — **ölçüm: token istek başına tek ve farklı** (`docs/CAPTURE_TIMELINE.md` §5) | `app/core/config.py:324`, `app/services/recaptcha/base.py:51` | bilerek korunuyor; düzeltme kapsam dışı (§5) |
 | 3 | ~~`cx` varsayılan gönderilmiyor~~ | `app/core/config.py:89` | **düzeltildi** (cURL gövdesinde `cx` varsa `UPSTREAM_CX_SEND` otomatik `true`; açıkça ayarlanmadıysa eski varsayılan korunur) |
-| 4 | `render.yaml` site key blueprint değeri (canlı değer Render panosunda farklı olabilir) | `render.yaml:37` | bilerek korunuyor (render.yaml sadece blueprint) |
+| 4 | `render.yaml` site key blueprint değeri (canlı değer Render panosunda farklı olabilir) | `render.yaml` → `RECAPTCHA_SITE_KEY` | bilerek korunuyor (render.yaml sadece blueprint) |
 | 5 | ~~URL-encoded JSON çerez biçimi (`unquote` yok)~~ | `app/upstream/auth.py:122` | **düzeltildi** (`parse_cookie_header` percent-encoded değerleri tek seviye çözüyor) |
 | 6 | ~~Görseller yalnız son kullanıcı mesajından toplanıyor~~ çok turlu sohbette eski görsel kayboluyor | `app/adapters/prompt_builder.py:151` `collect_attachments()` | **düzeltildi** (tüm kullanıcı mesajlarından topluyor, aynı URL'yi deduplike ediyor) |
 | 7 | ~~Ek `name` alanı gerçek dosya adı değil (`attachment-N`)~~ | `app/schemas/openai.py:79` `attachments()` | **düzeltildi** (URL son segmenti / data URI content-type'ından gerçek ad türetiliyor) |
@@ -238,6 +252,13 @@ Olay adları: `upstream_request`, `upstream_http_error`, `upstream_refresh_requi
 | PR | Başlık | Durum |
 |---|---|---|
 | #28 | Stop reporting generic 403s as CAPTCHA rejections | açık, MERGEABLE, CI 3/3 pass |
+
+> **🔴 BAYAT KAYIT:** PR #28 **merge edildi** (`mergedAt=2026-11-06T05:02:43Z`).
+> Yukarıdaki "açık" durumu ve aşağıdaki kapsam listesi o anın fotoğrafıdır,
+> silinmedi. Düzeltme **kısmi** kaldı: `client.py:343`'teki işaret listesinde
+> hâlâ **`"forbidden"`** ve `"bot"` var, `AUTH_STATUS` yalnız `{401}` (`:43`) ⇒
+> her 403 captcha sayılabiliyor. 17 Kasım ölçümü ve doğru çare:
+> **`LESSONS_2026_11_14.md §15.3-§15.6`**.
 
 Kapsam: `app/upstream/client.py` (`CAPTCHA_MARKERS`, `_is_captcha_body`),
 `app/schemas/upstream.py` (boş token alanı), `app/services/recaptcha/static.py`

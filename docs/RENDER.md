@@ -8,10 +8,71 @@ edebilmektir.
 > dal kullanılır. Canlı servisin izlediği dalı Render panelinden doğrulayın.
 > Geçmiş merge kayıtları [`MERGE_TARGET.md`](MERGE_TARGET.md) içindedir.
 
+> ## ⚠️ SÜRÜM NOTU (19 Kasım 2026) — önce bunu oku
+>
+> Bu runbook `77d4011` sürümü için yazıldı. Canlıdaki kod bir **geri dönüş**
+> sürümüdür ([`ROLLBACK_2026_11_16.md`](ROLLBACK_2026_11_16.md)); aşağıdakilerin
+> bir kısmı bu sürümde yok.
+>
+> **Bu sürümde OLMAYANLAR** (metinde geçtikleri yerde ayrıca işaretlendi):
+> `RENDER_API_KEY` ile kalıcılık (`render_env_synced` logu), otomatik token
+> yenileme, Telegram `/cookie` `/yenile` `/token` `/apikey`, `UPSTREAM_CX_SEND`.
+> **§9'un tamamı** bu sürümde geçersizdir.
+>
+> **Bu sürümde geçerli olan tek kalıcılık kuralı:** dönen çerez yalnız bellekte
+> yaşar; her restart env'deki `UPSTREAM_CURL`'e döner, o cURL o anda bayattır ⇒
+> **restart = oturum ölümü**. cURL'ü tazelemek = Render → Environment →
+> `UPSTREAM_CURL` → yeniden deploy (`ROLLBACK §6`, `§12.1`).
+>
+> **Canlı servisin gerçek durumu (operatör, 19 Kasım):**
+>
+> | | Belgede / dosyada | Canlıda |
+> |---|---|---|
+> | Plan | Bu belge ve `render.yaml` "free" diyor (`render.yaml` geri dönüşten 19 Kasım'a dek `starter` yazıyordu; operatör kararıyla `free` yapıldı) | **Free** |
+> | Uyku | "hareketsizlikte uyur" | Dışarıdan düzenli istek atan bir zamanlayıcı (**cron-job.org**) uyanık tutuyor; 2 haftadan uzun süredir uyuduğu görülmedi. Loglardaki 5 dakikada bir `GET /` büyük olasılıkla budur (`ROLLBACK §12.8`, 6. soru) |
+> | `RECAPTCHA_PROVIDER` | `render.yaml` geri dönüşten beri `browser` yazıyordu; 19 Kasım'da `static` yapıldı | **`static`** |
+>
+> `render.yaml` yalnız bir şablondur (Blueprint): canlı değerler Render
+> panosundadır. Şablon 19 Kasım'dan beri canlıyla aynı planı (`free`) yazar;
+> ondan **yeni** servis kurulursa o da Free açılır. `UPSTREAM_MODE` şablonda
+> tanımlı değildir ve gerekmez: `UPSTREAM_CURL` doluyken `mode` ve akış yolu
+> cURL'den okunur, env değerleri okunmaz (`ROLLBACK §6`, 19 Kasım düzeltmesi).
+>
+> **Free planın, Render'ın kendi belgesinde yazan ve bu servisi ilgilendiren
+> sınırları** ([render.com/docs/free](https://render.com/docs/free); 19 Kasım'da
+> okundu, bu kurulumda **gözlenmedi**). Hepsi aynı yere çıkar: süreç yeniden
+> başlarsa oturum ölür.
+>
+> | Render'ın yazdığı | Bu servis için anlamı |
+> |---|---|
+> | 15 dakika istek almayan Free servis **uyur**; sonraki istekte ~1 dakikada açılır | Uyanış yeni süreçtir. Uyanık tutan şey dışarıdaki zamanlayıcıdır (cron-job.org); durursa oturum gider |
+> | *"Render might restart a Free web service at any time."* | Elimizde olmayan bir restart kaynağı. Bir oturum, taze cURL'e rağmen kısa sürede `401`'e düşerse Render → **Events** sayfasında o saatte bir restart var mı diye bak |
+> | Çalışma alanı başına ayda **750 Free saat**; biterse Free servisler ay sonuna kadar **askıya alınır** | 7/24 çalışan tek servis en çok 744 saat kullanır: sığar. Aynı çalışma alanında sürekli çalışan **ikinci** bir Free web servisi bu payı ay bitmeden tüketir |
+> | Free serviste kabuk (shell) erişimi ve kalıcı disk yoktur | Çalışan imajın içine girip bakılamaz; imajın içeriği yalnız **derleme logundan** okunur (aşağıda) |
+>
+> **İmaj sabit sürümlerle derlenir (19 Kasım, PR #56 — henüz canlıda değil).**
+> Taban imaj özetle (`python:3.12-slim@sha256:…`), Python paketleri
+> `requirements.lock`'taki tam sürümlerle kurulur; derlemenin son adımı imajın
+> içini denetler. Derleme logunda şu iki satır görünmelidir:
+>
+> ```
+> GÖNDERME YIĞINI python=3.12.16 openssl=3.5.7 httpx=0.28.1 httpcore=1.0.9 h2=4.4.1 hpack=4.2.0 hyperframe=6.1.0 h11=0.16.0 anyio=4.16.0 certifi=2026.10.23 idna=3.20
+> kilit uyumlu: 36 kurulu paket, 36 sabitlenmiş sürüm
+> ```
+>
+> Derleme `KİLİT UYUŞMUYOR` ile durursa yeni sürüm yayına **girmez**; Render'ın
+> belgesine göre servis son başarılı sürümle çalışmaya devam eder. Ne yapılacağı:
+> [`LESSONS_2026_11_14.md §20.6`](LESSONS_2026_11_14.md).
+>
+> **Canlıya alma adımları** (PR #56; önce tek hesap, 12 saat sonra ikinci):
+> [`ROLLBACK_2026_11_16.md §13-§14`](ROLLBACK_2026_11_16.md).
+
 ## 1. Dağıtım nasıl ilerler?
 
 1. Render, `render.yaml` içindeki tek Docker Web Service'i okur.
 2. `Dockerfile` Python paketlerini, token sayacını, Playwright ve Chromium'u kurar.
+   *(19 Kasım, PR #56: taban imaj özetle, paketler `requirements.lock` ile sabit;
+   son adım imajın içini denetler — baştaki not.)*
 3. Render bir `PORT` verir. Container komutu bu portu kullanır; elle `PORT` yazmayın.
 4. Uvicorn **tek worker** ile açılır.
 5. FastAPI lifespan sırasıyla upstream client'ını, CAPTCHA sağlayıcısını, oturum
@@ -29,7 +90,18 @@ ile Render environment değişkenlerine senkronize edilir. `RENDER_SERVICE_ID`
 Render tarafından otomatik sağlanır. Sohbet geçmişi ve öğrenilen kota sayaçları
 restart'ta sıfırlanır; bunlar upstream istek mantığını bozmaz.
 
+> ⚠️ **Bu sürümde (19 Kasım notu):** `RENDER_API_KEY` senkronu **yok**; dönen
+> çerezler restart'ta **kaybolur** ve bu, upstream isteklerini bozar (oturum
+> ölür). `render.yaml` 19 Kasım'dan beri canlıdaki gibi `plan: free` yazar.
+
 ## 2. Bir tamamlama isteği nasıl yürür?
+
+> **19 Kasım notu.** Aşağıdaki sıra canlı (`03aca2c`) kod için doğrudur. PR #56
+> ile (henüz canlıda değil) 4. adımdan önce istek bir hesabın **sırasına** girer
+> (hesap başına tek tek, aralarında 5–10 sn); hesap seçimi "o an en az işi olan
+> hesap"tır ve 10. adımdaki devir `401` ile kota reddini kapsar:
+> [`ASK_API.md §4`](ASK_API.md), [`TWO_ACCOUNTS.md §3-§5`](TWO_ACCOUNTS.md).
+> 7. adımda bu hedef için geçerli kip yalnız `static`'tir.
 
 1. **API doğrulama:** `Authorization: Bearer` veya `x-api-key` kontrol edilir.
 2. **Rate-limit/body limit:** İstemci kotası ve istek boyutu uygulanır.
@@ -62,11 +134,17 @@ restart'ta sıfırlanır; bunlar upstream istek mantığını bozmaz.
   `REPLACE_WITH_...` bırakılırsa `/readyz` servisi hazır kabul etmez.
 - Blueprint `free` plan kullanır. Servis hareketsizlikte uyuyabilir; bu durum hata
   değildir, gelen HTTP isteğiyle uyanır ancak ilk cevap gecikebilir.
+  *(19 Kasım: canlı servis Free ve cron-job.org ile uyanık tutuluyor;
+  `render.yaml` de `free` yazıyor. **Uyku, bu sürümde masum değildir:**
+  Render'ın belgelediği davranışa göre uyuyan servis gelen istekte yeni süreçle
+  açılır; bellekteki oturum gider — restart ile aynı sonuç. Bu kurulumda
+  **gözlenmedi**; zamanlayıcı durursa görülmesi beklenir.)*
 - Güçlü, varsayılandan farklı bir `API_KEYS` değeri seçilmeli.
 - Free planda refresh token kalıcılığı için Render hesabından bir API key üretilip
   `RENDER_API_KEY` secret'ına yazılmalı. `RENDER_SERVICE_ID` otomatik olduğundan
   elle servis ID'si eklenmez. Bu anahtar yoksa servis yine çalışır fakat restart
   sonrası `/cookie` ile kimlik tazeleme gerekebilir.
+  *(⚠️ Bu sürümde yok: `RENDER_API_KEY` okunmaz, `/cookie` yoktur.)*
 - `UPSTREAM_CURL` için Max'teki tamamlanmış `create-evaluation` POST isteğinin tamamı
   kullanılmalı; telemetri, RUM, analytics veya yarım kopyalanmış istek kullanılmamalı.
   cURL'deki URL'nin şeması olabilir; wrapper hedef domain'i kendisi çıkarır.
@@ -81,6 +159,8 @@ restart'ta sıfırlanır; bunlar upstream istek mantığını bozmaz.
 3. Render hesabınızın API key'ini `RENDER_API_KEY` secret'ına girin. Bu değer
    token/çerez rotasyonunu Free planda restart dayanıklı yapar; repo'ya veya
    Telegram'a yazılmamalıdır. Servis ID'sini kopyalamanız gerekmez.
+   *(⚠️ Bu sürümde bu adım **yok**: blueprint'te `RENDER_API_KEY` tanımlı değil,
+   kod da okumuyor. Yerine yapılacak bir şey yoktur; 4. adımdaki cURL yeter.)*
 4. `UPSTREAM_CURL` secret'ına Max'teki tamamlanmış `create-evaluation` isteğinin normal
    cURL'ünü yapıştırın. Bunu sohbete, README'ye, `render.yaml` dosyasına veya loglara
    kopyalamayın. Eski ayrı `TARGET_DOMAIN`/`UPSTREAM_COOKIE`/token alanları bırakılırsa
@@ -94,6 +174,7 @@ restart'ta sıfırlanır; bunlar upstream istek mantığını bozmaz.
    `upstream_curl_loaded` yalnız uygulanan alan adlarını ve model bulunup bulunmadığını
    gösterir; ham cURL veya secret taşımaz. İlk başarılı yenilemeden sonra
    `render_env_synced` olayı Free kalıcılığının çalıştığını gösterir.
+   *(⚠️ `render_env_synced` bu sürümde hiç basılmaz.)*
 7. Aşağıdaki kontrolleri yapın.
 
 Blueprint secret değerleri depoda tutmaz; `sync: false` alanları Render tarafından
@@ -155,7 +236,7 @@ Bu ayrım, geçici upstream arızalarının Render restart döngüsü oluşturma
 | 502 ağ/TLS/proxy | Upstream bağlantısı | Domain, TLS, outbound erişim |
 | 504 | Idle veya toplam deadline | Upstream yanıt süresi ve timeout ayarları |
 | Restart sonrası sohbet/kota sıfırlandı | Bellek içi çalışma durumu | Free planda beklenen davranış |
-| Restart sonrası refresh token eskiye döndü | Render env sync | `RENDER_API_KEY` ve `render_env_synced`/`render_env_sync_failed` loglarını doğrulayın |
+| Restart sonrası refresh token eskiye döndü | Render env sync | `RENDER_API_KEY` ve `render_env_synced`/`render_env_sync_failed` loglarını doğrulayın *(⚠️ bu sürümde env sync yok: restart'ta eskiye dönmek **beklenen** davranıştır; çare taze `UPSTREAM_CURL`)* |
 | İstek uzun süre bekliyor, sonra cevap geliyor | Free sleep/cold start | Servis uyanıyor; açılış ve token denetimi loglarını izleyin |
 | İkinci hesap birincinin cookie'sini kullanıyor | Eski davranış/regresyon | Hesap client/cookie testlerini çalıştırın |
 
@@ -224,6 +305,25 @@ bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamı
 
 ## 7. Free planda çalışma sınırları
 
+> ⚠️ **Bu sürümde (19 Kasım notu) bu listeden geçerli OLMAYAN maddeler:**
+>
+> * *"Refresh HTTP akışı uygulanmıştır…"* — bu sürümde token yenileyen bir arka
+>   plan işi **yok**; erişim token'ını hedef, biz istek attıkça `Set-Cookie` ile
+>   yeniler (`ROLLBACK §12.4`).
+> * *"`static` CAPTCHA token'ı kısa ömürlüdür; unattended kullanım için `browser`
+>   veya `external` gerekir"* — **ölçümle çürütüldü ve tersi doğru:** aynı statik
+>   token ~28 saat kabul edildi, `browser` ise bu hedefte 403 alıyor
+>   (`LESSONS §3`, `§15.3`).
+> * *"…ardından varsa yerel durum dosyası uzlaştırılır. Free planda asıl kalıcı
+>   katman Render env senkronizasyonudur"* — ikisi de **yok**.
+> * *"Token yenilemesi eski hesap client'larını…"* — token yenilemesi yok.
+> * *"`UPSTREAM_KEEPALIVE_INTERVAL_SECONDS=10800`…"* — örnek değer ölçülmedi;
+>   canlıda denenenler `600` ve `3600`. PR #56'da aralık, hesabın son başarılı
+>   gerçek isteğinden sayılır (`ASK_API.md §6`).
+> * *"`UPSTREAM_CX_SEND=true`"* — ayar yok.
+> * Sürüm damgası maddesindeki ayar adı düzeltildi: `DEPLOYMENT_ID_TTL_SECONDS`
+>   (başında `UPSTREAM_` yok).
+
 - Free Web Service hareketsizlikte uyur; harici bir HTTP isteği gelince uyanır.
   Cold start sırasında gecikme normaldir. İçeriden çalışan keepalive veya Render
   healthcheck'i always-on garantisi değildir. Telegram long polling de uyku
@@ -259,7 +359,7 @@ bağlantısı secret'lar olmadan bu geliştirme ortamında canlı doğrulanmamı
   `upstream_keepalive_stream_smoke_*` timestamp'li logları secret/prompt/cevap
   taşımaz.
 - Sürüm damgası (`x-deployment-id`, `x-arena-web-deployment`) `UPSTREAM_CURL`'den
-  donmuş taşınmaz: `UPSTREAM_DEPLOYMENT_ID_TTL_SECONDS` (vars. 1800) aralığıyla
+  donmuş taşınmaz: `DEPLOYMENT_ID_TTL_SECONDS` (vars. 1800) aralığıyla
   upstream'in ana sayfasından okunur ve 409 alınırsa istek bir kez taze damgayla
   tekrar edilir. Sayfa okunamazsa (bot koruması/ağ) donmuş değer kullanılır; yani
   kanarya isteği bozmaz. Durum `GET /health` → `upstream.deployment_stamp`
@@ -316,6 +416,10 @@ için kanıt değildir.
 ```
 
 ## 9. Token yenileme `apikey` hatası ve `/apikey` kurtarması
+
+> ⚠️ **Bu bölümün tamamı bu sürümde geçersizdir (19 Kasım notu).** Token
+> yenileme kodu, `/apikey`, `/cookie` ve `/yenile` geri dönüşle kalktı; buradaki
+> Telegram mesajları da gelmez. Kayıt olarak duruyor.
 
 Belirti zinciri (Telegram):
 

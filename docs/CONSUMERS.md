@@ -12,6 +12,30 @@ api_key  = "sk-…"                                    # 2
 > böylece kullanım proje bazında görülür ve bir proje iptal edildiğinde diğerleri
 > etkilenmez.
 
+> ## ⚠️ SÜRÜM NOTU (19 Kasım 2026)
+>
+> Bu rehber `77d4011` sürümü için yazıldı; canlıdaki kod bir geri dönüş
+> sürümüdür (`ROLLBACK_2026_11_16.md`). Bölüm bölüm:
+>
+> | Bölüm | Bu sürümde |
+> |---|---|
+> | §1 Hızlı başlangıç · §3 Hatalar · §4 Hız sınırları | ✅ |
+> | §2 Modeller | ⚠️ Yalnız **`max`**. `web` modeli ve `Kaynaklar:` bloğu **yok**; `model=web` isteği `model_not_found` alır |
+> | §5 İşletici tarafı | ❌ `ADMIN_API_KEYS`, `/v1/admin/keys`, `API_KEY_LABELS` **yok**. Aşağıya bak |
+> | §6 Bilinen sınırlar | ✅ |
+> | §7 `/v1/ask` · §8 İstek sırası | PR #56 (canlıda değil). §8'deki "tek sıra", ikinci hesap eklenince **hesap başınadır** (`TWO_ACCOUNTS.md §4`) |
+>
+> **⚠️ Güvenlik — §5'teki "önce `ADMIN_API_KEYS` ayır" adımı bu sürümde hiçbir
+> şeyi korumaz.** O ad okunmaz. Bu sürümde `API_KEYS`'teki **her** anahtar
+> `/v1/admin/*` uçlarını da açar (hesap sıfırlama, oturum temizleme, ayar özeti).
+> Yani bir tüketiciye `API_KEYS`'ten anahtar vermek ona yönetim yetkisi de
+> vermektir. Anahtar üretmek/iptal etmek için uç da yok: liste Render env'indeki
+> `API_KEYS`'tir ve değiştirmek bir **restart**'tır (oturum ölür).
+>
+> Yalnız soru soracak bir otomasyon için PR #56 ayrı bir liste getirir:
+> **`ASK_API_KEYS`** — yalnız `/v1/ask`'te geçerlidir, başka hiçbir ucu açmaz
+> (`ASK_API.md §8`).
+
 ---
 
 ## 1. Hızlı başlangıç
@@ -241,12 +265,59 @@ Davranış notları:
 
 ---
 
+## 7. Otomatik sistemler için: `/v1/ask` (PR #56 — henüz canlıda değil)
+
+Projen bir **alarm / otomasyon sistemi** ise — yani bir metin gönderip cevabını
+alacak, alamazsa yedeğine geçecekse — OpenAI uçları yerine `/v1/ask` kullan:
+
+```
+POST /v1/ask   {"prompt": "…"}
+→ data: {"status":"wait"}            (30 sn sonra, sonra 15 sn'de bir)
+→ data: {"status":"done","text":"…"} (cevabın tamamı, tek parça)
+→ data: {"status":"problem"}         (cevap alınamadı: yedeğe geç)
+```
+
+Hata kodu yorumlamak, tekrar deneme kurmak, zaman aşımı hesaplamak gerekmez.
+Sözleşmenin tamamı, karşı sisteme verilecek hazır talimat ve örnek istemci:
+**[`ASK_API.md`](ASK_API.md)**.
+
+## 8. İstek sırası (PR #56 ile gelir — henüz canlıda değil)
+
+O sürümden itibaren **bütün** tamamlama istekleri (bu rehberdeki OpenAI uçları
+dahil) tek sıradan geçer:
+
+* Aynı anda **bir** istek işlenir; diğerleri geliş sırasıyla bekler.
+* Ardışık iki istek arasına rastgele **5–10 sn** girer.
+* Sırada en çok 20 istek bekler; fazlası hemen şu cevabı alır:
+
+| Durum | `type` | `code` | Ne yapmalısın |
+|---|---|---|---|
+| `429` | `rate_limit_error` | `queue_full` | `Retry-After` (30 sn) kadar bekle, sonra tekrar dene |
+
+Pratik sonuçlar:
+
+1. **İstemci zaman aşımını uzun tut.** Önünde istek varsa cevabın, kendi işlem
+   süresine ek olarak öndekilerin süresi kadar gecikir. §3'teki "≥ 120 sn"
+   önerisi tek istek içindir; paralel istek gönderiyorsan daha uzun tut.
+2. **Paralel istek hız kazandırmaz.** On isteği aynı anda göndermek ile sırayla
+   göndermek aynı sürede biter.
+3. **Bağlantıyı kapatırsan:** sırada bekleyen isteğin sıradan çıkar (upstream'e
+   hiç gitmez). **Akışlı** istek işleniyorsa durdurulur. **Akışsız** istek
+   upstream'e gönderilmişse durdurulmaz: sonuna kadar sürer, cevabı atılır
+   (canlı sürümdeki davranış; gönderme tarafı değişmesin diye korundu —
+   `LESSONS_2026_11_14.md §20`). Yani akışsız istekte zaman aşımını kısa tutup
+   yeniden denemek, öndeki isteğin bitmesini beklemekten hızlı değildir.
+
+---
+
 ## İlgili dokümanlar
 
 | Doküman | Ne için |
 |---|---|
 | [`../README.md`](../README.md) | Genel bakış, mod tabloları, sık yapılan hatalar |
 | [`ENV_FULL.md`](ENV_FULL.md) | `API_KEYS`, `API_KEY_LABELS`, hız sınırı ayarları |
+| [`ASK_API.md`](ASK_API.md) | `/v1/ask`: otomatik sistemler için bekle / bitti / problem ucu, istek sırası |
+| [`TWO_ACCOUNTS.md`](TWO_ACCOUNTS.md) | İkinci hesap (`UPSTREAM_CURL_2`): isteklerin hesaplara bölünmesi; tüketici için değişen bir şey yok |
 | [`TROUBLESHOOTING.md`](TROUBLESHOOTING.md) | Hata → çözüm tablosu |
 | [`ARCHITECTURE.md`](ARCHITECTURE.md) | İstek akışı ve modül yapısı |
 | [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) | Ölçülmüş gerçekler (çerez ömrü, captcha, `mode`) |

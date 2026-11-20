@@ -49,26 +49,47 @@ _HINTS: dict[str, FailureHint] = {
     ),
     "recaptcha_unavailable": FailureHint(
         title="reCAPTCHA token'ı üretilemedi veya yenilenemedi.",
+        # `static` sağlayıcıda (canlı kurulum) bu hata beklenmez: token üretilmez,
+        # cURL'den gelen sabit dize gönderilir ve saatlerce geçerlidir
+        # (docs/LESSONS §2, §15.3). Eski metin "static ise token ~2 dakikada ölür:
+        # yenileyin" diyordu; ölçümle çürütüldü.
         action=(
-            "RECAPTCHA_PROVIDER=browser ise Chromium/Google erişimini, "
-            "RECAPTCHA_SITE_KEY/ACTION/VERSION değerlerini kontrol edin. "
-            "static ise token ~2 dakikada ölür: yenileyin."
+            "Bu hata yalnız token üreten sağlayıcılarda (browser/external) çıkar: "
+            "Chromium/Google erişimini ve RECAPTCHA_SITE_KEY/ACTION/VERSION "
+            "değerlerini kontrol edin. Bu hedefte kalıcı ayar RECAPTCHA_PROVIDER=static'tir "
+            "(sunucuda üretilen token reddediliyor)."
         ),
         severity="critical",
     ),
     "recaptcha_rejected": FailureHint(
         title="Upstream reCAPTCHA token'ını reddetti.",
+        # 17 Kasım 2026 ölçümü (docs/LESSONS §15): aynı statik token saatlerce
+        # çalıştıktan sonra reddedildi ve HİÇBİR ŞEYE DOKUNULMADAN düzeldi. Eski
+        # metin "token'ı yenileyin / browser sağlayıcıya geçin" diyordu; ikisi de
+        # faydasız, taze cURL için tarayıcıya girmek ise çalışan oturumu öldürür.
         action=(
-            "Token üretimini yenileyin (/v1/admin/recaptcha/invalidate); "
-            "browser/external sağlayıcıya geçmek kalıcı çözümdür."
+            "Ölçümde geçiciydi (10-15 dakikada kendiliğinden geçti): 2 saate kadar "
+            "hiçbir şeye dokunmadan bekleyin. "
+            "Taze cURL almak için tarayıcıya giriş yapmayın (çalışan oturumu "
+            "öldürür). 2 saati aşarsa Google ile giriş yapılmış tarayıcıdan taze "
+            "cURL alıp UPSTREAM_CURL'ü güncelleyin."
         ),
-        severity="critical",
     ),
     "upstream_unauthorized": FailureHint(
-        title="Upstream oturum kimliğini reddetti (HTTP 401).",
+        title="Upstream oturum kimliğini reddetti (HTTP 401): oturum düştü.",
+        # İki ölçüm birlikte (docs/LESSONS §19.2): süren 401 dönmedi (16 Kasım: art
+        # arda 6 probe, ~50 dk); tek bir 401 dönemi ise dokunulmadan geçti (14-15
+        # Kasım; süresi kayıtlı değil). Taze cURL tarayıcı girişi ister ve giriş
+        # yaşayan oturumu kesin bitirir: bu yüzden önce doğrulama, sonra müdahale.
         action=(
-            "Cookie/token süresi dolmuş. Tarayıcıdan taze cURL alıp UPSTREAM_CURL'ü "
-            "güncelleyin; /v1/admin/auth?slot=N ile hangi hesabın düştüğünü görün."
+            "Süren 401 kendiliğinden dönmez; yine de müdahaleden önce bir kez "
+            'doğrulayın: bir sonraki probe\'dan sonra "yeniden çalışıyor" bildirimi '
+            "gelmezse oturum ölmüştür (beklemeden doğrulamak için tek hesapta bota düz "
+            "bir mesaj yazın; cevap gelirse geçiciydi). Ölmüşse Google ile giriş "
+            "yapılmış tarayıcıdan taze cURL alıp UPSTREAM_CURL'ü güncelleyin ve yeniden "
+            "deploy edin. Buna karar vermeden o hesapla tarayıcıdan giriş yapmayın: "
+            "giriş, yaşayan oturumu bitirir. /v1/admin/auth?slot=N token'ın okunup "
+            "okunmadığını gösterir."
         ),
         severity="critical",
     ),
@@ -96,12 +117,50 @@ _HINTS: dict[str, FailureHint] = {
         ),
     ),
     "upstream_timeout": FailureHint(
-        title="Upstream zaman aşımına uğradı.",
+        title="Upstream süresinde cevap vermedi (zaman aşımı).",
         action=(
-            "Akış kurulduktan sonra sessizlik sürdüyse STREAM_IDLE_TIMEOUT, "
-            "toplam süre aşıldıysa TOTAL_REQUEST_TIMEOUT değerini gözden geçirin."
+            "Ölçümde geçiciydi: 2 saate kadar bekleyin. Live tail'de aynı dakikadaki "
+            "upstream_http_error / upstream_retry satırlarına bakın (ör. 429 "
+            "sonrası tekrar deneme bekleyişi). Sürekli olursa STREAM_IDLE_TIMEOUT, "
+            "TOTAL_REQUEST_TIMEOUT ve ASK_REQUEST_TIMEOUT_SECONDS değerlerini "
+            "gözden geçirin."
         ),
     ),
+    "upstream_rate_limited": FailureHint(
+        title="Upstream isteği geçici olarak yavaşlattı (HTTP 429, kota işareti yok).",
+        action=(
+            "Bekleyin; kendiliğinden açılır. Gövde bir kota mesajı taşıyorsa "
+            "(live tail: upstream_http_error body=...) o ifadeyi "
+            "UPSTREAM_LIMIT_MARKERS listesine ekleyin ki boşuna tekrar denenmesin."
+        ),
+    ),
+    "empty_response": FailureHint(
+        title="Upstream boş cevap döndürdü.",
+        action=(
+            "Tek seferlikse yok sayın. Tekrarlıyorsa akış biçimi değişmiş olabilir: "
+            "live tail'de completion_completed content_chars=0 satırına bakın."
+        ),
+    ),
+    "queue_full": FailureHint(
+        title="İstek sırası dolu: yeni istek beklemeye alınmadı.",
+        action=(
+            "Aynı anda çok istek geldi ya da öndeki istekler yavaş. Sık oluyorsa "
+            "REQUEST_QUEUE_MAX_WAITING değerini artırın veya istekler arası "
+            "beklemeyi (REQUEST_GAP_MIN/MAX_SECONDS) kısaltın."
+        ),
+    ),
+    "queue_timeout": FailureHint(
+        title="İstek sırada izin verilen süreden uzun bekledi.",
+        action=(
+            "Öndeki istekler yavaş ilerliyor. Sık oluyorsa ASK_MAX_QUEUE_WAIT_SECONDS "
+            "değerini artırın ya da istekler arası beklemeyi kısaltın; live "
+            "tail'de request_queued / request_dequeued satırlarına bakın."
+        ),
+    ),
+    # Yalnız BAĞLANTI kurulamadığında üretilir. Cevap gecikmesi (ReadTimeout)
+    # artık `upstream_timeout` olarak bildirilir: 18 Kasım'da 429 tekrar
+    # denemeleri yüzünden geciken probe bu etiketle "PORT doğru mu" diye
+    # bildirilmiş ve yanlış yöne bakılmıştı (docs/LESSONS §16).
     "wrapper_unreachable": FailureHint(
         title="Servis kendi API'sine ulaşamadı (loopback bağlantısı kurulamadı).",
         action=(
@@ -132,6 +191,13 @@ _HINTS: dict[str, FailureHint] = {
         action=(
             "RATE_LIMIT_RPM / RATE_LIMIT_BURST değerlerini artırın ya da istek "
             "sıklığını düşürün."
+        ),
+    ),
+    "invalid_request": FailureHint(
+        title="İstek gövdesi geçersiz (400).",
+        action=(
+            "Gövdeyi uç noktanın beklediği biçime getirin; neyin eksik ya da hatalı "
+            "olduğu sunucunun cevabında yazar."
         ),
     ),
     "model_not_found": FailureHint(

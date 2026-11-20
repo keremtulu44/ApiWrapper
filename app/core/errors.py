@@ -134,6 +134,35 @@ class RecaptchaError(APIWrapperError):
     code = "recaptcha_unavailable"
 
 
+class QueueFullError(RateLimitError):
+    """İstek sırası dolu: yeni istek beklemeye alınmadan reddedildi.
+
+    Upstream arızası değildir; wrapper'ın kendi yük sınırıdır.
+    """
+
+    code = "queue_full"
+
+
+class QueueTimeoutError(APIWrapperError):
+    """İstek, sırası gelmeden izin verilen bekleme süresini doldurdu."""
+
+    status_code = 503
+    err_type = "overloaded_error"
+    code = "queue_timeout"
+
+
+class ClientClosedRequestError(APIWrapperError):
+    """İstemci cevabı beklemeden bağlantıyı kapattı; iş iptal edildi.
+
+    Cevap kimseye ulaşmaz; durum kodu yalnız erişim logunda görünür (nginx'in
+    499 "client closed request" geleneği).
+    """
+
+    status_code = 499
+    err_type = "client_error"
+    code = "client_closed_request"
+
+
 def register_exception_handlers(app: FastAPI) -> None:
     """FastAPI uygulamasına tüm hata yakalayıcıları bağlar."""
 

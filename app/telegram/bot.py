@@ -23,6 +23,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.diagnostics import format_failure
 from app.core.logging import configure_logging, get_logger
+from app.services.request_queue import SOURCE_HEADER
 
 logger = get_logger(__name__)
 
@@ -328,7 +329,11 @@ async def run_from_settings(settings: TelegramSettings) -> None:
     async with (
         httpx.AsyncClient(
             base_url=settings.wrapper_base_url,
-            headers={"Authorization": f"Bearer {settings.wrapper_api_key.strip()}"},
+            headers={
+                "Authorization": f"Bearer {settings.wrapper_api_key.strip()}",
+                # İstek sırasında kaynağın loglarda görünmesi için (yetki vermez).
+                SOURCE_HEADER: "telegram",
+            },
             timeout=timeout,
         ) as wrapper,
         httpx.AsyncClient(timeout=timeout) as telegram,

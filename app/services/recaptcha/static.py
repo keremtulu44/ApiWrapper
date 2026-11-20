@@ -10,9 +10,11 @@ logger = get_logger(__name__)
 
 
 class StaticRecaptchaProvider(RecaptchaProvider):
-    """`.env` içindeki `RECAPTCHA_STATIC_TOKEN` değerini döndürür.
+    """`RECAPTCHA_STATIC_TOKEN` değerini döndürür (`UPSTREAM_CURL` gövdesinden okunur).
 
-    Token kısa ömürlüdür (~2 dk); reddedilirse anlamlı bir hata üretilir.
+    Token sabit bir dizedir ve bu hedefte **saatlerce** kabul edilir; "token
+    ~2 dakikada ölür" bilgisi ölçümle çürütüldü (docs/LESSONS §2, §15.3). Hedef
+    onu reddederse neden token değildir: red geçicidir, yapılacak şey beklemektir.
     """
 
     name = "static"
@@ -28,8 +30,9 @@ class StaticRecaptchaProvider(RecaptchaProvider):
         token = self.settings.recaptcha_static_token.strip()
         if not token:
             raise RecaptchaError(
-                "RECAPTCHA_STATIC_TOKEN is not configured. Set it in the environment "
-                "or switch RECAPTCHA_PROVIDER to 'noop'/'browser'/'external'.",
+                "RECAPTCHA_STATIC_TOKEN is not configured. It is read from the body of "
+                "the captured browser request: update UPSTREAM_CURL (or set the variable). "
+                "Use RECAPTCHA_PROVIDER=noop only if the upstream does not check captcha.",
                 code="recaptcha_not_configured",
             )
         return token

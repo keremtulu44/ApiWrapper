@@ -11,6 +11,21 @@ yorumlayıp yalnızca gerçekten haber değeri olan anlarda Telegram'a yazar:
 
 Metinler `app/core/diagnostics.py` üzerinden üretilir: aynı kod her yerde aynı
 cümleyle anlatılır, hiçbir gizli değer (cookie/token) mesaja girmez.
+
+İki kaynak aynı arıza kaydını paylaşır:
+
+* **probe** — keepalive'ın sentetik isteği;
+* **ask** — otomatik sistemin `/v1/ask` isteği. Karşı sisteme yalnız "problem"
+  denir; **ayrıntı buradan operatöre gider**. Aynı arıza sürerken gelen her
+  istek ayrı mesaj üretmez, sayılır; düzelme mesajı kaç isteğin "problem"
+  aldığını (yani yedeğe gittiğini) söyler.
+
+Upstream arızası olmayan yerel olaylar (sıra dolu, sırada zaman aşımı) arıza
+kaydı açmaz; `notify_event` ile tür başına seyreltilmiş tek mesaj olarak gider.
+
+Birden çok hesap varken her hesabın **kendi** arıza kaydı vardır (`scope`): bir
+hesabın düşmesi ve düzelmesi öbürününkine karışmaz, mesajlar hangi hesaptan söz
+ettiğini `Hesap:` satırıyla söyler. Tek hesapta `scope` boştur ve metinler aynıdır.
 """
 
 from __future__ import annotations
@@ -32,6 +47,11 @@ _TELEGRAM_API = "https://api.telegram.org"
 #: Telegram mesajı için "insan" okunur zaman.
 def _stamp() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def human_duration(seconds: float) -> str:
+    """Süreyi Telegram mesajında okunacak biçimde yazar (``45 sn``, ``12 dk``)."""
+    return _human_duration(seconds)
 
 
 def _human_duration(seconds: float) -> str:
@@ -58,6 +78,15 @@ class ProbeResult:
     code: str = ""
     duration_ms: float = 0.0
     checked_at: str = field(default_factory=_stamp)
+    #: Sonucun kaynağı: ``"probe"`` (keepalive) ya da ``"ask"`` (dış sistemin isteği).
+    source: str = "probe"
+    #: Arıza mesajına eklenecek satırlar (upstream'in cevabı, istek kimliği, süreler).
+    details: tuple[str, ...] = ()
+    #: Çok hesaplı kurulumda sonucun ait olduğu hesap; tek hesapta boş.
+    scope: str = ""
+    #: True ise istek başka bir hesaba taşındı: bu hesap cevap veremedi ama karşı
+    #: sisteme (bu yüzden) "problem" dönmedi. "Problem alan istek" sayılmaz.
+    rerouted: bool = False
 
     @property
     def key(self) -> str:
@@ -78,14 +107,96 @@ class _AlertState:
     last_sent_at: float = 0.0
     failures: int = 0
     total_alerts: int = 0
+    #: Bu arıza boyunca "problem" cevabı alan `/v1/ask` isteği sayısı.
+    ask_problems: int = 0
+
+
+def _kind_line(severity: str) -> str:
+    """Operatöre "bekle mi, müdahale mi" sorusunun tek satırlık cevabı."""
+    if severity == "critical":
+        return "Tür: KALICI — elle müdahale gerekir."
+    return "Tür: GEÇİCİ sayılır — önce bekleyin, dokunmayın."
+
+
+def _http_label(status_code: int | None) -> str:
+    return f"HTTP {status_code if status_code is not None else '-'}"
+
+
+def format_event(
+    code: str,
+    status_code: int | None = None,
+    details: tuple[str, ...] = (),
+) -> str:
+    """Arıza kaydı açmayan yerel bir olayın (örn. sıra dolu) bildirim metni."""
+    hint = explain_failure(status_code, code)
+    lines = [
+        '⚠️ ApiWrapper — dış istek cevaplanamadı; karşı sisteme "problem" döndü.',
+        f"Ne oldu: {hint.title} [{code}]",
+        f"Yapılacak: {hint.action}",
+        *details,
+        _stamp(),
+    ]
+    return "\n".join(lines)
+
+
+#: Reddedilen dış istekte operatöre söylenecek adım (HTTP durumuna göre).
+_REJECTED_ACTIONS: dict[int, str] = {
+    401: (
+        "Karşı sistemdeki API anahtarını kontrol edin: 'Authorization: Bearer <anahtar>' "
+        "başlığı servisteki ASK_API_KEYS (ya da API_KEYS) değerlerinden biriyle birebir "
+        "aynı olmalı."
+    ),
+    404: (
+        "Karşı sistemin gönderdiği 'model' alanını kaldırın ya da GET /v1/models "
+        "listesindeki bir adla değiştirin. Karşı sistem model göndermiyorsa "
+        "servisteki ASK_DEFAULT_MODEL değeri yanlıştır."
+    ),
+}
+_REJECTED_DEFAULT_ACTION = (
+    "Karşı sistemin gönderdiği gövdeyi kontrol edin: {\"prompt\": \"...\"} biçiminde, "
+    "boş olmayan bir metin olmalı (çok uzun metin MAX_PROMPT_CHARS sınırına takılır)."
+)
+
+
+def format_rejected(
+    code: str,
+    status_code: int,
+    detail: str,
+    details: tuple[str, ...] = (),
+) -> str:
+    """Karşı sistemin **kendi hatası** yüzünden reddedilen dış isteğin bildirimi.
+
+    Karşı sistem HTTP 4xx'i de "problem" sayıp yedeğine geçer. Yanlış anahtar ya
+    da yanlış model adı gibi bir kurulum hatası bildirilmezse her soru sessizce
+    yedeğe gider ve asıl sistemin hiç kullanılmadığı fark edilmez.
+    """
+    hint = explain_failure(status_code, code)
+    action = _REJECTED_ACTIONS.get(status_code, _REJECTED_DEFAULT_ACTION)
+    lines = [
+        "⚠️ ApiWrapper — dış istek REDDEDİLDİ (isteğin kendisi hatalı); karşı sistem "
+        "bunu \"problem\" sayıp yedeğine geçer.",
+        f"Ne oldu: {hint.title} [{code}]",
+        "Tür: KURULUM HATASI — düzeltilene dek aynı istekler hep yedeğe gider. "
+        "Upstream'de sorun yok.",
+        f"Yapılacak: {action}",
+        f"Sunucunun cevabı: {_http_label(status_code)} · {detail}" if detail else "",
+        *details,
+        _stamp(),
+    ]
+    return "\n".join(line for line in lines if line)
 
 
 class AlertPolicy:
     """Hangi durumda mesaj üretileceğine karar verir (yan etkisiz)."""
 
-    def __init__(self, repeat_seconds: float = 21600.0) -> None:
+    def __init__(self, repeat_seconds: float = 21600.0, scope: str = "") -> None:
         self.repeat_seconds = max(0.0, float(repeat_seconds))
+        #: Bu kaydın ait olduğu hesap (tek hesapta boş).
+        self.scope = scope
         self.state = _AlertState()
+
+    def _account_line(self) -> tuple[str, ...]:
+        return (f"Hesap: {self.scope}",) if self.scope else ()
 
     def evaluate(
         self, result: ProbeResult, now: float | None = None
@@ -99,51 +210,98 @@ class AlertPolicy:
                 return None
             previous = state.active_key
             elapsed = current - state.active_since
+            affected = state.ask_problems
             state.active_key = None
             state.failures = 0
             state.active_since = 0.0
+            state.ask_problems = 0
             hint = explain_failure(result.status_code, previous)
-            return (
-                "✅ ApiWrapper — upstream yeniden çalışıyor.\n"
-                f"Önceki arıza: {previous} ({hint.title})\n"
-                f"Süre: {_human_duration(elapsed)} · {result.checked_at} · "
-                f"HTTP {result.status_code if result.status_code is not None else '-'}"
+            headline = (
+                "✅ ApiWrapper — hesap yeniden çalışıyor ve yeniden iş alıyor."
+                if self.scope
+                else "✅ ApiWrapper — upstream yeniden çalışıyor."
             )
+            text = "\n".join(
+                (
+                    headline,
+                    *self._account_line(),
+                    f"Önceki arıza: {previous} ({hint.title})",
+                    f"Süre: {_human_duration(elapsed)} · {result.checked_at} · "
+                    f"{_http_label(result.status_code)}",
+                )
+            )
+            if affected:
+                text += f'\nArıza boyunca "problem" cevabı alan dış istek: {affected}'
+            return text
 
         key = result.key
         hint = explain_failure(result.status_code, result.code)
+        from_ask = result.source == "ask"
+        # Başka hesaba taşınan istek karşı sisteme "problem" olarak dönmedi.
+        counts_as_problem = from_ask and not result.rerouted
 
         if state.active_key != key:
             # Yeni arıza ya da arıza türü değişti: her zaman bildir.
             if state.active_key is None:
                 state.active_since = current
                 state.failures = 0
+                state.ask_problems = 0
             state.active_key = key
             state.failures += 1
+            if counts_as_problem:
+                state.ask_problems += 1
             state.last_sent_at = current
             state.total_alerts += 1
             severity = "🔴" if hint.severity == "critical" else "⚠️"
-            return (
-                f"{severity} ApiWrapper — upstream isteği başarısız.\n"
-                f"Ne oldu: {hint.title} [{key}]\n"
-                f"Yapılacak: {hint.action}\n"
-                f"HTTP {result.status_code if result.status_code is not None else '-'} · "
-                f"{result.checked_at} · {_human_duration(result.duration_ms / 1000)}"
+            if result.rerouted:
+                headline = "bir hesap cevap veremedi; istek diğer hesaba taşındı."
+            elif from_ask:
+                headline = 'dış istek cevaplanamadı; karşı sisteme "problem" döndü.'
+            else:
+                headline = "upstream isteği başarısız."
+            # Dış istekte wrapper'ın iç durum kodu (örn. 401 için 502) yazılmaz:
+            # karşı sistem HTTP 200 + "problem" görmüştür ve hemen üstteki satır
+            # upstream'in kendi cevabını zaten taşır; iki farklı kod kafa karıştırır.
+            footer = (
+                result.checked_at
+                if from_ask or result.rerouted
+                else (
+                    f"{_http_label(result.status_code)} · {result.checked_at} · "
+                    f"{_human_duration(result.duration_ms / 1000)}"
+                )
             )
+            lines = [
+                f"{severity} ApiWrapper — {headline}",
+                *self._account_line(),
+                f"Ne oldu: {hint.title} [{key}]",
+                _kind_line(hint.severity),
+                f"Yapılacak: {hint.action}",
+                *result.details,
+                footer,
+            ]
+            return "\n".join(lines)
 
         # Aynı arıza sürüyor: yalnızca hatırlatma aralığı dolduysa yaz.
         state.failures += 1
+        if counts_as_problem:
+            state.ask_problems += 1
         if self.repeat_seconds <= 0 or current - state.last_sent_at >= self.repeat_seconds:
             state.last_sent_at = current
             state.total_alerts += 1
-            return (
-                "⏳ ApiWrapper — arıza sürüyor.\n"
-                f"Ne oldu: {hint.title} [{key}]\n"
-                f"Yapılacak: {hint.action}\n"
-                f"Üst üste {state.failures}. başarısız deneme · {result.checked_at} · "
-                f"başlangıçtan {_human_duration(current - state.active_since)} "
-                "önce başladı"
+            text = "\n".join(
+                (
+                    "⏳ ApiWrapper — arıza sürüyor.",
+                    *self._account_line(),
+                    f"Ne oldu: {hint.title} [{key}]",
+                    f"Yapılacak: {hint.action}",
+                    f"Üst üste {state.failures}. başarısız deneme · {result.checked_at} · "
+                    f"başlangıçtan {_human_duration(current - state.active_since)} "
+                    "önce başladı",
+                )
             )
+            if state.ask_problems:
+                text += f'\nŞimdiye dek "problem" cevabı alan dış istek: {state.ask_problems}'
+            return text
         return None
 
 
@@ -161,29 +319,77 @@ class TelegramAlerter:
         self.bot_token = bot_token.strip()
         self.chat_id = chat_id
         self.timeout = timeout
+        #: Tek hesaplı kurulumun (ve hesaba bağlı olmayan sonuçların) arıza kaydı.
         self.policy = AlertPolicy(repeat_seconds)
+        #: Hesap adı → o hesabın arıza kaydı ("" = `self.policy`).
+        self._policies: dict[str, AlertPolicy] = {"": self.policy}
+        #: Yerel olay türü → son bildirim anı / o günden beri bastırılan olay sayısı.
+        self._event_sent_at: dict[str, float] = {}
+        self._event_suppressed: dict[str, int] = {}
 
     @property
     def enabled(self) -> bool:
         return bool(self.bot_token) and self.chat_id is not None
 
+    def policy_for(self, scope: str = "") -> AlertPolicy:
+        """Hesabın arıza kaydı (ilk kullanımda açılır); boş ad ortak kayıttır."""
+        policy = self._policies.get(scope)
+        if policy is None:
+            policy = AlertPolicy(self.policy.repeat_seconds, scope=scope)
+            self._policies[scope] = policy
+        return policy
+
+    @property
+    def scopes(self) -> dict[str, AlertPolicy]:
+        """Açılmış bütün arıza kayıtları (hesap adı → kayıt)."""
+        return dict(self._policies)
+
     def evaluate(self, result: ProbeResult, now: float | None = None) -> str | None:
-        return self.policy.evaluate(result, now)
+        return self.policy_for(result.scope).evaluate(result, now)
 
     async def notify(self, result: ProbeResult) -> str | None:
         """Gerekliyse mesajı gönderir; gönderilen metni döndürür."""
-        text = self.evaluate(result)
+        policy = self.policy_for(result.scope)
+        text = policy.evaluate(result)
         if text is None:
             logger.debug(
                 "telegram_alert_suppressed",
                 code=result.key,
-                failures=self.policy.state.failures,
+                account=result.scope or None,
+                failures=policy.state.failures,
             )
             return None
-        await self.send(text)
+        await self.send(text, label=policy.state.active_key or "recovered")
         return text
 
-    async def send(self, text: str) -> bool:
+    async def notify_event(
+        self,
+        code: str,
+        text: str,
+        *,
+        min_interval: float = 3600.0,
+        now: float | None = None,
+    ) -> str | None:
+        """Arıza kaydı açmayan yerel bir olayı bildirir (tür başına seyreltilmiş).
+
+        Sıra dolması gibi olaylar doğası gereği kesiklidir; her biri için "arıza /
+        düzeldi" çifti üretmek spam olurdu. Aynı tür ``min_interval`` içinde bir
+        kez yazılır, aradakiler sayılıp bir sonraki mesaja eklenir.
+        """
+        current = time.monotonic() if now is None else now
+        last = self._event_sent_at.get(code)
+        if last is not None and current - last < min_interval:
+            self._event_suppressed[code] = self._event_suppressed.get(code, 0) + 1
+            logger.debug("telegram_event_suppressed", code=code)
+            return None
+        self._event_sent_at[code] = current
+        suppressed = self._event_suppressed.pop(code, 0)
+        if suppressed:
+            text += f"\n(Önceki bildirimden beri aynı türden {suppressed} olay daha oldu.)"
+        await self.send(text, label=code)
+        return text
+
+    async def send(self, text: str, *, label: str | None = None) -> bool:
         url = f"{_TELEGRAM_API}/bot{self.bot_token}/sendMessage"
         try:
             async with httpx.AsyncClient(timeout=self.timeout, trust_env=False) as client:
@@ -204,8 +410,8 @@ class TelegramAlerter:
             return False
         logger.info(
             "telegram_alert_sent",
-            code=self.policy.state.active_key or "recovered",
-            alerts=self.policy.state.total_alerts,
+            code=label or self.policy.state.active_key or "recovered",
+            alerts=sum(policy.state.total_alerts for policy in self._policies.values()),
         )
         return True
 

@@ -3,6 +3,26 @@
 Bu belge "mobildeyim, DevTools yok, nasıl taze oturum alırım" sorusunun kısa ve
 dürüst cevabıdır.
 
+> ## ⚠️ SÜRÜM NOTU (19 Kasım 2026) — bu sürümde telefondan oturum tazelenemez
+>
+> Aşağıdaki özet tablosunun **bütün komutları** (`/yenile`, `/cookie`, `/curl`,
+> `/tani`, `/capture`, `?dry_run=true`) ve §2 ("Servis tarafı") `77d4011`
+> sürümüne aittir; 16/17 Kasım geri dönüşüyle kalktılar. Bu sürümde çalışan
+> servise çerez ya da cURL **yüklenemez**.
+>
+> **Bu sürümde tek yol:** Render → Environment → `UPSTREAM_CURL` → kaydet ⇒
+> yeniden deploy (bir restart'tır). Render panosu telefon tarayıcısından da
+> açılır; eksik olan şey cURL'ün kendisidir.
+>
+> **"Yalnız çerez yeter" (§3) bu sürümde denenmedi.** Canlı kurulum
+> `RECAPTCHA_PROVIDER=static` ile çalışır: captcha token'ı cURL'ün **gövdesinden**
+> okunur, çerez satırında bulunmaz. Denenmiş tek yol **tam cURL**'dür.
+>
+> cURL alırken üç kural: **yalnız Google ile** giriş yapılmış oturumdan al ·
+> aldıktan sonra **sekmeyi kapat, çıkış yapma** · o hesapla tarayıcıdan bir
+> daha girme ([`LESSONS_2026_11_14.md §19.1`](LESSONS_2026_11_14.md)). §1, §3 ve §4'teki "nasıl elde edilir / hangi alan
+> nereye" bilgisi kayıt olarak geçerlidir.
+
 ## 0. Özet
 
 | Durum | Yol | Komut |

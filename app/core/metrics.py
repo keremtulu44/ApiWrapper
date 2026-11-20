@@ -154,3 +154,23 @@ metrics.describe(
     "gauge",
     "Hesap dinlenmede mi (1) değil mi (0).",
 )
+metrics.describe(
+    "apiwrapper_request_queue_waiting",
+    "gauge",
+    "İstek sırasında bekleyen istek sayısı.",
+)
+metrics.describe(
+    "apiwrapper_request_queue_wait_seconds",
+    "histogram",
+    "Bir isteğin sırada (istekler arası bekleme dahil) geçirdiği süre.",
+)
+metrics.describe(
+    "apiwrapper_request_queue_rejected_total",
+    "counter",
+    "Sıranın geri çevirdiği istekler (reason=full|timeout|stale).",
+)
+metrics.describe(
+    "apiwrapper_ask_total",
+    "counter",
+    "/v1/ask sonuçları (status=done|problem|abandoned; problemde code etiketi).",
+)

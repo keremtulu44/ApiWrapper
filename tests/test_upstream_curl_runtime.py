@@ -1,7 +1,8 @@
-"""Render secret ``UPSTREAM_CURL`` için runtime regresyonları."""
+"""Render secret ``UPSTREAM_CURL`` (ve ``UPSTREAM_CURL_2..4``) için runtime regresyonları."""
 
 from __future__ import annotations
 
+import base64
 import json
 
 import pytest
@@ -24,6 +25,11 @@ def _curl(
     include_mode: bool = True,
     include_referer: bool = True,
     include_captcha: bool = True,
+    user_agent: str = "RuntimeTest/1.0",
+    language: str = "tr-TR,tr;q=0.9",
+    referer: str = "https://upstream.test/text/direct",
+    captcha: str = "short-lived-captcha-token",
+    mode: str = "direct-battle",
 ) -> str:
     headers = []
     if cookie is not None:
@@ -32,22 +38,22 @@ def _curl(
         headers.append(f"-H 'authorization: {authorization}'")
     headers.extend(
         [
-            "-H 'user-agent: RuntimeTest/1.0'",
-            "-H 'accept-language: tr-TR,tr;q=0.9'",
+            f"-H 'user-agent: {user_agent}'",
+            f"-H 'accept-language: {language}'",
             "-H 'dnt: 1'",
         ]
     )
     if include_referer:
-        headers.append("-H 'referer: https://upstream.test/text/direct'")
+        headers.append(f"-H 'referer: {referer}'")
     body = {
         "id": "chat-from-curl",
         "modelAId": MODEL_ID,
         "userMessage": "selam",
     }
     if include_mode:
-        body["mode"] = "direct-battle"
+        body["mode"] = mode
     if include_captcha:
-        body["recaptchaV3Token"] = "short-lived-captcha-token"
+        body["recaptchaV3Token"] = captcha
     return (
         f"curl '{url}' \\\n  "
         + " \\\n  ".join(headers)
@@ -142,6 +148,63 @@ def test_missing_optional_curl_fields_do_not_reuse_old_custom_values():
     assert updated.recaptcha_static_token == ""
 
 
+@pytest.mark.parametrize(
+    ("curl_kwargs", "env_mode", "expected_mode"),
+    [
+        # cURL'de mode var, env boş: cURL'ünki kullanılır.
+        ({}, "", "direct-battle"),
+        # cURL'de mode YOK, env'de var: env değeri korumaz, alan boşa sıfırlanır.
+        ({"include_mode": False}, "direct-battle", ""),
+        # İkisi de var ve farklı: cURL kazanır.
+        ({"mode": "direct"}, "direct-battle", "direct"),
+    ],
+)
+def test_env_mode_is_not_a_fallback_while_upstream_curl_is_set(
+    curl_kwargs, env_mode, expected_mode
+):
+    """Belgelerdeki "`UPSTREAM_MODE`'u env'e gir, 400'e karşı sigortadır" kuralı yanlıştı.
+
+    `UPSTREAM_CURL` doluyken env'deki `UPSTREAM_MODE` hiç okunmaz: değer cURL'ün
+    gövdesinden gelir, gövdede yoksa alan boşa sıfırlanır (ve hedef `mode`'u zorunlu
+    tuttuğu için istekler 400 alır). Koruma, cURL'ün tam `create-evaluation`
+    isteği olmasıdır. Bu davranış değişirse `docs/ROLLBACK_2026_11_16.md` §6 ve
+    `docs/LESSONS_2026_11_14.md` §19.1/10 ile §19.4/23 de güncellenmelidir.
+    """
+    settings = make_settings(
+        upstream_curl=_curl(**curl_kwargs),
+        upstream_mode=env_mode,
+        recaptcha_provider="static",
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.upstream_mode == expected_mode
+
+
+def test_env_stream_path_is_overridden_by_the_curl_url():
+    """Akış yolu için de aynısı: cURL varken env'deki `UPSTREAM_STREAM_PATH` okunmaz."""
+    settings = make_settings(
+        upstream_curl=_curl(),
+        upstream_stream_path="/eski/yol/{chat_id}",
+        recaptcha_provider="static",
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.upstream_stream_path == "/nextjs-api/stream/create-evaluation"
+
+
+def test_env_mode_is_used_only_without_upstream_curl():
+    """cURL'süz (parça parça) kurulumda env değeri olduğu gibi kalır."""
+    settings = make_settings(upstream_curl="", upstream_mode="direct-battle")
+
+    updated, model_id = apply_upstream_curl(settings)
+
+    assert updated is settings
+    assert model_id is None
+    assert updated.upstream_mode == "direct-battle"
+
+
 def test_app_lifespan_uses_curl_model_id_for_default_max_model():
     app = create_app(
         make_settings(
@@ -171,3 +234,191 @@ def test_runtime_logs_do_not_contain_raw_curl_secrets(capfd):
     assert "test-cookie-secret" not in output
     assert "short-lived-captcha-token" not in output
     assert "sb-auth-token=test" not in output
+
+
+# ------------------------------------------------- ikinci hesap: UPSTREAM_CURL_2
+def _jwt(subject: str, nonce: str = "a") -> str:
+    """Yalnız `sub` alanı anlamlı olan, imzası sahte bir JWT (hesap kimliği için)."""
+
+    def part(payload: dict) -> str:
+        raw = json.dumps(payload, separators=(",", ":")).encode()
+        return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+    return ".".join(
+        (part({"alg": "HS256", "typ": "JWT"}), part({"sub": subject, "n": nonce}), "c2lnbmF0dXJl")
+    )
+
+
+def _second_curl(**overrides) -> str:
+    defaults = {
+        "cookie": "sb-auth-token=second-cookie-secret",
+        "user_agent": "SecondBrowser/2.0",
+        "language": "en-US,en;q=0.8",
+        "referer": "https://upstream.test/c/0199aaaa-bbbb-7ccc-8ddd-eeeeeeeeeeee",
+        "captcha": "second-captcha-token",
+    }
+    defaults.update(overrides)
+    return _curl(**defaults)
+
+
+def test_second_curl_adds_a_second_account_next_to_the_first():
+    settings = make_settings(
+        upstream_curl=_curl(),
+        upstream_curl_2=_second_curl(),
+        recaptcha_provider="static",
+    )
+
+    updated, model_id = apply_upstream_curl(settings)
+    accounts = load_accounts(updated)
+
+    assert model_id == MODEL_ID
+    assert [account.slot for account in accounts] == [1, 2]
+    assert [account.label for account in accounts] == ["hesap-1", "hesap-2"]
+    first, second = accounts
+    # Her hesap kendi cURL'ünün kimliğini taşır.
+    assert first.cookie == "sb-auth-token=test-cookie-secret"
+    assert first.recaptcha_token == "short-lived-captcha-token"
+    assert second.cookie == "sb-auth-token=second-cookie-secret"
+    assert second.access_token == ""
+    assert second.auth_from_cookie is False
+    assert second.user_agent == "SecondBrowser/2.0"
+    assert second.accept_language == "en-US,en;q=0.8"
+    assert second.referer_path == "/c/{chat_id}"
+    assert second.recaptcha_token == "second-captcha-token"
+    assert second.target_domain == "upstream.test"
+    # Ortak alanlar 1. hesabın cURL'ünden gelir; 2. cURL onları değiştirmez.
+    assert updated.upstream_stream_path == "/nextjs-api/stream/create-evaluation"
+    assert updated.upstream_mode == "direct-battle"
+    assert updated.upstream_user_agent == "RuntimeTest/1.0"
+    assert updated.upstream_referer_path == "/text/direct"
+    # İstek atılırken ikinci hesap kendi başlıklarını kullanır.
+    effective = second.effective_settings(updated)
+    assert effective.upstream_user_agent == "SecondBrowser/2.0"
+    assert effective.upstream_cookie == "sb-auth-token=second-cookie-secret"
+    assert effective.recaptcha_static_token == "second-captcha-token"
+
+
+def test_second_curl_with_authorization_header_and_custom_name():
+    settings = make_settings(
+        upstream_curl=_curl(),
+        upstream_curl_2=_second_curl(cookie=None, authorization="Bearer second-access-token"),
+        upstream_account_2_name="yedek-mail",
+        upstream_cookie_2="stale-cookie-from-old-env",
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+    second = load_accounts(updated)[1]
+
+    assert second.label == "yedek-mail"
+    assert second.access_token == "second-access-token"
+    assert second.auth_scheme == "Bearer"
+    # Yuva, cURL'ün tam anlık görüntüsüdür: env'de kalmış eski çerez taşınmaz.
+    assert second.cookie == ""
+    assert type(updated.upstream_auth_from_cookie_2) is bool
+
+
+def test_only_slots_with_their_own_curl_survive():
+    """cURL'ü verilmeyen eski yuvalar yine etkisizleştirilir; verilenler korunur."""
+    settings = make_settings(
+        upstream_curl=_curl(),
+        upstream_curl_3=_second_curl(cookie="sb-auth-token=third-secret"),
+        upstream_cookie_2="stale-cookie-2",
+        upstream_account_2_name="eski-hesap",
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert [account.slot for account in load_accounts(updated)] == [1, 3]
+    assert updated.upstream_cookie_2 == ""
+    assert updated.upstream_account_2_name == ""
+
+
+def test_dynamic_captcha_provider_does_not_store_the_second_static_token():
+    settings = make_settings(
+        upstream_curl=_curl(), upstream_curl_2=_second_curl(), recaptcha_provider="browser"
+    )
+
+    updated, _ = apply_upstream_curl(settings)
+
+    assert updated.recaptcha_provider == "browser"
+    assert updated.recaptcha_static_token_2 == ""
+
+
+@pytest.mark.parametrize(
+    ("second", "message"),
+    [
+        (_curl(url="https://upstream.test/api/v2/rum"), "UPSTREAM_CURL_2 bir telemetri"),
+        (_curl(cookie=None), "UPSTREAM_CURL_2 içinde cookie veya authorization"),
+        ("curl --data-raw '{}'", "UPSTREAM_CURL_2 içinden hedef URL"),
+    ],
+)
+def test_broken_second_curl_stops_startup_and_names_the_variable(second, message):
+    """Bozuk ikinci cURL sessizce tek hesaba düşmez: hangi değişkenin bozuk olduğu söylenir."""
+    settings = make_settings(upstream_curl=_curl(), upstream_curl_2=second)
+    with pytest.raises(ValueError, match=message):
+        apply_upstream_curl(settings)
+
+
+def test_the_same_account_pasted_twice_is_rejected():
+    """Aynı hesap iki yuvaya konursa bölüşüm anlamsızlaşır; token yenilenmiş olsa da yakalanır."""
+    first = _curl(cookie=f"sb-auth-token={_jwt('user-1', 'eski')}")
+    again = _second_curl(cookie=f"sb-auth-token={_jwt('user-1', 'yeni')}")
+    with pytest.raises(ValueError, match="UPSTREAM_CURL_2 ile UPSTREAM_CURL aynı hesaba ait"):
+        apply_upstream_curl(make_settings(upstream_curl=first, upstream_curl_2=again))
+
+    # Kimliği çözülemeyen çerezde birebir aynı değer de aynı hesaptır.
+    same_cookie = _second_curl(cookie="sb-auth-token=test-cookie-secret")
+    with pytest.raises(ValueError, match="aynı hesaba ait"):
+        apply_upstream_curl(make_settings(upstream_curl=_curl(), upstream_curl_2=same_cookie))
+
+
+def test_two_different_accounts_are_accepted():
+    first = _curl(cookie=f"sb-auth-token={_jwt('user-1')}")
+    other = _second_curl(cookie=f"sb-auth-token={_jwt('user-2')}")
+
+    updated, _ = apply_upstream_curl(make_settings(upstream_curl=first, upstream_curl_2=other))
+
+    assert len(load_accounts(updated)) == 2
+
+
+def test_second_curl_of_a_different_shape_is_reported(capfd):
+    configure_logging("INFO", True)
+    odd = _second_curl(
+        url="https://other.test/nextjs-api/stream/post-to-evaluation/abc", mode="battle"
+    )
+
+    apply_upstream_curl(make_settings(upstream_curl=_curl(), upstream_curl_2=odd))
+
+    output = capfd.readouterr().out
+    event = next(
+        json.loads(line)
+        for line in output.splitlines()
+        if '"upstream_curl_slot_mismatch"' in line
+    )
+    assert event["source"] == "UPSTREAM_CURL_2"
+    assert event["fields"] == ["target_domain", "upstream_stream_path", "upstream_mode"]
+
+
+def test_second_curl_secrets_are_not_logged(capfd):
+    configure_logging("INFO", True)
+    apply_upstream_curl(make_settings(upstream_curl=_curl(), upstream_curl_2=_second_curl()))
+    output = capfd.readouterr().out + capfd.readouterr().err
+    assert "second-cookie-secret" not in output
+    assert "second-captcha-token" not in output
+    assert "sb-auth-token=second" not in output
+
+
+def test_app_starts_with_two_accounts_from_two_curls():
+    app = create_app(
+        make_settings(
+            upstream_curl=_curl(),
+            upstream_curl_2=_second_curl(),
+            recaptcha_provider="noop",
+            models_file="config/models.yaml",
+        )
+    )
+
+    with TestClient(app):
+        assert app.state.accounts.size == 2
+        assert [lane.label for lane in app.state.lanes.lanes] == ["hesap-1", "hesap-2"]
+        assert app.state.registry.resolve(None).upstream_id == MODEL_ID

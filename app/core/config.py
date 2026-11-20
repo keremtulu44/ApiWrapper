@@ -59,6 +59,14 @@ class Settings(BaseSettings):
     #: verilir; doluysa aşağıdaki ayrı upstream alanlarının yerine başlangıçta
     #: ayrıştırılır. Ham değer loglanmaz veya diske yazılmaz.
     upstream_curl: str = ""
+    #: 2.–4. hesabın tam cURL'ü (isteğe bağlı, aynı servisin **başka** hesabı).
+    #: Boşsa servis tek hesapla eskisi gibi çalışır. Doluysa o hesabın kimliği
+    #: (çerez/token, tarayıcı başlıkları, statik captcha token'ı) bu cURL'den
+    #: okunur; akış yolu, `mode` gibi ortak alanlar 1. hesabın cURL'ünden gelir.
+    #: İstekler hesaplar arasında eşit bölünür (bkz. `app/services/lanes.py`).
+    upstream_curl_2: str = ""
+    upstream_curl_3: str = ""
+    upstream_curl_4: str = ""
     #: Örn. "example-llm.com" (şemasız!). Zorunlu alan.
     target_domain: str = "localhost"
     upstream_scheme: Literal["https", "http"] = "https"
@@ -69,7 +77,13 @@ class Settings(BaseSettings):
     upstream_stream_path: str = "/nextjs-api/stream/post-to-evaluation/{chat_id}"
     #: Tarayıcıdaki sohbet sayfası yolu (referer üretimi için).
     upstream_referer_path: str = "/c/{chat_id}"
-    #: Gövdeye yazılacak `mode` alanı (örn. "direct"). Boşsa alan gönderilmez.
+    #: Gövdeye yazılacak `mode` alanı (örn. "direct-battle"). Boşsa alan
+    #: gönderilmez — gözlenen hedef alanı zorunlu tutuyor, boşsa `400 ZodError`.
+    #: `UPSTREAM_CURL` doluyken bu ayar env'den **okunmaz**: değer cURL'ün
+    #: gövdesinden gelir; gövdede `mode` yoksa alan boşa sıfırlanır
+    #: (`curl_runtime.apply_upstream_curl`). Env değeri yalnız cURL'süz
+    #: (parça parça) kurulumda kullanılır. Aynısı `upstream_stream_path` için de
+    #: geçerlidir: cURL varsa yol cURL'ün adresinden okunur.
     upstream_mode: str = ""
     #: Gövdedeki reCAPTCHA alanının adı. Hedefe göre "recaptchaV3Token" veya
     #: "recaptchaV2Token" olabilir; tarayıcı isteğinden birebir kopyalayın.
@@ -124,6 +138,14 @@ class Settings(BaseSettings):
     #: modelin meşru cevabında da geçebileceği için düz metin taramasında yanlış
     #: alarm üretir. Hedef servisin gerçek mesajını gözlemlediğinizde buraya birebir
     #: yazın (örn. "upstream limit reached").
+    #:
+    #: Varsayılan liste canlı sürümle (`03aca2c`) **birebir aynıdır** ve bilerek
+    #: öyle tutulur: liste, upstream'e bir isteğin kaç kez gönderileceğini belirler
+    #: (kota sayılan 429 tekrar denenmez, sayılmayan denenir). 18 Kasım 2026'da
+    #: görülen `{"error":"daily spend limit reached"}` gövdesi bu listede **yoktur**;
+    #: o 429 canlıdaki gibi tekrar denenir. Kota olarak tanınması istenirse kod
+    #: değişmez, operatör env'e tam listeyi yazar (liste varsayılanın YERİNE geçer):
+    #: `.env.example` → `UPSTREAM_LIMIT_MARKERS`, docs/LESSONS §16.6 ve §20.
     upstream_limit_markers: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: [
             "upstream limit reached",
@@ -186,9 +208,9 @@ class Settings(BaseSettings):
     upstream_account_4_name: str = ""
 
     #: Upstream'in hesap başına izin verdiği tahmini mesaj sayısı (kayan pencere).
-    #: Bu **yumuşak** bir bütçedir: hangi hesabın tercih edileceğini belirler,
-    #: isteği engellemez. Gerçek sınır öğrenilince (`_learned_limit`) bu değer
-    #: yalnızca başlangıç tahmini olarak kalır.
+    #: Bu bir **gözlemdir**: isteği engellemez, hesap seçimini de belirlemez
+    #: (bölüşüm `app/services/lanes.py` içindedir). Kilitlerden öğrenilen tavanla
+    #: (`learned_limit`) birlikte `/v1/admin/accounts` çıktısında görünür.
     account_msg_budget: int = 15
     #: Kota penceresinin uzunluğu (saniye). Hedef 20 dk kilitliyorsa 1200.
     account_quota_window_seconds: float = 1200.0
@@ -200,6 +222,12 @@ class Settings(BaseSettings):
     account_cooldown_seconds: float = 1200.0
     #: Tek bir istemci isteğinde en fazla kaç kez hesap değiştirilsin.
     account_max_switches: int = 2
+    #: Birden çok hesap varken arızalı hesabın işi çalışan hesaba verilsin mi?
+    #: True (varsayılan): arızalı hesap yeni istek almaz; kimlik/kota/captcha
+    #: reddi alan istek cevap gönderilmeden çalışan hesaba taşınır. False: katı
+    #: bölüşüm — her hesap yalnız kendi payını işler, arızalı hesabın payı
+    #: hata/"problem" alır. Tek hesapta etkisizdir.
+    account_failover: bool = True
 
     # -------------------------------------------------------------- timeouts
     connect_timeout: float = 10.0
@@ -212,7 +240,9 @@ class Settings(BaseSettings):
     stream_idle_timeout: float = 120.0
 
     # ------------------------------------------------------------- keepalive
-    #: 0 = kapalı. Örn. 10800 üç saatte bir sentetik non-stream completion.
+    #: 0 = kapalı. Sentetik non-stream completion'ın aralığı (saniye). Canlıda
+    #: denenmiş değerler: 600 (ep3: ~28 saat kesintisiz; günde ~144 probe kota harcar)
+    #: ve 3600 (docs/ROLLBACK §12). Daha uzun aralık ölçülmedi.
     #: Süreç ayaktayken çalışır; upstream oturumunu yenileme garantisi değildir.
     upstream_keepalive_interval_seconds: float = 0.0
     upstream_keepalive_model: str = "max"
@@ -226,6 +256,55 @@ class Settings(BaseSettings):
     #: Günde bir kez `stream: true` ile gerçek akış yolunu dene (0 = kapalı).
     #: Non-stream probe, streaming ucundaki bir kırılmayı (SSE/parçalama) görmez.
     upstream_keepalive_stream_smoke_interval_seconds: float = 86400.0
+    #: True ise probe yalnız hesap **boştayken** atılır: aralık, o hesabın son
+    #: başarılı gerçek isteğinden sayılır (istek 13.00'te geldiyse ve başka istek
+    #: gelmediyse probe 14.00'te atılır; araya istek girdikçe ertelenir). Gerçek
+    #: istek oturumu zaten tazelediği için probe kotayı boşuna harcamaz. İki
+    #: hesapta her hesabın sayacı ayrıdır.
+    upstream_keepalive_skip_when_active: bool = True
+
+    # ---------------------------------------------------------- istek sırası
+    #: Upstream'e giden tamamlamalar sıraya alınsın mı? Açıkken **hesap başına**
+    #: aynı anda yalnız bir istek işlenir (dış sistem, Telegram mesajları ve probe
+    #: aynı sırayı paylaşır); diğerleri geliş sırasıyla bekler. Tek hesapta bu,
+    #: bütün trafiğin tek sırası demektir; iki hesapta her hesabın kendi sırası
+    #: vardır ve hesaplar birbirini beklemez.
+    request_queue_enabled: bool = True
+    #: Bir istek bitince sıradaki, bu aralıktan rastgele seçilen süre (saniye)
+    #: kadar bekletilir. Yalnız upstream'e gerçekten gidilmiş isteklerden sonra
+    #: uygulanır; yerelde reddedilen istek sırayı bekletmez.
+    request_gap_min_seconds: float = 5.0
+    request_gap_max_seconds: float = 10.0
+    #: Bir hesabın sırasında aynı anda bekleyebilecek en fazla istek (0 =
+    #: sınırsız). Dolunca yeni istek beklemeden reddedilir (`queue_full`).
+    request_queue_max_waiting: int = 20
+    #: Emniyet supabı: bir istek sırayı bundan uzun tutarsa (sızmış slot) sıra
+    #: kendini kurtarır ve bir sonrakine geçer.
+    request_queue_max_hold_seconds: float = 1800.0
+
+    # ----------------------------------------------- /v1/ask (otomatik sistem)
+    #: İlk "bekle" işaretinin gecikmesi (saniye). Cevap bu sürede gelirse hiç
+    #: "bekle" gönderilmez.
+    ask_first_wait_seconds: float = 30.0
+    #: İlk işaretten sonra "bekle" tekrarının aralığı (saniye).
+    ask_wait_interval_seconds: float = 15.0
+    #: **İstek başına** işlem süresi sınırı (saniye). Sıra beklemesi sayılmaz;
+    #: saat, isteğin sırası gelip upstream'e gönderildiği anda başlar.
+    ask_request_timeout_seconds: float = 180.0
+    #: Bir isteğin sırada bekleyebileceği en uzun süre (saniye, 0 = sınırsız).
+    #: Aşılırsa karşı sisteme "problem" denir ki alarm süresiz gecikmesin.
+    ask_max_queue_wait_seconds: float = 600.0
+    #: Ciddi bir arızadan sonra yeni isteklere bu süre boyunca **upstream'e
+    #: gitmeden** "problem" denir; süre dolunca tek istek deneme olarak geçer.
+    #: 0 = bekletme yok (her istek denenir).
+    ask_problem_hold_seconds: float = 300.0
+    #: `/v1/ask` isteğinde `model` verilmezse kullanılacak model (boş = varsayılan).
+    ask_default_model: str = ""
+    #: **Yalnız `/v1/ask` için** geçerli ek anahtarlar (virgülle ayrılmış). Karşı
+    #: sisteme buradan anahtar verin: o anahtar sohbet ve yönetim (`/v1/admin/*`)
+    #: uçlarında geçersizdir. `API_KEYS` içindeki anahtarlar `/v1/ask`'te de
+    #: çalışmaya devam eder. Boş = ek anahtar yok.
+    ask_api_keys: Annotated[list[str], NoDecode] = Field(default_factory=list)
 
     # ---------------------------------------------------------------- alerts
     #: Telegram üzerinden arıza bildirimi. Bot token'ı ve bildirim sohbeti
@@ -313,6 +392,7 @@ class Settings(BaseSettings):
     # ----------------------------------------------------------- validators
     @field_validator(
         "api_keys",
+        "ask_api_keys",
         "cors_origins",
         "upstream_token_cookie_names",
         "upstream_token_cookie_names_2",
@@ -395,9 +475,11 @@ class Settings(BaseSettings):
 
     # ------------------------------------------- kalıcı tarayıcı girişi
     #: Sunucudaki Chromium siteye mail+şifre ile girip çerezi tazelesin mi?
-    #: Platform oturumu ~3 saatte düşürdüğü için bunu açmak elle cURL
-    #: kopyalama ihtiyacını kaldırır. Varsayılan kapalı: RAM ve giriş
-    #: bilgisi gerektirir.
+    #: **Kapalı kalmalı.** Bu hedefte işe yaramadığı ölçüldü: e-posta + şifre
+    #: oturumunun istekleri `recaptcha_rejected` alıyor, çalışan oturumlar Google
+    #: girişiyle alınıyor (docs/LESSONS §15.1) ve sunucunun girişi çalışan oturumla
+    #: çakışır (§1). "Oturum ~3 saatte düşer" varsayımı da ölçümle çürütüldü
+    #: (3-28+ saat; docs/ROLLBACK §12.2). Kod kayıt değeriyle duruyor.
     upstream_login_enabled: bool = False
     #: Siteye giriş e-postası (secret değil).
     upstream_login_email: str = ""
