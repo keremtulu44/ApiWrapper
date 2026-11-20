@@ -17,7 +17,7 @@
 > | §5 ve §9: proje anahtarları (`/v1/admin/keys`), `api_key_labels` | **Yok.** Ayrı yönetim anahtarı da yok: `API_KEYS`'teki her anahtar `/v1/admin/*` uçlarını açar |
 > | §4 `static`: "ölçümde 2+ saat geçerli"; `browser`: "bağımsız üretim" | Aynı statik token ~28 saat kabul edildi; `browser` bu hedefte `403` alıyor — tek geçerli kip `static` (`LESSONS §3`, `§15.3`) |
 > | §4 "Token reddi (403) → otomatik invalidate + 1 kez retry" | Yalnız token **üreten** sağlayıcılarda; `static`'te tekrar denenmez |
-> | — (anlatılmıyor) | PR #56 (canlıda değil): `POST /v1/ask`, hesap başına istek sırası, ikinci hesap ve hatlar — [`ASK_API.md`](ASK_API.md), [`TWO_ACCOUNTS.md §10`](TWO_ACCOUNTS.md) ("nerede ne var") |
+> | — (anlatılmıyor) | PR #56 (20 Kasım 2026'da birleştirildi; ikinci hesap kapalı): `POST /v1/ask`, hesap başına istek sırası, ikinci hesap ve hatlar — [`ASK_API.md`](ASK_API.md), [`TWO_ACCOUNTS.md §10`](TWO_ACCOUNTS.md) ("nerede ne var") |
 >
 > Geçerli işletim kuralları: [`LESSONS_2026_11_14.md §19.1`](LESSONS_2026_11_14.md).
 

@@ -1,6 +1,7 @@
 # `/v1/ask` — otomatik sistemler için "bekle / bitti / problem" ucu
 
-> **Durum (18 Kasım 2026):** kod yazıldı ve test edildi (PR #56), **canlıda değil.**
+> **Durum (20 Kasım 2026):** 20 Kasım 2026'da canlı dala birleştirildi (`c5b5420`). Gerçek upstream'e karşı ilk doğrulama
+> deploy sonrası listedir (`LESSONS_2026_11_14.md §21.5`).
 > Canlıya alma koşulu ve adımları: [`ROLLBACK_2026_11_16.md` §13](ROLLBACK_2026_11_16.md).
 > Bu belgedeki süreler gerçek bir sunucu üzerinde ölçülerek doğrulandı; gerçek
 > upstream'e karşı ilk doğrulama deploy'dan sonra yapılacak (§8).

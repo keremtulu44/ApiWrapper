@@ -113,13 +113,16 @@ OpenAI-compatible istemcilerle çalışır.
 >    merge de bir restart'tır (`autoDeploy`).
 > 10. *(4. maddeyle birleştirildi — 19 Kasım. Eski 4. madde "her deploy'dan sonra
 >     `/ping` çek" diyordu; 18 Kasım'da bu madde onu düzeltmişti.)*
-> 11. **`/v1/ask` ve istek sırası yazıldı — henüz canlıda DEĞİL (PR #56).**
+> 11. **`/v1/ask` ve istek sırası — 20 Kasım 2026'da canlı dala birleştirildi
+>     (PR #56, `c5b5420`).**
 >     Alarm/otomasyon sistemleri için `wait` / `done` / `problem` ucu; istekler
 >     hesap başına tek sıradan, aralarında 5–10 sn ile geçer; arıza ayrıntısı
 >     Telegram'a gelir. Canlıya alma bir restart'tır (9. madde): taze cURL ile
 >     **aynı anda** yapılır. Sözleşme: **[`docs/ASK_API.md`](docs/ASK_API.md)** ·
 >     canlıya alma adımları: `docs/ROLLBACK_2026_11_16.md §13`.
-> 12. **İkinci hesap desteği yazıldı — henüz canlıda DEĞİL (PR #56).**
+> 12. **İkinci hesap desteği: kod canlı dalda (PR #56), hesap KAPALI.** Operatör
+>     ikinci hesabı riskli buluyor (20 Kasım); `UPSTREAM_CURL_2` girilmedikçe tek
+>     hesap çalışır.
 >     `UPSTREAM_CURL_2` verilirse istekler iki hesaba yarı yarıya bölünür, her
 >     hesap kendi sırasını işler ve kendi probe'unu alır; biri arıza verirse iş
 >     öbürüne gider. Verilmezse hiçbir şey değişmez. **Her restart'ta iki cURL de
@@ -151,6 +154,15 @@ OpenAI-compatible istemcilerle çalışır.
 >     sürüm sürer). Kilidi ya da taban imajı güncellemek gönderme tarafını
 >     değiştirebilir: bilerek, taze cURL ile aynı restart'ta yapılır
 >     (`docs/LESSONS_2026_11_14.md §20.6`).
+> 15. **`409 refresh_required` görürsen BEKLEME — kendiliğinden geçmez.** Hedef
+>     site yeni sürüm yayınlamış, cURL'deki sürüm damgası eskimiştir (2 Kasım ve
+>     20 Kasım'da görüldü; 20 Kasım'da kayda geçen sebep hedef sitenin
+>     güncellemesi). Otomatik kurtarma bu kurulumda çalışmıyor
+>     (`deployment_stamp_unchanged … source=configured` = damga okunamadı).
+>     Çare: sayfayı Ctrl+Shift+R ile yenile → Google ile girilmiş oturumdan taze
+>     cURL → Render `UPSTREAM_CURL` → yeniden deploy. Bu sırada gelen "✅ yeniden
+>     çalışıyor" mesajını gerçek bir istekle doğrula. Ayrıntı:
+>     `docs/LESSONS_2026_11_14.md §21`.
 >
 > **19 Kasım düzeltmeleri (bu listede):** 5. madde "tarayıcıdan çıkış yap"
 > diyordu; operatörün uzun koşulardaki uygulaması sekmeyi **kapatmak**tır ve
@@ -242,7 +254,7 @@ Sistem üç ayrı ömür katmanını (**Oturum Kimliği**, **Türev/Sürüm Damg
 
 > ⚠️ **Sürüm notu (19 Kasım 2026):** "Modlar" satırı (web arama / görsel) bu sürümde
 > **yok**; kayıt defterinde yalnız `max` var. Tabloda olmayan ve PR #56 ile gelen
-> (henüz canlıda olmayan) üç şey: `POST /v1/ask`, hesap başına istek sırası,
+> (20 Kasım 2026'da canlı dala birleştirilen) üç şey: `POST /v1/ask`, hesap başına istek sırası,
 > ikinci hesap (`UPSTREAM_CURL_2`) — [`docs/ASK_API.md`](docs/ASK_API.md),
 > [`docs/TWO_ACCOUNTS.md`](docs/TWO_ACCOUNTS.md). "Hesap havuzu" satırındaki
 > "kilitte otomatik hesap geçişi" PR #56'da `TWO_ACCOUNTS.md §5`'teki kurala döndü.
@@ -1066,6 +1078,7 @@ parametrelerin davranışını belirler:
 | 10 | Telegram `/ping` "çalışıyor" dedi diye upstream'i sağlam saymak | `/ping` yalnız sürecin ayakta olduğunu söyler. Bota **düz bir mesaj** yaz |
 | 11 | Sürüm damgası ayarlarını `UPSTREAM_DEPLOYMENT_…` diye yazmak | Adlar `DEPLOYMENT_…`dır; başında `UPSTREAM_` olan sessizce yok sayılır |
 | 12 | cURL'ü e-posta + şifreyle açılmış oturumdan almak | Yalnız **Google ile** giriş yapılmış oturumdan (`recaptcha_rejected`, 17 Kasım) |
+| 13 | `409 refresh_required` görünce beklemek, ya da o sırada gelen "✅ yeniden çalışıyor" mesajına güvenmek | Kendiliğinden geçmez: hedef yeni sürüm yayınlamıştır. Ctrl+Shift+R → taze Google cURL → Render → yeniden deploy; sonucu bota düz mesajla doğrula (20 Kasım) |
 
 > **19 Kasım düzeltmeleri:** 3. satır "bekle; genelde kendi döner", 4. satır
 > "al, sonra **çıkış yap**", 7. satır "reCAPTCHA token 2+ saat, çerez 15+ saat"

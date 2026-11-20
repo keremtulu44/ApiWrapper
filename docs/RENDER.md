@@ -50,7 +50,7 @@ edebilmektir.
 > | Çalışma alanı başına ayda **750 Free saat**; biterse Free servisler ay sonuna kadar **askıya alınır** | 7/24 çalışan tek servis en çok 744 saat kullanır: sığar. Aynı çalışma alanında sürekli çalışan **ikinci** bir Free web servisi bu payı ay bitmeden tüketir |
 > | Free serviste kabuk (shell) erişimi ve kalıcı disk yoktur | Çalışan imajın içine girip bakılamaz; imajın içeriği yalnız **derleme logundan** okunur (aşağıda) |
 >
-> **İmaj sabit sürümlerle derlenir (19 Kasım, PR #56 — henüz canlıda değil).**
+> **İmaj sabit sürümlerle derlenir (19 Kasım; PR #56, 20 Kasım'da birleştirildi).**
 > Taban imaj özetle (`python:3.12-slim@sha256:…`), Python paketleri
 > `requirements.lock`'taki tam sürümlerle kurulur; derlemenin son adımı imajın
 > içini denetler. Derleme logunda şu iki satır görünmelidir:
@@ -97,7 +97,7 @@ restart'ta sıfırlanır; bunlar upstream istek mantığını bozmaz.
 ## 2. Bir tamamlama isteği nasıl yürür?
 
 > **19 Kasım notu.** Aşağıdaki sıra canlı (`03aca2c`) kod için doğrudur. PR #56
-> ile (henüz canlıda değil) 4. adımdan önce istek bir hesabın **sırasına** girer
+> ile (20 Kasım'da birleştirildi) 4. adımdan önce istek bir hesabın **sırasına** girer
 > (hesap başına tek tek, aralarında 5–10 sn); hesap seçimi "o an en az işi olan
 > hesap"tır ve 10. adımdaki devir `401` ile kota reddini kapsar:
 > [`ASK_API.md §4`](ASK_API.md), [`TWO_ACCOUNTS.md §3-§5`](TWO_ACCOUNTS.md).

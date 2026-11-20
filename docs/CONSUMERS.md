@@ -23,7 +23,7 @@ api_key  = "sk-…"                                    # 2
 > | §2 Modeller | ⚠️ Yalnız **`max`**. `web` modeli ve `Kaynaklar:` bloğu **yok**; `model=web` isteği `model_not_found` alır |
 > | §5 İşletici tarafı | ❌ `ADMIN_API_KEYS`, `/v1/admin/keys`, `API_KEY_LABELS` **yok**. Aşağıya bak |
 > | §6 Bilinen sınırlar | ✅ |
-> | §7 `/v1/ask` · §8 İstek sırası | PR #56 (canlıda değil). §8'deki "tek sıra", ikinci hesap eklenince **hesap başınadır** (`TWO_ACCOUNTS.md §4`) |
+> | §7 `/v1/ask` · §8 İstek sırası | PR #56 — 20 Kasım 2026'da canlı dala birleştirildi (`c5b5420`). §8'deki "tek sıra", ikinci hesap eklenince **hesap başınadır** (`TWO_ACCOUNTS.md §4`) |
 >
 > **⚠️ Güvenlik — §5'teki "önce `ADMIN_API_KEYS` ayır" adımı bu sürümde hiçbir
 > şeyi korumaz.** O ad okunmaz. Bu sürümde `API_KEYS`'teki **her** anahtar
@@ -265,7 +265,7 @@ Davranış notları:
 
 ---
 
-## 7. Otomatik sistemler için: `/v1/ask` (PR #56 — henüz canlıda değil)
+## 7. Otomatik sistemler için: `/v1/ask` (PR #56 — 20 Kasım 2026'da birleştirildi)
 
 Projen bir **alarm / otomasyon sistemi** ise — yani bir metin gönderip cevabını
 alacak, alamazsa yedeğine geçecekse — OpenAI uçları yerine `/v1/ask` kullan:
@@ -281,7 +281,7 @@ Hata kodu yorumlamak, tekrar deneme kurmak, zaman aşımı hesaplamak gerekmez.
 Sözleşmenin tamamı, karşı sisteme verilecek hazır talimat ve örnek istemci:
 **[`ASK_API.md`](ASK_API.md)**.
 
-## 8. İstek sırası (PR #56 ile gelir — henüz canlıda değil)
+## 8. İstek sırası (PR #56 ile geldi — 20 Kasım 2026'da birleştirildi)
 
 O sürümden itibaren **bütün** tamamlama istekleri (bu rehberdeki OpenAI uçları
 dahil) tek sıradan geçer:

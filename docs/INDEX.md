@@ -12,7 +12,7 @@
 > |---|---|
 > | `ROLLBACK_2026_11_16.md` | ✅ **Bu sürümün kaydı — önce bunu oku** (§12 ep4, §13-§14 canlıya alma planı) |
 > | `LESSONS_2026_11_14.md` | ✅ Ölçümler. Eski bölümlerdeki çürütülmüş satırlar yerinde işaretli; **§19 belge denetimi ve geçerli kurallar**; **§20 gönderme tarafı denetimi** |
-> | `ASK_API.md`, `TWO_ACCOUNTS.md` | ✅ PR #56'nın belgeleri (kod **canlıda değil**) |
+> | `ASK_API.md`, `TWO_ACCOUNTS.md` | ✅ PR #56'nın belgeleri — 20 Kasım 2026'da canlı dala birleştirildi (`c5b5420`); ikinci hesap **kapalı** |
 > | `TROUBLESHOOTING.md` | ⚠️ **Kısmen.** Başındaki sürüm notu hangi bölümün geçerli olduğunu söyler. §3 (EK), §4 (DÜZELTME), §6-§9 geçerli; §1b, §1c, §2'deki Telegram komutları ve `/v1/admin/upstream/{curl,cookie,capture,refresh,apikey}` çareleri **yok** |
 > | `RENDER.md` | ⚠️ **Kısmen.** Dağıtım sırası, `/readyz` kodları, log okuma geçerli; `RENDER_API_KEY` kalıcılığı, token yenileme, `/cookie` `/yenile` `/apikey` **yok** |
 > | `CONSUMERS.md` | ⚠️ **Kısmen tarihsel.** Proje anahtarı üretimi (`/v1/admin/keys`) ve `web`/`image` modelleri **yok**; OpenAI şeması, hata kodları ve hız sınırı geçerli |
@@ -114,6 +114,16 @@
 > (c) **`429 daily spend limit reached` koruması açılacak** — kodla değil,
 > operatörün deploy sırasında gireceği `UPSTREAM_LIMIT_MARKERS` ile; satır ve
 > doğrulaması [`ROLLBACK_2026_11_16.md §13.3`](ROLLBACK_2026_11_16.md).
+>
+> **20 Kasım — hedefin güncellemesi ep4'ü bitirdi; PR #56 birleştirildi.**
+> Probe'lar `409 refresh_required` almaya başladı (operatör bir gün önce hedef
+> sitede görsel bir güncelleme görmüştü; kayda geçen sebep şimdilik odur).
+> Beklemekle geçmez; aynı kod **taze cURL** ile yeniden deploy edilince çalıştı.
+> Otomatik damga kurtarma bu kurulumda çalışmıyor (`source=configured`) ve eski
+> kod arıza sürerken yanlış bir "✅ yeniden çalışıyor" mesajı gönderdi. Ardından
+> PR #56 **tek hesapla** `arena/1kasim-test`'e birleştirildi (`c5b5420`, 12:30
+> UTC); ikinci hesap operatör kararıyla **kapalı**. Olay defteri, teşhis, yeni
+> kurallar: **[`LESSONS_2026_11_14.md §21`](LESSONS_2026_11_14.md)**.
 
 ---
 
@@ -169,8 +179,8 @@ Tam liste: [`LESSONS_2026_11_14.md`](LESSONS_2026_11_14.md) ve
 | [`RENDER.md`](RENDER.md) | Render kurulumu, env, uyku | Deploy ederken (⚠️ kalıcılık/`RENDER_API_KEY` kısımları bu sürümde **yok**) |
 | [`MOBILE_CURL.md`](MOBILE_CURL.md) | Telefondan cURL alma | ⚠️ Tarihsel: telefon komutları **yok**; cURL güncellemek Render panosu ister |
 | [`ENV_FULL.md`](ENV_FULL.md) | Tüm env değişkenleri (`77d4011` anında üretildi) | ⚠️ **Bayat.** Env ararken **`.env.example`**'a bak |
-| [`TWO_ACCOUNTS.md`](TWO_ACCOUNTS.md) | **İkinci hesap: `UPSTREAM_CURL_2` (PR #56, canlıda değil)**: isteklerin iki hesaba yarı yarıya bölünmesi, hesap başına sıra ve probe, bir hesap arıza verince ne olduğu, Telegram mesajları, teşhis | İkinci hesabı eklerken; "bir hesap neden iş almıyor" diye bakarken |
-| [`ASK_API.md`](ASK_API.md) | **`/v1/ask` (PR #56, canlıda değil)**: alarm/otomasyon sistemleri için `wait` / `done` / `problem` sözleşmesi, karşı sisteme verilecek hazır talimat, örnek istemci, tek istek sırası, Telegram mesajlarının okunuşu | Bir otomasyonu bağlarken; "karşı sistem neden `problem` alıyor" diye bakarken |
+| [`TWO_ACCOUNTS.md`](TWO_ACCOUNTS.md) | **İkinci hesap: `UPSTREAM_CURL_2` (PR #56; kod canlı dalda, hesap kapalı)**: isteklerin iki hesaba yarı yarıya bölünmesi, hesap başına sıra ve probe, bir hesap arıza verince ne olduğu, Telegram mesajları, teşhis | İkinci hesabı eklerken; "bir hesap neden iş almıyor" diye bakarken |
+| [`ASK_API.md`](ASK_API.md) | **`/v1/ask` (PR #56, 20 Kasım'da birleştirildi)**: alarm/otomasyon sistemleri için `wait` / `done` / `problem` sözleşmesi, karşı sisteme verilecek hazır talimat, örnek istemci, tek istek sırası, Telegram mesajlarının okunuşu | Bir otomasyonu bağlarken; "karşı sistem neden `problem` alıyor" diye bakarken |
 | [`CONSUMERS.md`](CONSUMERS.md) | **Tüketici rehberi**: OpenAI SDK ile bağlanma, modeller, hata kodları, hız sınırı + anahtar üretme/iptal | API'yi başka bir projeye verirken |
 | [`../README.md`](../README.md) | Genel bakış + **sık yapılan hatalar** | Her zaman |
 
