@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from app.api.v1 import admin, ask, chat, health, models
+from app.api.v1 import admin, ask, autopilot, chat, health, models
 from app.core.config import Settings, get_settings
 from app.core.diagnostics import explain_failure
 from app.core.errors import register_exception_handlers
@@ -268,6 +268,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             telegram_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await telegram_task
+        if autopilot_mgr := getattr(app.state, "autopilot_manager", None):
+            await autopilot_mgr.shutdown()
         # Süren `/v1/ask` işleri ve gönderilmekte olan bildirimler.
         await tasks.shutdown()
         with contextlib.suppress(Exception):
@@ -319,6 +321,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ask.router, prefix="/v1")
     app.include_router(models.router, prefix="/v1")
     app.include_router(admin.router, prefix="/v1")
+    app.include_router(autopilot.router, prefix="/v1")
     # OpenAI SDK `base_url` bazen `/v1` olmadan verilir; aksi halde /chat/completions 404 olur.
     app.include_router(chat.router, include_in_schema=False)
     app.include_router(ask.router, include_in_schema=False)
