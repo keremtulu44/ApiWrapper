@@ -11,6 +11,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
+from app.adapters.prompt_builder import build_prompt
 from app.autopilot.agent_client import AgentSessionClient
 from app.autopilot.curl_parse import extract_identity_subject, parse_agent_curl
 from app.autopilot.events_parser import (
@@ -18,7 +19,11 @@ from app.autopilot.events_parser import (
     format_sandbox_evidence,
     parse_chat_state,
 )
-from app.autopilot.max_bridge import MaxBridge
+from app.autopilot.max_bridge import (
+    ExternalHttpMaxBridge,
+    MaxBridge,
+    compose_single_turn_max_prompt,
+)
 from app.autopilot.orchestrator import (
     AutopilotConfig,
     AutopilotOrchestrator,
@@ -28,11 +33,14 @@ from app.autopilot.orchestrator import (
 from app.autopilot.prompts import (
     AGENT_OPERATING_GUARDRAILS,
     MAX_SYSTEM_PROMPT,
+    build_turn_user_prompt,
+    compute_min_turns_before_completion,
     parse_max_decision,
     similarity_ratio,
 )
 from app.core.config import Settings
 from app.main import create_app
+from app.schemas.openai import ChatMessage
 
 
 def _make_fake_supabase_cookie(sub: str) -> str:
@@ -528,6 +536,134 @@ def test_parse_max_decision_structured_and_fallback() -> None:
     assert fallback.message_to_agent == "Lütfen testleri çalıştırıp sonucu göster."
     assert similarity_ratio("aynı cümle", "aynı cümle") == 1.0
 
+    # Kapanmamış <AJANA_MESAJ> durumunda iç değerlendirme/hafıza ASLA ajana sızmamalı
+    unclosed = (
+        "<DURUM>DEVAM</DURUM>\n"
+        "<ASAMA>2_YARATICI_DERINLIK</ASAMA>\n"
+        "<DEGERLENDIRME>GİZLİ İÇ ANALİZ: Butonlar henüz sahte.</DEGERLENDIRME>\n"
+        "<GUNCEL_HAFIZA>GİZLİ HAFIZA DEFTERİ: Yol haritası 2. adım.</GUNCEL_HAFIZA>\n"
+        "<AJANA_MESAJ>\n"
+        "Şimdi etkileşimli senaryo simülatörünü ve gerçek filtreleri bağla."
+    )
+    dec_unclosed = parse_max_decision(unclosed)
+    assert dec_unclosed.status == "DEVAM"
+    assert "senaryo simülatörünü" in dec_unclosed.message_to_agent
+    assert "GİZLİ İÇ ANALİZ" not in dec_unclosed.message_to_agent
+    assert "GİZLİ HAFIZA DEFTERİ" not in dec_unclosed.message_to_agent
+
+
+@pytest.mark.anyio
+async def test_single_user_message_bridge_avoids_transcript_wrapper() -> None:
+    captured_body: dict[str, Any] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal captured_body
+        captured_body = json.loads(request.content.decode("utf-8"))
+        return httpx.Response(
+            200,
+            json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]},
+        )
+
+    bridge = ExternalHttpMaxBridge(
+        "https://wrapper.example.test",
+        "sk-test",
+        transport=httpx.MockTransport(handler),
+    )
+    await bridge.startup()
+    try:
+        ans = await bridge.complete(system_prompt="ROL KURALLARI", user_prompt="GÖREV")
+    finally:
+        await bridge.shutdown()
+
+    assert ans == "ok"
+    assert len(captured_body["messages"]) == 1
+    assert captured_body["messages"][0]["role"] == "user"
+    upstream_text = build_prompt(
+        [ChatMessage(role="user", content=compose_single_turn_max_prompt("ROL", "GÖREV"))]
+    )
+    assert not upstream_text.startswith("System:")
+    assert not upstream_text.endswith("Assistant:")
+
+
+def test_head_tail_bash_evidence_and_interactive_blocker_recovery() -> None:
+    long_stdout = (
+        "collecting test items...\n"
+        + ("src/module_check_line_ok\n" * 30)
+        + "======================== 24 passed in 0.42s ========================\n"
+    )
+    snapshot: dict[str, Any] = {
+        "id": "019da5d9-f4fc-7691-9e1e-34b5c1c9b784",
+        "messages": [
+            {
+                "id": "m_asst",
+                "role": "assistant",
+                "parts": [
+                    {
+                        "type": "tool-bash",
+                        "state": "output-available",
+                        "input": {"command": "pytest"},
+                        "output": {
+                            "stdout": long_stdout,
+                            "stderr": "",
+                            "exit_code": 0,
+                            "status": "completed",
+                        },
+                    },
+                    {
+                        "type": "tool-ask_user",
+                        "state": "input-available",
+                        "input": {
+                            "questions": [
+                                {"id": "q1", "question": "Hangi veritabanını kullanayım?"}
+                            ]
+                        },
+                        "output": {},
+                    },
+                    {
+                        "type": "tool-start_process",
+                        "state": "output-available",
+                        "input": {"name": "Website", "command": "npm run dev"},
+                        "output": {
+                            "alive": True,
+                            "ports": [5173],
+                            "warnings": ["Host header rejected by Vite preview"],
+                        },
+                    },
+                ],
+                "metadata": {"pending": False},
+            }
+        ],
+    }
+    state = parse_chat_state(snapshot)
+    msg = state.last_assistant_message
+    assert msg is not None
+    evidence = format_sandbox_evidence(msg)
+
+    # Hem başlangıç hem de en sondaki '24 passed' satırı korunmalı
+    assert "collecting test items" in evidence
+    assert "24 passed in 0.42s" in evidence
+    # ask_user sorusu ve etkileşim engeli açıkça görünmeli
+    assert "ETKİLEŞİM ENGELİ" in evidence
+    assert "Hangi veritabanını kullanayım?" in evidence
+    # start_process önizleme uyarısı hata olarak işaretlenmeli
+    assert "PREVIEW_UYARISI" in evidence
+
+    turn_prompt = build_turn_user_prompt(
+        project_idea="Şu projeyi hazırla: finans panosu",
+        turn=2,
+        max_turns=7,
+        current_phase="1_VIZYON_VE_CEKIRDEK",
+        memory_summary="Adım 1 kuruldu.",
+        turn_digests=[],
+        last_sent_to_agent="Temeli kur.",
+        agent_reply_text=" Seçiminizi bekliyorum.",
+        sandbox_evidence=evidence,
+        completed_turns=1,
+        has_interactive_blocker=True,
+    )
+    assert "ERKEN BİTİRME KİLİDİ AKTİF (1/5 olgunluk turu)" in turn_prompt
+    assert "[ETKİLEŞİM ENGELİ KURTARMA UYARISI]" in turn_prompt
+
 
 # ---------------------------------------------------------------------------
 # 5. Orkestratör: Hesap ayrılığı kilidi, çok turlu çalışma ve kayıttan devam
@@ -741,6 +877,147 @@ async def test_orchestrator_multi_turn_stateless_and_checkpoint_resume(
     assert len(st2.turns) == 2
     assert "Adım 1 doğrulandı" in bridge_part2.calls[0][1]
     assert "pytest -k step_2" in bridge_part2.calls[1][1]
+
+
+@pytest.mark.anyio
+async def test_orchestrator_blocks_premature_exit_on_7_turn_run(tmp_path: Path) -> None:
+    """7 turluk projede 1. veya 2. turda 'TAMAMLANDI' deyip kaçmayı engellemeli."""
+    assert compute_min_turns_before_completion(7) == 5
+    assert compute_min_turns_before_completion(8) == 6
+
+    chat_id = "019da5d9-f4fc-7691-9e1e-34b5c1c9b799"
+    raw_curl = _build_windows_cmd_input_curl(chat_id=chat_id, sub="agent-7turn-sub")
+    agent_turn = 0
+    last_sent_user_id = "019da5d9-f37d-71be-9d31-000000000001"
+
+    def mock_agent_http(request: httpx.Request) -> httpx.Response:
+        nonlocal agent_turn, last_sent_user_id
+        path = request.url.path
+        if request.method == "GET" and path == "/" and not request.url.query:
+            return httpx.Response(200, text="<html>dpl_TestDeploy123</html>")
+        if request.method == "GET" and path == f"/api/chat/{chat_id}":
+            messages: list[dict[str, Any]] = [
+                {
+                    "id": last_sent_user_id,
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "prompt"}],
+                    "metadata": {"pending": False},
+                }
+            ]
+            if agent_turn > 0:
+                messages.append(
+                    {
+                        "id": f"019da5d9-f37d-71be-9d31-00000000020{agent_turn}",
+                        "role": "assistant",
+                        "parts": [
+                            {
+                                "type": "tool-bash",
+                                "state": "output-available",
+                                "input": {"command": f"pytest -k phase_{agent_turn}"},
+                                "output": {
+                                    "stdout": f"phase_{agent_turn} passed",
+                                    "stderr": "",
+                                    "exit_code": 0,
+                                    "status": "completed",
+                                },
+                            },
+                            {"type": "text", "text": f"Aşama {agent_turn} bitti."},
+                        ],
+                        "metadata": {"pending": False},
+                    }
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "id": chat_id,
+                    "triggerAddress": f"agent-runner:{chat_id}",
+                    "lastEventId": str(agent_turn * 10),
+                    "messages": messages,
+                },
+            )
+        if request.method == "POST" and path == f"/api/chat/{chat_id}/input":
+            agent_turn += 1
+            body = json.loads(request.content.decode("utf-8"))
+            last_sent_user_id = body["payload"]["messageId"]
+            return httpx.Response(200, json={"ok": True, "seq": agent_turn * 10 + 1})
+        if request.method == "GET" and path == f"/api/chat/{chat_id}/events":
+            sse = (
+                "event: batch\ndata: "
+                + json.dumps(
+                    {
+                        "records": [
+                            {
+                                "seq_num": agent_turn * 10 + 2,
+                                "headers": [["trigger-control", "turn-complete"]],
+                                "body": "",
+                            }
+                        ]
+                    }
+                )
+                + "\n\n"
+            )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=sse.encode("utf-8"),
+            )
+        return httpx.Response(404)
+
+    # Max Tur 1 sonunda erken TAMAMLANDI verip kaçmaya çalışıyor; orkestratör bunu
+    # yakalayıp reddetmeli ve en az 5. tura kadar yaratıcı derinleştirmeyi sürdürmeli!
+    bridge = _FakeMaxBridge(
+        [
+            # Kickoff -> Tur 1
+            "<DURUM>DEVAM</DURUM><ASAMA>1_VIZYON_VE_CEKIRDEK</ASAMA>"
+            "<GUNCEL_HAFIZA>Yol haritası kuruldu.</GUNCEL_HAFIZA>"
+            "<AJANA_MESAJ>Çekirdek mimariyi kur.</AJANA_MESAJ>",
+            # Tur 1 sonu: Max erken bitirip kaçmaya çalışır!
+            "<DURUM>TAMAMLANDI</DURUM><ASAMA>5_KABUL</ASAMA>"
+            "<DEGERLENDIRME>İskelet çalışıyor, bitirelim.</DEGERLENDIRME>"
+            "<GUNCEL_HAFIZA>Tur 1 bitti.</GUNCEL_HAFIZA><AJANA_MESAJ></AJANA_MESAJ>",
+            # Orkestratör reddedince Max yaratıcı imza özellik adımı üretir -> Tur 2
+            "<DURUM>DEVAM</DURUM><ASAMA>2_YARATICI_DERINLIK</ASAMA>"
+            "<GUNCEL_HAFIZA>Tur 2: İnteraktif senaryo simülatörü.</GUNCEL_HAFIZA>"
+            "<AJANA_MESAJ>Şimdi interaktif bütçe simülatörünü ekle.</AJANA_MESAJ>",
+            # Tur 2 sonu -> Tur 3
+            "<DURUM>DEVAM</DURUM><ASAMA>2_YARATICI_DERINLIK</ASAMA>"
+            "<GUNCEL_HAFIZA>Tur 3: Akıllı filtre ve dışa aktarma.</GUNCEL_HAFIZA>"
+            "<AJANA_MESAJ>Akıllı filtreleri ve veri kalıcılığını tamamla.</AJANA_MESAJ>",
+            # Tur 3 sonu -> Tur 4
+            "<DURUM>DEVAM</DURUM><ASAMA>3_DENEYIM_VE_CILA</ASAMA>"
+            "<GUNCEL_HAFIZA>Tur 4: UX cilası ve uç durumlar.</GUNCEL_HAFIZA>"
+            "<AJANA_MESAJ>Mikro-etkileşimleri ve mobil/klavye cilasını yap.</AJANA_MESAJ>",
+            # Tur 4 sonu -> Tur 5
+            "<DURUM>DEVAM</DURUM><ASAMA>4_DOGRULAMA_VE_SUNUCU</ASAMA>"
+            "<GUNCEL_HAFIZA>Tur 5: Uçtan uca test ve 0.0.0.0 sunucu.</GUNCEL_HAFIZA>"
+            "<AJANA_MESAJ>Uçtan uca testleri koş ve 0.0.0.0 sunucuyu doğrula.</AJANA_MESAJ>",
+            # Tur 5 sonu (artık 5/5 olgunluk kapısı aşıldı!): TAMAMLANDI kabul edilir!
+            "<DURUM>TAMAMLANDI</DURUM><ASAMA>5_KABUL</ASAMA>"
+            "<DEGERLENDIRME>5 aşama da eksiksiz doğrulandı.</DEGERLENDIRME>"
+            "<GUNCEL_HAFIZA>Tamamlandı.</GUNCEL_HAFIZA><AJANA_MESAJ></AJANA_MESAJ>",
+        ],
+        sub="max-7turn-sub",
+    )
+
+    orch = AutopilotOrchestrator(
+        config=AutopilotConfig(
+            project_idea="Şu projeyi hazırla: kişisel bütçe uygulaması",
+            max_turns=7,
+            gap_min_seconds=0.0,
+            gap_max_seconds=0.0,
+            state_file=tmp_path / "run7.json",
+        ),
+        agent=AgentSessionClient.from_curl(
+            raw_curl, turn_timeout=5.0, transport=httpx.MockTransport(mock_agent_http)
+        ),
+        max_bridge=bridge,
+    )
+    final_state = await orch.run()
+
+    assert final_state.status == "completed"
+    assert len(final_state.turns) == 5
+    # Reddedilen erken çıkış sonrasında gönderilen istemde zorunlu derinleştirme notu olmalı
+    assert "[ERKEN BİTİRME REDDİ — ZORUNLU DERİNLEŞTİRME]" in bridge.calls[2][1]
 
 
 # ---------------------------------------------------------------------------

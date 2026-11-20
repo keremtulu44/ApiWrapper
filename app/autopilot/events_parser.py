@@ -46,6 +46,18 @@ def _truncate(text: str, limit: int = 240) -> str:
     return cleaned[: limit - 1].rstrip() + "…"
 
 
+def _truncate_head_tail(text: str, limit: int = 380) -> str:
+    """Komut çıktılarının hem başını hem de asıl sonucun yazdığı sonunu korur."""
+    cleaned = " ".join((text or "").split())
+    if len(cleaned) <= limit:
+        return cleaned
+    if limit < 40:
+        return _truncate(cleaned, limit)
+    head_len = max(80, int(limit * 0.36))
+    tail_len = max(100, limit - head_len - 5)
+    return f"{cleaned[:head_len].rstrip()} … {cleaned[-tail_len:].lstrip()}"
+
+
 @dataclass(slots=True)
 class ToolExecutionEvidence:
     """Ajanın sandbox içinde gerçekten çalıştırdığı tek bir aracın kanıt özeti."""
@@ -160,12 +172,13 @@ def _summarize_tool_part(part: dict[str, Any]) -> ToolExecutionEvidence:
         exit_code = raw_exit
 
     status = str(out.get("status") or "")
-    stdout_preview = _truncate(str(out.get("stdout") or ""), 200)
-    stderr_preview = _truncate(str(out.get("stderr") or ""), 200)
+    stdout_preview = _truncate_head_tail(str(out.get("stdout") or ""), 380)
+    stderr_preview = _truncate_head_tail(str(out.get("stderr") or ""), 320)
+    has_preview_warning = False
 
     summary_parts: list[str] = []
     if tool_name == "bash":
-        cmd = _truncate(str(inp.get("command") or ""), 160)
+        cmd = _truncate(str(inp.get("command") or ""), 180)
         summary_parts.append(f"cmd=`{cmd}`" if cmd else "cmd=(boş)")
         if exit_code is not None:
             summary_parts.append(f"exit_code={exit_code}")
@@ -176,12 +189,41 @@ def _summarize_tool_part(part: dict[str, Any]) -> ToolExecutionEvidence:
         summary_parts.append(f"path=`{path}`" if path else "path=(belirsiz)")
     elif tool_name == "start_process":
         name = str(inp.get("name") or "")
-        cmd = _truncate(str(inp.get("command") or ""), 120)
+        cmd = _truncate(str(inp.get("command") or ""), 140)
         summary_parts.append(f"name={name!r} cmd=`{cmd}`")
+        if "alive" in out:
+            summary_parts.append(f"alive={out.get('alive')}")
         if "ports" in out:
             summary_parts.append(f"ports={out.get('ports')}")
         if out.get("warnings"):
-            summary_parts.append(f"warnings={_truncate(str(out.get('warnings')), 120)}")
+            has_preview_warning = True
+            summary_parts.append(
+                f"PREVIEW_UYARISI={_truncate_head_tail(str(out.get('warnings')), 220)}"
+            )
+    elif tool_name == "get_process_output":
+        proc_id = str(inp.get("process_id") or "")
+        if proc_id:
+            summary_parts.append(f"process_id={proc_id!r}")
+        if "alive" in out:
+            summary_parts.append(f"alive={out.get('alive')}")
+        if "ports" in out:
+            summary_parts.append(f"ports={out.get('ports')}")
+        if out.get("wait_result"):
+            summary_parts.append(f"wait_result={out.get('wait_result')}")
+        raw_log = str(out.get("log") or out.get("output") or "")
+        if raw_log.strip():
+            summary_parts.append(f"log_sonu={_truncate_head_tail(raw_log, 220)}")
+    elif tool_name == "ask_user":
+        raw_qs = inp.get("questions")
+        q_texts: list[str] = []
+        if isinstance(raw_qs, list):
+            for q_item in raw_qs[:4]:
+                if isinstance(q_item, dict) and q_item.get("question"):
+                    q_texts.append(_truncate(str(q_item["question"]), 120))
+        if q_texts:
+            summary_parts.append("sorular=" + " | ".join(q_texts))
+        else:
+            summary_parts.append("kullanıcıdan seçim bekliyor")
     else:
         if inp:
             keys = ", ".join(sorted(str(k) for k in inp)[:5])
@@ -193,8 +235,11 @@ def _summarize_tool_part(part: dict[str, Any]) -> ToolExecutionEvidence:
         (exit_code is not None and exit_code != 0)
         or status in {"error", "failed", "timeout"}
         or "error" in state.lower()
+        or has_preview_warning
     )
-    is_interactive = tool_name in INTERACTIVE_TOOLS
+    is_interactive = tool_name in INTERACTIVE_TOOLS or (
+        tool_name == "generate_image" and bool(inp.get("offer_options"))
+    )
 
     return ToolExecutionEvidence(
         tool_name=tool_name,
@@ -303,9 +348,14 @@ def format_sandbox_evidence(message: AgentMessage) -> str:
         lines.append(f"Tur çalışma süresi: {message.duration_seconds:.1f} sn")
 
     if blockers:
-        names = ", ".join(sorted({t.tool_name for t in blockers}))
+        details = "; ".join(
+            f"{t.tool_name}({t.summary})" if t.summary else t.tool_name
+            for t in blockers[:3]
+        )
         lines.append(
-            f"⚠️ UYARI: Ajan kullanıcı etkileşimi bekleyen araç çağırdı ({names})!"
+            f"🚨 ETKİLEŞİM ENGELİ: Ajan kullanıcı onayı/seçimi bekleyen pencere açtı "
+            f"[{details}]! Bir sonraki mesajda net kararını doğrudan söyle ve pencere "
+            "açmadan uygulamasını emret."
         )
 
     if writes:

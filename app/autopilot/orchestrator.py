@@ -36,8 +36,10 @@ from app.autopilot.prompts import (
     MAX_SYSTEM_PROMPT,
     MaxDecision,
     TurnDigest,
+    build_early_exit_fallback_instruction,
     build_kickoff_user_prompt,
     build_turn_user_prompt,
+    compute_min_turns_before_completion,
     parse_max_decision,
     similarity_ratio,
 )
@@ -67,17 +69,32 @@ class AutopilotConfig:
 
     project_idea: str
     max_turns: int = 8
+    min_turns_before_complete: int | None = None
     gap_min_seconds: float = 5.0
     gap_max_seconds: float = 10.0
     state_file: Path | None = None
     run_id: str = field(default_factory=lambda: f"auto_{random_suffix(12)}")
     append_guardrails_on_first_turn: bool = True
 
+    @property
+    def effective_min_turns(self) -> int:
+        raw = (
+            self.min_turns_before_complete
+            if self.min_turns_before_complete is not None
+            else compute_min_turns_before_completion(self.max_turns)
+        )
+        return max(1, min(self.max_turns, raw))
+
     def validate(self) -> None:
         if not self.project_idea or not self.project_idea.strip():
             raise ValueError("Proje fikri (project_idea) boş olamaz.")
         if self.max_turns < 1 or self.max_turns > 30:
             raise ValueError("max_turns 1 ile 30 arasında olmalıdır.")
+        if self.min_turns_before_complete is not None and (
+            self.min_turns_before_complete < 1
+            or self.min_turns_before_complete > self.max_turns
+        ):
+            raise ValueError("min_turns_before_complete 1 ile max_turns arasında olmalıdır.")
         if self.gap_min_seconds < 0 or self.gap_max_seconds < self.gap_min_seconds:
             raise ValueError("gap_min_seconds / gap_max_seconds aralığı geçersiz.")
 
@@ -113,7 +130,7 @@ class AutopilotRunState:
     status: str = "starting"
     current_turn: int = 0
     max_turns: int = 8
-    current_phase: str = "1_KURGU_ISKELET"
+    current_phase: str = "1_VIZYON_VE_CEKIRDEK"
     memory_summary: str = ""
     started_at: str = field(default_factory=_utc_iso)
     updated_at: str = field(default_factory=_utc_iso)
@@ -148,7 +165,7 @@ class AutopilotRunState:
             status=str(data.get("status") or "starting"),
             current_turn=int(data.get("current_turn") or 0),
             max_turns=int(data.get("max_turns") or 8),
-            current_phase=str(data.get("current_phase") or "1_KURGU_ISKELET"),
+            current_phase=str(data.get("current_phase") or "1_VIZYON_VE_CEKIRDEK"),
             memory_summary=str(data.get("memory_summary") or ""),
             started_at=str(data.get("started_at") or _utc_iso()),
             updated_at=str(data.get("updated_at") or _utc_iso()),
@@ -314,25 +331,51 @@ class AutopilotOrchestrator:
         user_prompt = build_kickoff_user_prompt(
             project_idea=self.state.project_idea,
             max_turns=self.config.max_turns,
+            min_turns=self.config.effective_min_turns,
         )
         raw = await self._complete_max_safe(
             system_prompt=MAX_SYSTEM_PROMPT,
             user_prompt=user_prompt,
         )
-        return parse_max_decision(raw, fallback_memory=self.state.memory_summary)
+        decision = parse_max_decision(raw, fallback_memory=self.state.memory_summary)
+        if decision.status == "TAMAMLANDI" or not decision.message_to_agent.strip():
+            # Başlangıçta henüz hiçbir tur çalışmadan TAMAMLANDI dönülemez
+            decision = MaxDecision(
+                status="DEVAM",
+                phase="1_VIZYON_VE_CEKIRDEK",
+                evaluation=decision.evaluation or "Başlangıç vizyon ve çekirdek adımı.",
+                updated_memory=decision.updated_memory or self.state.memory_summary,
+                message_to_agent=(
+                    decision.message_to_agent.strip()
+                    or (
+                        f"Bu projeyi ('{self.state.project_idea}') sıradan bir şablon "
+                        "olmaktan çıkarıp özgün ve derinlikli bir ürün olarak kuralım. "
+                        "Önce çalışma dizinini incele, ardından gerçek veri katmanını, "
+                        "karakterli arayüz iskeletini, gerçekçi Türkçe başlangıç "
+                        "verilerini ve çalışan çekirdek akışı kurup doğrula."
+                    )
+                ),
+                raw_response=decision.raw_response,
+            )
+        return decision
 
     async def _ask_max_for_next_step(
         self,
         *,
-        turn: int,
+        completed_turns: int,
         last_sent: str,
         agent_reply: AgentMessage,
         sandbox_evidence: str,
         anti_loop_warning: str = "",
+        early_exit_rejection_note: str = "",
     ) -> MaxDecision:
+        has_blocker = any(t.is_interactive_blocker for t in agent_reply.tools) or (
+            "ETKİLEŞİM ENGELİ" in sandbox_evidence
+        )
+        next_turn_label = min(completed_turns + 1, self.config.max_turns)
         user_prompt = build_turn_user_prompt(
             project_idea=self.state.project_idea,
-            turn=turn,
+            turn=next_turn_label,
             max_turns=self.config.max_turns,
             current_phase=self.state.current_phase,
             memory_summary=self.state.memory_summary,
@@ -341,12 +384,86 @@ class AutopilotOrchestrator:
             agent_reply_text=agent_reply.text,
             sandbox_evidence=sandbox_evidence,
             anti_loop_warning=anti_loop_warning,
+            completed_turns=completed_turns,
+            min_turns=self.config.effective_min_turns,
+            has_interactive_blocker=has_blocker,
+            early_exit_rejection_note=early_exit_rejection_note,
         )
         raw = await self._complete_max_safe(
             system_prompt=MAX_SYSTEM_PROMPT,
             user_prompt=user_prompt,
         )
         return parse_max_decision(raw, fallback_memory=self.state.memory_summary)
+
+    async def _guard_premature_completion(
+        self,
+        decision: MaxDecision,
+        *,
+        completed_turns: int,
+        last_sent: str,
+        agent_reply: AgentMessage,
+        sandbox_evidence: str,
+        anti_loop_warning: str = "",
+    ) -> MaxDecision:
+        """Olgunluk kapısından önce gelen erken `TAMAMLANDI` kararlarını durdurur."""
+        min_turns = self.config.effective_min_turns
+        if (
+            decision.status != "TAMAMLANDI"
+            or completed_turns >= min_turns
+            or completed_turns >= self.config.max_turns
+        ):
+            return decision
+
+        logger.info(
+            "autopilot_premature_completion_intercepted",
+            run_id=self.state.run_id,
+            completed_turns=completed_turns,
+            min_turns=min_turns,
+        )
+        if decision.updated_memory.strip():
+            self.state.memory_summary = decision.updated_memory.strip()
+
+        self._emit_progress(
+            f"Tur {completed_turns}: Erken bitirme engellendi "
+            f"({completed_turns}/{min_turns} olgunluk kapısı); derinleştirme adımı alınıyor..."
+        )
+        rejection_note = (
+            f"Az önce {completed_turns}. tur sonunda erken <DURUM>TAMAMLANDI</DURUM> verdin, "
+            f"ancak bu koşuda asgari ürün olgunluk kapısı {min_turns} turdur! "
+            "İlk çalışır iskelette projeyi bitirip kaçmak kesinlikle yasaktır. "
+            "Mevcut uygulamayı incele ve tekrara düşmeden ürünü sıradanlıktan çıkaracak "
+            "YARATICI İMZA ÖZELLİK (2_YARATICI_DERINLIK), UX/uç durum/etkileşim cilası "
+            "(3_DENEYIM_VE_CILA) veya gerçek uçtan uca test + 0.0.0.0 canlı sunucu "
+            "doğrulaması (4_DOGRULAMA_VE_SUNUCU) adımlarından sıradakini "
+            "<DURUM>DEVAM</DURUM> ve dolu bir <AJANA_MESAJ> ile üret."
+        )
+        retried = await self._ask_max_for_next_step(
+            completed_turns=completed_turns,
+            last_sent=last_sent,
+            agent_reply=agent_reply,
+            sandbox_evidence=sandbox_evidence,
+            anti_loop_warning=anti_loop_warning,
+            early_exit_rejection_note=rejection_note,
+        )
+        if retried.status == "DEVAM" and retried.message_to_agent.strip():
+            return retried
+
+        # Çok nadir durumda ikinci denemede bile erken bitirmeye diretirse güvenli derinleştirme:
+        return MaxDecision(
+            status="DEVAM",
+            phase="2_YARATICI_DERINLIK",
+            evaluation=(
+                retried.evaluation
+                or f"Olgunluk kapısı ({completed_turns}/{min_turns}) nedeniyle derinleştirme turu."
+            ),
+            updated_memory=retried.updated_memory or self.state.memory_summary,
+            message_to_agent=build_early_exit_fallback_instruction(
+                project_idea=self.state.project_idea,
+                completed_turns=completed_turns,
+                max_turns=self.config.max_turns,
+            ),
+            raw_response=retried.raw_response,
+        )
 
     async def _finish_stopped(self, reason: str) -> AutopilotRunState:
         self.state.status = "stopped"
@@ -406,9 +523,17 @@ class AutopilotOrchestrator:
                     role="assistant",
                     text=prev.agent_reply_text,
                 )
+                done_so_far = len(self.state.turns)
                 self._emit_progress(f"Tur {start_turn}: Kaldığı yerden Max kararı alınıyor...")
                 next_decision = await self._ask_max_for_next_step(
-                    turn=start_turn,
+                    completed_turns=done_so_far,
+                    last_sent=prev.sent_to_agent,
+                    agent_reply=synthetic_msg,
+                    sandbox_evidence=prev.sandbox_evidence,
+                )
+                next_decision = await self._guard_premature_completion(
+                    next_decision,
+                    completed_turns=done_so_far,
                     last_sent=prev.sent_to_agent,
                     agent_reply=synthetic_msg,
                     sandbox_evidence=prev.sandbox_evidence,
@@ -526,12 +651,20 @@ class AutopilotOrchestrator:
                             "ya da iş tamamlandıysa <DURUM>TAMAMLANDI</DURUM> ile bitir."
                         )
 
-                eval_turn_label = min(turn + 1, self.config.max_turns)
+                done_so_far = len(self.state.turns)
                 self._emit_progress(
                     f"Tur {turn} değerlendirmesi: Max sandbox kanıtlarını inceliyor..."
                 )
                 next_decision = await self._ask_max_for_next_step(
-                    turn=eval_turn_label if turn < self.config.max_turns else self.config.max_turns,
+                    completed_turns=done_so_far,
+                    last_sent=record.sent_to_agent,
+                    agent_reply=agent_reply,
+                    sandbox_evidence=evidence,
+                    anti_loop_warning=anti_loop_note,
+                )
+                next_decision = await self._guard_premature_completion(
+                    next_decision,
+                    completed_turns=done_so_far,
                     last_sent=record.sent_to_agent,
                     agent_reply=agent_reply,
                     sandbox_evidence=evidence,

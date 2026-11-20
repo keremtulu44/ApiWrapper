@@ -42,6 +42,21 @@ class MaxBridgeError(RuntimeError):
     """`max` katmanından yanıt alınamadığında fırlatılır."""
 
 
+def compose_single_turn_max_prompt(system_prompt: str, user_prompt: str) -> str:
+    """`system` ve `user` bölümlerini tek bir saf kullanıcı isteminde birleştirir.
+
+    Hedef sitedeki web `max` arayüzü tek turluk düz kullanıcı metni bekler. İki ayrı
+    mesaj (`system` + `user`) gönderildiğinde `prompt_builder` metni yapay bir
+    `System: ... User: ... Assistant:` transkriptine sarmalar; tek `user` mesajı
+    olarak birleştirmek bu yapay sarmalamayı sıfırlar ve talimat uyumunu güçlendirir.
+    """
+    sys_part = (system_prompt or "").strip()
+    usr_part = (user_prompt or "").strip()
+    if sys_part and usr_part:
+        return f"{sys_part}\n\n---\n\n{usr_part}"
+    return usr_part or sys_part
+
+
 class MaxBridge(abc.ABC):
     """Durumsuz `max` çağrı arayüzü."""
 
@@ -131,11 +146,11 @@ class ExternalHttpMaxBridge(MaxBridge):
         )
 
     async def _complete_via_chat(self, *, system_prompt: str, user_prompt: str) -> str:
+        combined_prompt = compose_single_turn_max_prompt(system_prompt, user_prompt)
         payload = {
             "model": self.model,
             "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
+                {"role": "user", "content": combined_prompt},
             ],
             "stream": False,
         }
@@ -162,10 +177,7 @@ class ExternalHttpMaxBridge(MaxBridge):
 
     async def _complete_via_ask(self, *, system_prompt: str, user_prompt: str) -> str:
         """`/v1/ask` SSE uç noktasını kullanarak (30 sn `wait` nabızlı) cevap alır."""
-        combined_prompt = (
-            f"System:\n{system_prompt.strip()}\n\n"
-            f"User:\n{user_prompt.strip()}\n\nAssistant:"
-        )
+        combined_prompt = compose_single_turn_max_prompt(system_prompt, user_prompt)
         payload = {"prompt": combined_prompt, "model": self.model}
         request = self.client.build_request("POST", "/v1/ask", json=payload)
         try:
@@ -227,12 +239,12 @@ class InProcessMaxBridge(MaxBridge):
 
     async def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         # `conversation_id=None` ve `client_identity=None` ile her tur yeni `chat_id` alır;
-        # `session_reuse` açık olsa bile bu çağrı geçmiş taşımaz.
+        # tek `user` mesajı ile `System:/User:/Assistant:` sarmalaması olmadan saf metin gider.
+        combined_prompt = compose_single_turn_max_prompt(system_prompt, user_prompt)
         req = ChatCompletionRequest(
             model=self.model,
             messages=[
-                ChatMessage(role="system", content=system_prompt),
-                ChatMessage(role="user", content=user_prompt),
+                ChatMessage(role="user", content=combined_prompt),
             ],
             stream=False,
             conversation_id=None,
