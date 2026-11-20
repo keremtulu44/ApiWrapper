@@ -438,3 +438,102 @@ async def test_telegram_rejects_same_google_account_conflict():
 
     assert "AYNI Google hesabına" in sent[-1]
 
+
+@pytest.mark.asyncio
+async def test_telegram_default_night_window_auto_turns_and_simdi_wake():
+    sent: list[str] = []
+    started_payloads: list[dict[str, object]] = []
+    start_now_called: list[str] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["text"])
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v1/autopilot/inspect-curl":
+            return httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "target_domain": "target.example",
+                    "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                    "source_endpoint_kind": "input",
+                    "same_account_conflict": False,
+                    "warnings": [],
+                },
+            )
+        if path == "/v1/autopilot/runs" and request.method == "POST":
+            body = json.loads(request.content.decode("utf-8"))
+            started_payloads.append(body)
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": "auto_night1",
+                    "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                    "agent_url": "https://target.example/agent/019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                    "status": "waiting_window",
+                    "max_turns": body["max_turns"],
+                    "auto_turns": body["auto_turns"],
+                    "respect_night_window": body["respect_night_window"],
+                },
+            )
+        if path == "/v1/autopilot/runs" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "active_count": 1,
+                    "runs": [
+                        {
+                            "run_id": "auto_night1",
+                            "status": "waiting_window",
+                            "current_turn": 0,
+                            "max_turns": 12,
+                            "planned_turns": 0,
+                            "project_idea": "Gece yapılacak proje",
+                        }
+                    ],
+                },
+            )
+        if path == "/v1/autopilot/runs/auto_night1/start-now" and request.method == "POST":
+            start_now_called.append("auto_night1")
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": "auto_night1",
+                    "status": "running",
+                    "bypassed_night_window": True,
+                },
+            )
+        return httpx.Response(404)
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl"})
+        sample_curl = (
+            'curl "https://target.example/api/chat/'
+            '019d8420-fa0b-76a8-8b2f-268c897d22a9/input" -b "a=1"'
+        )
+        await bot.handle_message({"chat": {"id": 42}, "text": sample_curl})
+        await bot.handle_message({"chat": {"id": 42}, "text": "/bitir"})
+        # Hiç /tur yazmadan doğrudan proje fikri gönderildiğinde varsayılan:
+        # auto_turns=True, respect_night_window=True, max_turns=12
+        await bot.handle_message(
+            {"chat": {"id": 42}, "text": "Akıllı envanter ve tedarik simülatörü"}
+        )
+        assert len(started_payloads) == 1
+        assert started_payloads[0]["auto_turns"] is True
+        assert started_payloads[0]["respect_night_window"] is True
+        assert started_payloads[0]["max_turns"] == 12
+        assert "gece sırasına alındı" in sent[-1]
+
+        # Kullanıcı isterse /simdi yazarak bekleyen gece projesini hemen uyandırabilir
+        await bot.handle_message({"chat": {"id": 42}, "text": "/simdi"})
+        assert start_now_called == ["auto_night1"]
+

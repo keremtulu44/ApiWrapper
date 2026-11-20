@@ -18,13 +18,14 @@ Akış:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import os
 import random
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ from app.autopilot.agent_client import AgentSessionClient, DeltaCallback
 from app.autopilot.events_parser import AgentMessage, format_sandbox_evidence
 from app.autopilot.max_bridge import MaxBridge, MaxBridgeError
 from app.autopilot.prompts import (
+    AGENT_FOLLOWUP_NO_ASK_GUARDRAIL,
     AGENT_OPERATING_GUARDRAILS,
     MAX_SYSTEM_PROMPT,
     MaxDecision,
@@ -48,6 +50,41 @@ from app.services.alerting import TelegramAlerter
 from app.utils.ids import random_suffix
 
 logger = get_logger(__name__)
+
+#: Türkiye kalıcı saat dilimi (UTC+3; slim konteynerlerde tzdata paketi gerektirmez).
+TR_TZ = timezone(timedelta(hours=3), name="TRT")
+
+
+def is_in_night_window(
+    now: datetime,
+    *,
+    start_hour: int = 22,
+    end_hour: int = 7,
+) -> bool:
+    """Verilen zamanın Türkiye saatine göre çalışma penceresinde olup olmadığını döner."""
+    local = now.astimezone(TR_TZ)
+    if start_hour == end_hour:
+        return True
+    if start_hour > end_hour:
+        # Gece yarısını aşan pencere: ör. 22:00 -> 07:00
+        return local.hour >= start_hour or local.hour < end_hour
+    return start_hour <= local.hour < end_hour
+
+
+def seconds_until_window_opens(
+    now: datetime,
+    *,
+    start_hour: int = 22,
+    end_hour: int = 7,
+) -> float:
+    """Pencere kapalıysa bir sonraki açılışa (`start_hour:00:00` TR) kalan saniye."""
+    if is_in_night_window(now, start_hour=start_hour, end_hour=end_hour):
+        return 0.0
+    local = now.astimezone(TR_TZ)
+    target = local.replace(hour=start_hour, minute=0, second=0, microsecond=0)
+    if target <= local:
+        target += timedelta(days=1)
+    return max(0.0, (target - local).total_seconds())
 
 
 class SameAccountError(ValueError):
@@ -69,7 +106,11 @@ class AutopilotConfig:
 
     project_idea: str
     max_turns: int = 8
+    auto_turns: bool = False
     min_turns_before_complete: int | None = None
+    respect_night_window: bool = False
+    night_start_hour: int = 22
+    night_end_hour: int = 7
     gap_min_seconds: float = 5.0
     gap_max_seconds: float = 10.0
     state_file: Path | None = None
@@ -95,6 +136,8 @@ class AutopilotConfig:
             or self.min_turns_before_complete > self.max_turns
         ):
             raise ValueError("min_turns_before_complete 1 ile max_turns arasında olmalıdır.")
+        if not (0 <= self.night_start_hour <= 23 and 0 <= self.night_end_hour <= 23):
+            raise ValueError("night_start_hour / night_end_hour 0..23 aralığında olmalıdır.")
         if self.gap_min_seconds < 0 or self.gap_max_seconds < self.gap_min_seconds:
             raise ValueError("gap_min_seconds / gap_max_seconds aralığı geçersiz.")
 
@@ -126,10 +169,13 @@ class AutopilotRunState:
     chat_id: str
     project_idea: str
     target_domain: str = ""
-    # starting | running | completed | stopped | failed | max_turns_reached
+    # starting | waiting_window | running | completed | stopped | failed | max_turns_reached
     status: str = "starting"
     current_turn: int = 0
     max_turns: int = 8
+    planned_turns: int = 0
+    auto_turns: bool = False
+    respect_night_window: bool = False
     current_phase: str = "1_VIZYON_VE_CEKIRDEK"
     memory_summary: str = ""
     started_at: str = field(default_factory=_utc_iso)
@@ -165,6 +211,9 @@ class AutopilotRunState:
             status=str(data.get("status") or "starting"),
             current_turn=int(data.get("current_turn") or 0),
             max_turns=int(data.get("max_turns") or 8),
+            planned_turns=int(data.get("planned_turns") or 0),
+            auto_turns=bool(data.get("auto_turns", False)),
+            respect_night_window=bool(data.get("respect_night_window", False)),
             current_phase=str(data.get("current_phase") or "1_VIZYON_VE_CEKIRDEK"),
             memory_summary=str(data.get("memory_summary") or ""),
             started_at=str(data.get("started_at") or _utc_iso()),
@@ -191,6 +240,9 @@ class AutopilotOrchestrator:
         on_progress: ProgressCallback | None = None,
         on_agent_delta: DeltaCallback | None = None,
         resume_state: AutopilotRunState | None = None,
+        now_fn: Callable[[], datetime] | None = None,
+        sleep_fn: Callable[[float], Awaitable[None]] | None = None,
+        execution_semaphore: asyncio.Semaphore | None = None,
     ) -> None:
         config.validate()
         self.config = config
@@ -199,11 +251,17 @@ class AutopilotOrchestrator:
         self.alerter = alerter
         self.on_progress = on_progress
         self.on_agent_delta = on_agent_delta
+        self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
+        self._sleep_fn = sleep_fn
+        self._execution_semaphore = execution_semaphore
         self._stop_requested = False
+        self._wake_event = asyncio.Event()
 
         if resume_state is not None:
             self.state = resume_state
             self.state.max_turns = config.max_turns
+            self.state.auto_turns = config.auto_turns
+            self.state.respect_night_window = config.respect_night_window
             if not self.state.target_domain:
                 self.state.target_domain = agent.config.target_domain
         else:
@@ -213,11 +271,88 @@ class AutopilotOrchestrator:
                 project_idea=config.project_idea.strip(),
                 target_domain=agent.config.target_domain,
                 max_turns=config.max_turns,
+                auto_turns=config.auto_turns,
+                respect_night_window=config.respect_night_window,
             )
 
     def request_stop(self) -> None:
         """Döngüyü mevcut adım tamamlandığında güvenli biçimde durdurur."""
         self._stop_requested = True
+        self._wake_event.set()
+
+    def bypass_night_window(self) -> None:
+        """Gece penceresini bekleyen koşuyu derhal uyandırıp gündüz de çalıştırır."""
+        self.config.respect_night_window = False
+        self.state.respect_night_window = False
+        self._wake_event.set()
+
+    def _current_min_turns(self) -> int:
+        if self.config.min_turns_before_complete is not None:
+            return self.config.effective_min_turns
+        if self.config.auto_turns and self.state.planned_turns > 0:
+            base = compute_min_turns_before_completion(self.state.planned_turns)
+            # Otomatik modda da çok erken (1.-2. turda) kaçmayı önlemek için en az 3-4 tur tabanı:
+            floor = min(self.config.max_turns, max(min(4, self.config.max_turns), base))
+            return max(1, floor)
+        return self.config.effective_min_turns
+
+    async def _wait_for_night_window_if_needed(self, *, stage_note: str) -> bool:
+        """Gece penceresi (`22:00–07:00` TR) kapalıysa açılana dek `max`'a dokunmadan bekler.
+
+        Dönüş: Devam edilebiliyorsa ``True``, beklerken durdurma istendiyse ``False``.
+        """
+        if not self.config.respect_night_window:
+            return not self._stop_requested
+
+        start_h = self.config.night_start_hour
+        end_h = self.config.night_end_hour
+        now = self._now_fn()
+        if is_in_night_window(now, start_hour=start_h, end_hour=end_h):
+            return not self._stop_requested
+
+        win_label = f"{start_h:02d}:00–{end_h:02d}:00 TR"
+        local_str = now.astimezone(TR_TZ).strftime("%H:%M")
+        self.state.status = "waiting_window"
+        self._emit_progress(
+            f"🌙 Gece penceresi ({win_label}) bekleniyor (şu an {local_str} TR · {stage_note}) "
+            "— Max'a istek gönderilmiyor."
+        )
+        await self._notify_telegram(
+            "\n".join(
+                [
+                    f"🌙 ApiWrapper Autopilot gece sırasına alındı ({win_label})",
+                    *self._project_header_lines(),
+                    f"Durum: Şu an saat {local_str} TR; Max aktif kullanıldığı için "
+                    f"saat {start_h:02d}:00'de otomatik başlayacak/devam edecek.",
+                    f"Hemen başlatmak isterseniz: /simdi {self.state.run_id}",
+                ]
+            )
+        )
+
+        while (
+            not self._stop_requested
+            and self.config.respect_night_window
+            and not is_in_night_window(
+                self._now_fn(), start_hour=start_h, end_hour=end_h
+            )
+        ):
+            rem = seconds_until_window_opens(
+                self._now_fn(), start_hour=start_h, end_hour=end_h
+            )
+            step = min(30.0, max(1.0, rem))
+            if self._sleep_fn is not None:
+                await self._sleep_fn(step)
+            else:
+                self._wake_event.clear()
+                with contextlib.suppress(asyncio.TimeoutError):
+                    await asyncio.wait_for(self._wake_event.wait(), timeout=step)
+
+        if self._stop_requested:
+            return False
+
+        self.state.status = "running"
+        self._emit_progress("⚡ Çalışma penceresi aktif; otopilot yürütülüyor...")
+        return True
 
     def _verify_separate_accounts(self) -> None:
         agent_sub = self.agent.account_identity()
@@ -331,13 +466,19 @@ class AutopilotOrchestrator:
         user_prompt = build_kickoff_user_prompt(
             project_idea=self.state.project_idea,
             max_turns=self.config.max_turns,
-            min_turns=self.config.effective_min_turns,
+            min_turns=self._current_min_turns(),
+            auto_turns=self.config.auto_turns,
         )
         raw = await self._complete_max_safe(
             system_prompt=MAX_SYSTEM_PROMPT,
             user_prompt=user_prompt,
         )
         decision = parse_max_decision(raw, fallback_memory=self.state.memory_summary)
+        if self.config.auto_turns and decision.planned_turns is not None:
+            low_floor = min(4, self.config.max_turns)
+            self.state.planned_turns = max(
+                low_floor, min(self.config.max_turns, decision.planned_turns)
+            )
         if decision.status == "TAMAMLANDI" or not decision.message_to_agent.strip():
             # Başlangıçta henüz hiçbir tur çalışmadan TAMAMLANDI dönülemez
             decision = MaxDecision(
@@ -356,6 +497,7 @@ class AutopilotOrchestrator:
                     )
                 ),
                 raw_response=decision.raw_response,
+                planned_turns=decision.planned_turns,
             )
         return decision
 
@@ -385,7 +527,8 @@ class AutopilotOrchestrator:
             sandbox_evidence=sandbox_evidence,
             anti_loop_warning=anti_loop_warning,
             completed_turns=completed_turns,
-            min_turns=self.config.effective_min_turns,
+            min_turns=self._current_min_turns(),
+            planned_turns=self.state.planned_turns or None,
             has_interactive_blocker=has_blocker,
             early_exit_rejection_note=early_exit_rejection_note,
         )
@@ -406,7 +549,7 @@ class AutopilotOrchestrator:
         anti_loop_warning: str = "",
     ) -> MaxDecision:
         """Olgunluk kapısından önce gelen erken `TAMAMLANDI` kararlarını durdurur."""
-        min_turns = self.config.effective_min_turns
+        min_turns = self._current_min_turns()
         if (
             decision.status != "TAMAMLANDI"
             or completed_turns >= min_turns
@@ -483,6 +626,26 @@ class AutopilotOrchestrator:
     async def run(self) -> AutopilotRunState:
         """Otopilot döngüsünü baştan (veya `resume_state`'ten) sonuna dek yürütür."""
         self._verify_separate_accounts()
+
+        # Gece penceresi aktifse ve saat henüz 22:00 olmadıysa hiçbir ağ bağlantısı
+        # ve Max çağrısı yapmadan pencere açılışını bekle.
+        if not await self._wait_for_night_window_if_needed(stage_note="başlangıç öncesi"):
+            return await self._finish_stopped("Gece penceresini beklerken durduruldu.")
+
+        if self._execution_semaphore is not None and self.config.respect_night_window:
+            if self._execution_semaphore.locked():
+                self.state.status = "waiting_window"
+                self._emit_progress(
+                    "⏳ Önceki gece projesinin tamamlanması bekleniyor (sıralı yürütme)..."
+                )
+            async with self._execution_semaphore:
+                return await self._run_inside_slot()
+        return await self._run_inside_slot()
+
+    async def _run_inside_slot(self) -> AutopilotRunState:
+        if not await self._wait_for_night_window_if_needed(stage_note="sıra alındı"):
+            return await self._finish_stopped("Sıra beklerken durduruldu.")
+
         await self.agent.startup()
         await self.max_bridge.startup()
 
@@ -492,12 +655,17 @@ class AutopilotOrchestrator:
             await self.agent.connect(wait_if_busy=True)
             self._emit_progress(f"Agent sohbetine bağlandı (chat_id={self.state.chat_id}).")
 
+            budget_desc = (
+                f"Otomatik (Üst tavan: {self.config.max_turns})"
+                if self.config.auto_turns
+                else str(self.config.max_turns)
+            )
             await self._notify_telegram(
                 "\n".join(
                     [
                         "🚀 ApiWrapper Autopilot başladı",
                         *self._project_header_lines(),
-                        f"Azami Tur: {self.config.max_turns}",
+                        f"Tur Planı: {budget_desc}",
                     ]
                 )
             )
@@ -542,6 +710,12 @@ class AutopilotOrchestrator:
             for turn in range(start_turn, self.config.max_turns + 1):
                 if self._stop_requested:
                     return await self._finish_stopped("Kullanıcı tarafından durduruldu.")
+
+                # Sabah 07:00 olduysa yeni tura girmeden durakla ve 22:00'yi bekle
+                if not await self._wait_for_night_window_if_needed(
+                    stage_note=f"Tur {turn} öncesi"
+                ):
+                    return await self._finish_stopped("Gece penceresini beklerken durduruldu.")
 
                 assert next_decision is not None
                 self.state.current_turn = turn
@@ -588,10 +762,15 @@ class AutopilotOrchestrator:
                     )
                     return self.state
 
-                # Ajana gidecek mesajı hazırla (1. turda çalışma kurallarını ekle)
+                # Ajana gidecek mesajı hazırla:
+                # 1. turda tam çalışma/sunucu kurallarını, 2..N turlarında ise her tur
+                # kesin ask_user / onay penceresi yasağını otomatik ekle.
                 outgoing = next_decision.message_to_agent.strip()
-                if turn == 1 and self.config.append_guardrails_on_first_turn:
-                    outgoing = outgoing + AGENT_OPERATING_GUARDRAILS
+                if self.config.append_guardrails_on_first_turn:
+                    if turn == 1:
+                        outgoing = outgoing + AGENT_OPERATING_GUARDRAILS
+                    elif "ask_user" not in outgoing.lower():
+                        outgoing = outgoing + AGENT_FOLLOWUP_NO_ASK_GUARDRAIL
 
                 await self._sleep_gap()
                 if self._stop_requested:

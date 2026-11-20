@@ -39,10 +39,12 @@ _HELP = (
     "🤖 Otopilot (Model A — Agent Mode Proje):\n"
     "• /curl — Agent Mode '/input' cURL parçalarını toplamaya başla\n"
     "• /curl bitir (veya /bitir) — Yapıştırılan tüm cURL parçalarını birleştir ve doğrula\n"
-    "• /tur <1-25> — Başlatılacak projenin azami tur sayısını ayarla (varsayılan: 8)\n"
-    "• /projeler (veya /durum) — Çalışan ve biten projeleri listele\n"
+    "• /tur oto | /tur <1-25> — Otomatik tur (Max projeye göre seçer) veya sabit tavan\n"
+    "• /gece — Yalnız 22:00–07:00 (TR) arasında çalıştır (varsayılan)\n"
+    "• /simdi [run_id] — 22:00'yi beklemeden hemen çalıştır / sıradaki projeyi uyandır\n"
+    "• /projeler (veya /durum) — Çalışan, sırada bekleyen ve biten projeleri listele\n"
     "• /durum <run_id> — Seçilen projenin tur/hafıza detayını ve Agent linkini gör\n"
-    "• /durdur [run_id] — Çalışan projeyi güvenli biçimde durdur\n"
+    "• /durdur [run_id] — Çalışan veya gece sırasındaki projeyi güvenli biçimde durdur\n"
     "• /iptal — Açık cURL/fikir girişini temizle\n\n"
     "Diğer komutlar: /ping (wrapper health), /help."
 )
@@ -53,6 +55,7 @@ _MAX_CURL_BUFFER_CHARS = 250_000
 
 _STATUS_LABELS: dict[str, str] = {
     "starting": "⏳ Başlatılıyor",
+    "waiting_window": "🌙 Gece Sırasında (22:00–07:00)",
     "running": "🔄 Çalışıyor",
     "completed": "✅ Tamamlandı",
     "max_turns_reached": "⏹️ Tur Sınırına Ulaştı",
@@ -70,7 +73,9 @@ class _ChatAutopilotSession:
     validated_curl: str = ""
     validated_chat_id: str = ""
     validated_domain: str = ""
-    max_turns: int = 8
+    max_turns: int = 12
+    auto_turns: bool = True
+    respect_night_window: bool = True
     updated_at: float = field(default_factory=time.monotonic)
 
     def clear_pending(self) -> None:
@@ -79,6 +84,10 @@ class _ChatAutopilotSession:
         self.validated_curl = ""
         self.validated_chat_id = ""
         self.validated_domain = ""
+        # Bir sonraki proje için güvenli varsayılanlara (otomatik tur + gece penceresi) dön:
+        self.max_turns = 12
+        self.auto_turns = True
+        self.respect_night_window = True
         self.updated_at = time.monotonic()
 
 
@@ -320,6 +329,12 @@ class TelegramBot:
         if command == "/tur":
             await self._handle_turn_limit(chat_id, sess, arg)
             return
+        if command == "/gece":
+            await self._handle_night_mode(chat_id, sess)
+            return
+        if command in {"/simdi", "/hemen"}:
+            await self._handle_start_now(chat_id, sess, arg)
+            return
         if command in {"/proje", "/baslat"}:
             if not arg:
                 await self.send_text(
@@ -489,15 +504,25 @@ class TelegramBot:
 
         warnings = [str(w) for w in (data.get("warnings") or []) if w]
         warn_block = ("\n⚠️ Not: " + " ".join(warnings)) if warnings else ""
+        turn_label = (
+            f"Otomatik (Max projeye göre belirler, güvenlik tavanı: {sess.max_turns})"
+            if sess.auto_turns
+            else f"Sabit tavan: {sess.max_turns}"
+        )
+        schedule_label = (
+            "🌙 Gece Penceresi (22:00–07:00 TR · hemen başlatmak için önce /simdi yazın)"
+            if sess.respect_night_window
+            else "⚡ Hemen Başlat (gece penceresini beklemez)"
+        )
         await self.send_text(
             chat_id,
             f"✅ Agent cURL doğrulandı ({chunk_count} parça birleştirildi)!\n"
             f"• Agent Sohbet: {sess.validated_chat_id}\n"
             f"• Kaynak Türü: {data.get('source_endpoint_kind', 'unknown')}\n"
-            f"• Azami Tur: {sess.max_turns} (değiştirmek için önce /tur 12 yazabilirsiniz)"
+            f"• Tur Planı: {turn_label}\n"
+            f"• Çalışma Zamanı: {schedule_label}"
             f"{warn_block}\n\n"
-            "✏️ Şimdi yaptırmak istediğiniz **proje fikrini** yazıp gönderin; "
-            "otopilot arka planda hemen başlayacak.",
+            "✏️ Şimdi yaptırmak istediğiniz **proje fikrini** yazıp gönderin.",
             disable_preview=True,
         )
 
@@ -507,15 +532,42 @@ class TelegramBot:
         sess: _ChatAutopilotSession,
         arg: str,
     ) -> None:
+        cleaned = arg.strip().lower()
+        if cleaned in {"oto", "otomatik", "auto"}:
+            sess.auto_turns = True
+            sess.max_turns = 12
+            sess.updated_at = time.monotonic()
+            await self.send_text(
+                chat_id,
+                "⚙️ Tur planlaması OTOMATİK moda alındı (Max projenin kapsamına göre "
+                "ideal tur sayısını kendi belirleyecek, üst güvenlik tavanı: 12).",
+            )
+            return
+        if not cleaned:
+            mode_txt = (
+                f"Otomatik (tavan: {sess.max_turns})"
+                if sess.auto_turns
+                else f"Sabit ({sess.max_turns} tur)"
+            )
+            await self.send_text(
+                chat_id,
+                f"Mevcut tur ayarı: {mode_txt}\n"
+                "Değiştirmek için: /tur oto veya /tur <1 ile 25 arası sayı>",
+            )
+            return
         try:
-            turns = int(arg.strip())
+            turns = int(cleaned)
         except ValueError:
-            await self.send_text(chat_id, "Kullanım: /tur <1 ile 25 arası sayı> (ör. /tur 10)")
+            await self.send_text(
+                chat_id,
+                "Kullanım: /tur oto veya /tur <1 ile 25 arası sayı> (ör. /tur 10)",
+            )
             return
         if turns < 1 or turns > 25:
             await self.send_text(chat_id, "Tur sayısı 1 ile 25 arasında olmalıdır.")
             return
         sess.max_turns = turns
+        sess.auto_turns = False
         sess.updated_at = time.monotonic()
         extra = (
             " Şimdi proje fikrini gönderebilirsiniz."
@@ -525,6 +577,83 @@ class TelegramBot:
         await self.send_text(
             chat_id,
             f"⚙️ Otopilot azami tur sayısı {turns} olarak ayarlandı.{extra}",
+        )
+
+    async def _handle_night_mode(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+    ) -> None:
+        sess.respect_night_window = True
+        sess.updated_at = time.monotonic()
+        await self.send_text(
+            chat_id,
+            "🌙 Gece çalışma penceresi aktif: Başlatacağınız proje yalnızca "
+            "22:00–07:00 (TR) saatleri arasında çalışacak; gündüz gönderirseniz "
+            "Max'a dokunmadan 22:00'yi bekleyecek.",
+        )
+
+    async def _handle_start_now(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+        arg: str,
+    ) -> None:
+        target_id = arg.split()[0].strip() if arg.strip() else ""
+        if not target_id and sess.mode == "awaiting_idea":
+            sess.respect_night_window = False
+            sess.updated_at = time.monotonic()
+            await self.send_text(
+                chat_id,
+                "⚡ Hemen başlatma modu seçildi: Şimdi yazacağınız proje fikri "
+                "22:00 gece penceresini beklemeden anında başlayacak.",
+            )
+            return
+
+        if not target_id:
+            try:
+                list_resp = await self.wrapper.get("/v1/autopilot/runs")
+            except httpx.HTTPError:
+                list_resp = None
+            if list_resp is not None and list_resp.status_code == 200:
+                runs = list_resp.json().get("runs") or []
+                waiting = [
+                    str(r.get("run_id"))
+                    for r in runs
+                    if isinstance(r, dict) and r.get("status") == "waiting_window"
+                ]
+                if len(waiting) == 1:
+                    target_id = waiting[0]
+                elif len(waiting) > 1:
+                    await self.send_text(
+                        chat_id,
+                        "Gece sırasında bekleyen birden fazla proje var; hangisini "
+                        "hemen başlatacağınızı seçin:\n"
+                        + "\n".join(f"• /simdi {rid}" for rid in waiting),
+                    )
+                    return
+
+        if target_id:
+            try:
+                resp = await self.wrapper.post(f"/v1/autopilot/runs/{target_id}/start-now")
+            except httpx.HTTPError:
+                await self.send_text(chat_id, "Wrapper start-now ucuna ulaşılamadı.")
+                return
+            if resp.status_code != 200:
+                await self.send_text(chat_id, _autopilot_error_message(resp))
+                return
+            await self.send_text(
+                chat_id,
+                f"⚡ {target_id} için gece penceresi beklemesi kaldırıldı; hemen başlatılıyor!",
+            )
+            return
+
+        sess.respect_night_window = False
+        sess.updated_at = time.monotonic()
+        await self.send_text(
+            chat_id,
+            "⚡ Sıradaki proje için hemen başlatma modu açıldı (22:00 beklenmeyecek). "
+            "Tekrar gece moduna dönmek için /gece yazabilirsiniz.",
         )
 
     async def _start_autopilot_with_idea(
@@ -551,6 +680,8 @@ class TelegramBot:
 
         agent_curl = sess.validated_curl
         max_turns = sess.max_turns
+        auto_turns = sess.auto_turns
+        respect_night = sess.respect_night_window
         try:
             response = await self.wrapper.post(
                 "/v1/autopilot/runs",
@@ -558,6 +689,8 @@ class TelegramBot:
                     "project_idea": cleaned_idea,
                     "agent_curl": agent_curl,
                     "max_turns": max_turns,
+                    "auto_turns": auto_turns,
+                    "respect_night_window": respect_night,
                 },
             )
         except httpx.HTTPError as exc:
@@ -582,15 +715,33 @@ class TelegramBot:
         data = response.json()
         run_id = str(data.get("run_id") or "")
         agent_url = str(data.get("agent_url") or data.get("chat_id") or "")
+        run_status = str(data.get("status") or "")
+        turn_desc = (
+            f"Otomatik (Tavan: {data.get('max_turns', max_turns)})"
+            if auto_turns
+            else str(data.get("max_turns", max_turns))
+        )
+        sched_desc = (
+            "🌙 Gece Penceresi (22:00–07:00 TR · hemen başlatmak için: /simdi "
+            f"{run_id})"
+            if respect_night
+            else "⚡ Anında Yürütme"
+        )
+        headline = (
+            "🌙 Otopilot projesi gece sırasına alındı!"
+            if respect_night and run_status == "waiting_window"
+            else "🚀 Otopilot projesi arka planda başlatıldı!"
+        )
         await self.send_text(
             chat_id,
-            f"🚀 Otopilot projesi arka planda başlatıldı!\n"
+            f"{headline}\n"
             f"• Run ID: {run_id}\n"
             f"• Agent: {agent_url}\n"
-            f"• Azami Tur: {data.get('max_turns', max_turns)}\n\n"
+            f"• Tur Planı: {turn_desc}\n"
+            f"• Zamanlama: {sched_desc}\n\n"
             f"Durum takibi: /projeler veya /durum {run_id}\n"
             f"Durdurmak için: /durdur {run_id}\n"
-            "Bu proje çalışırken veya bitince yeni proje eklemek için tekrar /curl yazabilirsiniz.",
+            "Yeni proje eklemek için tekrar /curl yazabilirsiniz.",
             disable_preview=True,
         )
 
@@ -624,17 +775,23 @@ class TelegramBot:
             badge = _STATUS_LABELS.get(st, st)
             cur = item.get("current_turn", 0)
             mx = item.get("max_turns", 0)
+            planned = item.get("planned_turns", 0)
+            turn_tag = (
+                f"Tur {cur}/~{planned} [tavan {mx}]"
+                if planned
+                else f"Tur {cur}/{mx}"
+            )
             idea = str(item.get("project_idea") or "").strip()
             link = str(item.get("agent_url") or item.get("chat_id") or "")
             note = str(item.get("last_note") or "").strip()
             block = [
-                f"\n• {rid} — {badge} (Tur {cur}/{mx})",
+                f"\n• {rid} — {badge} ({turn_tag})",
             ]
             if idea:
                 block.append(f"  Proje: {idea}")
             if link:
                 block.append(f"  Agent: {link}")
-            if note and st in {"running", "starting"}:
+            if note and st in {"running", "starting", "waiting_window"}:
                 block.append(f"  Son adım: {note}")
             elif item.get("stop_reason") and st != "running":
                 reason_short = " ".join(str(item["stop_reason"]).split())[:140]
@@ -710,7 +867,8 @@ class TelegramBot:
             active = [
                 str(r.get("run_id"))
                 for r in runs
-                if isinstance(r, dict) and r.get("status") in {"starting", "running"}
+                if isinstance(r, dict)
+                and r.get("status") in {"starting", "waiting_window", "running"}
             ]
             if not active:
                 await self.send_text(chat_id, "Şu anda çalışan bir otopilot projesi yok.")

@@ -41,10 +41,13 @@ class ManagedRun:
 class AutopilotManager:
     """API üzerinden başlatılan otopilot koşularını izler ve yönetir."""
 
-    def __init__(self, *, max_concurrent_runs: int = 3) -> None:
+    def __init__(self, *, max_concurrent_runs: int = 10) -> None:
         self.max_concurrent_runs = max(1, max_concurrent_runs)
         self._runs: dict[str, ManagedRun] = {}
         self._order: list[str] = []
+        # Gece sırasına bırakılan projelerin 22:00'de aynı saniyede Max'a yüklenmemesi
+        # için sıralı yürütme kilidi (biri bitince sıradaki başlar).
+        self._night_semaphore = asyncio.Semaphore(1)
 
     def active_count(self) -> int:
         return sum(1 for item in self._runs.values() if not item.task.done())
@@ -72,6 +75,9 @@ class AutopilotManager:
                     "status": st.status,
                     "current_turn": st.current_turn,
                     "max_turns": st.max_turns,
+                    "planned_turns": st.planned_turns,
+                    "auto_turns": st.auto_turns,
+                    "respect_night_window": st.respect_night_window,
                     "current_phase": st.current_phase,
                     "last_note": item.last_note,
                     "stop_reason": st.stop_reason,
@@ -89,6 +95,10 @@ class AutopilotManager:
         agent_curl: str,
         chat_id_override: str | None = None,
         max_turns: int = 8,
+        auto_turns: bool = False,
+        respect_night_window: bool = False,
+        night_start_hour: int = 22,
+        night_end_hour: int = 7,
         gap_min_seconds: float = 5.0,
         gap_max_seconds: float = 10.0,
         agent_turn_timeout: float = 900.0,
@@ -102,7 +112,8 @@ class AutopilotManager:
     ) -> AutopilotRunState:
         if self.active_count() >= self.max_concurrent_runs:
             raise ValueError(
-                f"Aynı anda en fazla {self.max_concurrent_runs} otopilot koşusu çalışabilir."
+                f"Aynı anda en fazla {self.max_concurrent_runs} otopilot koşusu "
+                "kuyrukta/aktif olabilir."
             )
 
         agent = AgentSessionClient.from_curl(
@@ -128,6 +139,10 @@ class AutopilotManager:
         cfg = AutopilotConfig(
             project_idea=project_idea,
             max_turns=max_turns,
+            auto_turns=auto_turns,
+            respect_night_window=respect_night_window,
+            night_start_hour=night_start_hour,
+            night_end_hour=night_end_hour,
             gap_min_seconds=gap_min_seconds,
             gap_max_seconds=gap_max_seconds,
         )
@@ -145,6 +160,7 @@ class AutopilotManager:
             max_bridge=bridge,
             alerter=alerter,
             on_progress=_on_progress,
+            execution_semaphore=self._night_semaphore,
         )
         # Hesap ayrılığı kontrolünü senkron olarak hemen yap ki 400 dönebilsin.
         orch._verify_separate_accounts()
@@ -173,6 +189,15 @@ class AutopilotManager:
             return None
         item.orchestrator.request_stop()
         item.last_note = "Durdurma isteği alındı; mevcut adım bitince duracak."
+        return item.orchestrator.state
+
+    def start_now(self, run_id: str) -> AutopilotRunState | None:
+        """Gece penceresini bekleyen bir koşuyu derhal uyandırır."""
+        item = self._runs.get(run_id)
+        if item is None:
+            return None
+        item.orchestrator.bypass_night_window()
+        item.last_note = "Gece penceresi beklemesi atlandı; hemen başlatılıyor."
         return item.orchestrator.state
 
     async def shutdown(self) -> None:

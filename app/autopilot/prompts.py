@@ -17,16 +17,24 @@ import difflib
 import re
 from dataclasses import dataclass
 
-#: Ajanın her zaman uyması gereken çalışma kuralları (ilk mesajın sonuna eklenir).
+#: Ajanın her zaman uyması gereken çalışma kuralları (1. tur mesajının sonuna eklenir).
 AGENT_OPERATING_GUARDRAILS = (
-    "\n\nNot: Çalışırken bana çoktan seçmeli soru/onay penceresi (ask_user, "
-    "offer_options, add_voice vb.) açma; teknik ve tasarımsal detaylarda en doğru, "
-    "özgün ve sağlam kararı kendin verip doğrudan uygula. Şu an dışarıda olduğum "
-    "için kendi bilgisayarımda komut çalıştırma veya tarayıcıda deneme şansım yok; "
-    "derlemeyi, uçtan uca testleri ve canlı önizleme sunucusunu doğrudan kendi "
-    "ortamında bizzat çalıştırıp doğrula. Arka plan web sunucusu başlatırken "
-    "(start_process) 0.0.0.0 adresine bağla, önizleme proxy hostlarına izin ver "
-    "ve tarayıcı kodunda asla localhost/127.0.0.1 sabitleme (göreli URL kullan)."
+    "\n\nNot: Çalışırken bana kesinlikle çoktan seçmeli soru/onay penceresi "
+    "(ask_user, offer_options, add_voice vb.) açma; teknik ve tasarımsal "
+    "detaylarda en doğru, özgün ve sağlam kararı kendin verip doğrudan uygula. "
+    "Şu an dışarıda olduğum için kendi bilgisayarımda komut çalıştırma veya "
+    "tarayıcıda deneme şansım yok; derlemeyi, uçtan uca testleri ve canlı "
+    "önizleme sunucusunu doğrudan kendi ortamında bizzat çalıştırıp doğrula. "
+    "Arka plan web sunucusu başlatırken (start_process) 0.0.0.0 adresine bağla, "
+    "önizleme proxy hostlarına izin ver ve tarayıcı kodunda asla "
+    "localhost/127.0.0.1 sabitleme (göreli URL kullan)."
+)
+
+#: 2..N turlarında ajanın bağlam uzadığında unutmasını önleyen kısa ask_user kilidi.
+AGENT_FOLLOWUP_NO_ASK_GUARDRAIL = (
+    "\n\nNot: Uygulama sırasında kesinlikle ask_user veya seçenek/onay penceresi "
+    "(offer_options vb.) açma; tüm teknik ve tasarım kararlarını doğrudan kendin "
+    "verip kendi ortamında çalıştırarak doğrula."
 )
 
 MAX_SYSTEM_PROMPT = (
@@ -87,10 +95,13 @@ MAX_SYSTEM_PROMPT = (
     "ile doğrulanması.\n"
     "- 5_KABUL: Yalnızca olgunluk kapısı aşıldığında ve 1..4 aşamalarının tamamı "
     "sandbox kanıtıyla doğrulandığında <DURUM>TAMAMLANDI</DURUM> ver.\n\n"
-    "ÇIKTI BİÇİMİ (HER TURDA TAM OLARAK BU 5 ETİKETİ VER, DIŞINA METİN YAZMA):\n"
+    "ÇIKTI BİÇİMİ (HER TURDA BU ETİKETLERİ VER, DIŞINA METİN YAZMA):\n"
     "<DURUM>DEVAM veya TAMAMLANDI veya TAKILDI</DURUM>\n"
     "<ASAMA>1_VIZYON_VE_CEKIRDEK veya 2_YARATICI_DERINLIK veya 3_DENEYIM_VE_CILA "
     "veya 4_DOGRULAMA_VE_SUNUCU veya 5_KABUL</ASAMA>\n"
+    "<HEDEF_TUR>(Yalnız 1. turda zorunlu; projenin gerçek kapsamına göre ideal "
+    "toplam tur tahmini: odaklı küçük araç=4-5, orta kapsamlı zengin uygulama=6-8, "
+    "çok modüllü kapsamlı sistem=9-12)</HEDEF_TUR>\n"
     "<DEGERLENDIRME>\n"
     "Ajanın bu turda yaptığı işin gerçek kalitesi, laf kalabalığı mı yoksa somut "
     "çalışan ilerleme mi olduğu ve yol haritasında neden bu adımı seçtiğinin analizi.\n"
@@ -106,7 +117,13 @@ MAX_SYSTEM_PROMPT = (
     "</AJANA_MESAJ>"
 )
 
-_INTERNAL_TAG_NAMES = ("DURUM", "ASAMA", "DEGERLENDIRME", "GUNCEL_HAFIZA")
+_INTERNAL_TAG_NAMES = (
+    "DURUM",
+    "ASAMA",
+    "HEDEF_TUR",
+    "DEGERLENDIRME",
+    "GUNCEL_HAFIZA",
+)
 
 
 def compute_min_turns_before_completion(max_turns: int) -> int:
@@ -156,6 +173,7 @@ class MaxDecision:
     updated_memory: str
     message_to_agent: str
     raw_response: str
+    planned_turns: int | None = None
 
 
 def build_kickoff_user_prompt(
@@ -163,17 +181,26 @@ def build_kickoff_user_prompt(
     project_idea: str,
     max_turns: int,
     min_turns: int | None = None,
+    auto_turns: bool = False,
 ) -> str:
     """1. turda (henüz ajana proje anlatılmamışken) `max`'a verilen başlangıç paketi."""
     effective_min = (
         min_turns if min_turns is not None else compute_min_turns_before_completion(max_turns)
     )
     effective_min = max(1, min(max_turns, effective_min))
+    if auto_turns:
+        budget_header = (
+            f"Tur: 1 · Tur Planlaması: OTOMATİK (Projenin kapsamına göre ideal tur "
+            f"sayısını <HEDEF_TUR> etiketinde sen belirle; üst güvenlik tavanı: {max_turns})"
+        )
+    else:
+        budget_header = (
+            f"Tur: 1 / Azami {max_turns} · Asgari Olgunluk Hedefi: En az {effective_min} tur "
+            "(Proje Başlangıcı — İlk Mimari ve Vizyon Talimatı)"
+        )
     return (
         f"[PROJE FİKRİ VE ANA HEDEF]\n{project_idea.strip()}\n\n"
-        f"[TUR VE YOL HARİTASI BÜTÇESİ]\n"
-        f"Tur: 1 / Azami {max_turns} · Asgari Olgunluk Hedefi: En az {effective_min} tur "
-        "(Proje Başlangıcı — İlk Mimari ve Vizyon Talimatı)\n\n"
+        f"[TUR VE YOL HARİTASI BÜTÇESİ]\n{budget_header}\n\n"
         "[MEVCUT DURUM]\n"
         "Kodlama ajanıyla sohbet yeni açıldı ve geliştirme ortamı (sandbox) hazır bekliyor. "
         "Henüz proje tarif edilmedi.\n\n"
@@ -182,16 +209,19 @@ def build_kickoff_user_prompt(
         "ödevi / boş CRUD şablonu olmaktan çıkar! Ürüne özgün bir karakter, rafine bir "
         "görsel tasarım dili, gerçekçi Türkçe başlangıç verileri ve sonraki turlarda "
         "işlenecek yaratıcı imza özellikler kurgula.\n"
-        "2. <GUNCEL_HAFIZA> içine bu projeyi aşama aşama olgunlaştıracak net bir "
+        "2. Projenin gerçek büyüklüğünü tart ve <HEDEF_TUR> içine ideal tur sayısını yaz "
+        "(odaklı kompakt araçlar için 4-5, orta kapsamlı zengin uygulamalar için 6-8, "
+        f"çok modüllü geniş sistemler için 9-{max(9, min(12, max_turns))}).\n"
+        "3. <GUNCEL_HAFIZA> içine bu projeyi aşama aşama olgunlaştıracak net bir "
         "YOL HARİTASI yaz (Aşama 1: Çekirdek & Tasarım Temeli -> Aşama 2: Yaratıcı İmza "
         "Özellikler -> Aşama 3: UX Derinliği & Uç Durum Cilası -> Aşama 4: Uçtan Uca "
         "Otomatik Doğrulama & 0.0.0.0 Canlı Sunucu).\n"
-        "3. <AJANA_MESAJ> içinde tüm turların işini tek seferde yığma! Ajandan önce "
+        "4. <AJANA_MESAJ> içinde tüm turların işini tek seferde yığma! Ajandan önce "
         "çalışma dizinini kontrol etmesini, ardından 1_VIZYON_VE_CEKIRDEK aşamasını "
         "(sağlam veri/durum mimarisi, özgün arayüz iskeleti, zengin gerçekçi örnek "
         "veriler ve çalışan çekirdek kullanıcı akışı) kurup ilk doğrulamayı yapmasını iste.\n"
-        "4. Yanıtını tam olarak <DURUM>DEVAM</DURUM>, <ASAMA>1_VIZYON_VE_CEKIRDEK</ASAMA>, "
-        "<DEGERLENDIRME>, <GUNCEL_HAFIZA> ve <AJANA_MESAJ> etiketleriyle üret."
+        "5. Yanıtını <DURUM>DEVAM</DURUM>, <ASAMA>1_VIZYON_VE_CEKIRDEK</ASAMA>, "
+        "<HEDEF_TUR>, <DEGERLENDIRME>, <GUNCEL_HAFIZA> ve <AJANA_MESAJ> etiketleriyle üret."
     )
 
 
@@ -209,6 +239,7 @@ def build_turn_user_prompt(
     anti_loop_warning: str = "",
     completed_turns: int | None = None,
     min_turns: int | None = None,
+    planned_turns: int | None = None,
     has_interactive_blocker: bool = False,
     early_exit_rejection_note: str = "",
 ) -> str:
@@ -221,9 +252,14 @@ def build_turn_user_prompt(
     effective_min = max(1, min(max_turns, effective_min))
     early_lock_active = done_turns < effective_min and remaining > 0
 
+    plan_hint = (
+        f"Planlanan Hedef: ~{planned_turns} tur · Üst Güvenlik Tavanı: {max_turns}"
+        if planned_turns and planned_turns > 0
+        else f"Azami: {max_turns}"
+    )
     budget_lines: list[str] = [
-        f"Tamamlanan Ajan Turu: {done_turns} / Azami {max_turns} "
-        f"(Kalan ajan turu hakkı: {remaining}) · "
+        f"Tamamlanan Ajan Turu: {done_turns} ({plan_hint}, "
+        f"kalan tavan hakkı: {remaining}) · "
         f"Asgari Olgunluk Kapısı: {effective_min} tur · Önceki Aşama: {current_phase}"
     ]
     if remaining == 0:
@@ -386,12 +422,22 @@ def _strip_internal_blocks(text: str) -> str:
             flags=re.IGNORECASE | re.DOTALL,
         )
     cleaned = re.sub(
-        r"</?(?:DURUM|ASAMA|DEGERLENDIRME|GUNCEL_HAFIZA|AJANA_MESAJ)\s*>",
+        r"</?(?:DURUM|ASAMA|HEDEF_TUR|DEGERLENDIRME|GUNCEL_HAFIZA|AJANA_MESAJ)\s*>",
         "",
         cleaned,
         flags=re.IGNORECASE,
     )
     return cleaned.strip()
+
+
+def _parse_planned_turns(raw_value: str) -> int | None:
+    if not raw_value:
+        return None
+    match = re.search(r"\b(\d{1,2})\b", raw_value)
+    if not match:
+        return None
+    val = int(match.group(1))
+    return val if 1 <= val <= 30 else None
 
 
 def parse_max_decision(raw_response: str, *, fallback_memory: str = "") -> MaxDecision:
@@ -409,6 +455,7 @@ def parse_max_decision(raw_response: str, *, fallback_memory: str = "") -> MaxDe
     phase = _extract_tag(text, "ASAMA").upper() or (
         "5_KABUL" if status == "TAMAMLANDI" else "2_YARATICI_DERINLIK"
     )
+    planned_turns = _parse_planned_turns(_extract_tag(text, "HEDEF_TUR"))
     evaluation = _extract_tag(text, "DEGERLENDIRME")
     updated_memory = _extract_tag(text, "GUNCEL_HAFIZA") or fallback_memory
     message_to_agent = _extract_tag(text, "AJANA_MESAJ")
@@ -430,6 +477,7 @@ def parse_max_decision(raw_response: str, *, fallback_memory: str = "") -> MaxDe
         updated_memory=updated_memory,
         message_to_agent=message_to_agent.strip(),
         raw_response=text,
+        planned_turns=planned_turns,
     )
 
 

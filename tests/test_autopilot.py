@@ -25,12 +25,16 @@ from app.autopilot.max_bridge import (
     compose_single_turn_max_prompt,
 )
 from app.autopilot.orchestrator import (
+    TR_TZ,
     AutopilotConfig,
     AutopilotOrchestrator,
     AutopilotRunState,
     SameAccountError,
+    is_in_night_window,
+    seconds_until_window_opens,
 )
 from app.autopilot.prompts import (
+    AGENT_FOLLOWUP_NO_ASK_GUARDRAIL,
     AGENT_OPERATING_GUARDRAILS,
     MAX_SYSTEM_PROMPT,
     build_turn_user_prompt,
@@ -1018,6 +1022,189 @@ async def test_orchestrator_blocks_premature_exit_on_7_turn_run(tmp_path: Path) 
     assert len(final_state.turns) == 5
     # Reddedilen erken çıkış sonrasında gönderilen istemde zorunlu derinleştirme notu olmalı
     assert "[ERKEN BİTİRME REDDİ — ZORUNLU DERİNLEŞTİRME]" in bridge.calls[2][1]
+
+
+@pytest.mark.anyio
+async def test_night_window_queue_auto_turns_and_every_turn_no_ask_guardrail(
+    tmp_path: Path,
+) -> None:
+    """Gündüz (18:30 TR) bırakılan proje 22:00'ye dek Max'a dokunmamalı; 22:00'de
+    otomatik başlayıp <HEDEF_TUR> ile ilerlemeli ve her turda ask_user yasağı eklemeli."""
+    from datetime import datetime, timedelta
+
+    t_1400 = datetime(2026, 11, 20, 14, 0, tzinfo=TR_TZ)
+    t_2159 = datetime(2026, 11, 20, 21, 59, tzinfo=TR_TZ)
+    t_2200 = datetime(2026, 11, 20, 22, 0, tzinfo=TR_TZ)
+    t_0230 = datetime(2026, 11, 21, 2, 30, tzinfo=TR_TZ)
+    t_0700 = datetime(2026, 11, 21, 7, 0, tzinfo=TR_TZ)
+
+    assert not is_in_night_window(t_1400)
+    assert not is_in_night_window(t_2159)
+    assert is_in_night_window(t_2200)
+    assert is_in_night_window(t_0230)
+    assert not is_in_night_window(t_0700)
+    assert seconds_until_window_opens(t_2159) == 60.0
+    assert seconds_until_window_opens(t_2200) == 0.0
+
+    # Sanal saat: 18:30 TR'den başlar; her sleep çağrısında 22:05 TR'ye ilerler
+    current_clock = datetime(2026, 11, 20, 18, 30, tzinfo=TR_TZ)
+    sleep_calls = 0
+    saw_waiting_status = False
+
+    def fake_now() -> datetime:
+        return current_clock
+
+    async def fake_sleep(_secs: float) -> None:
+        nonlocal current_clock, sleep_calls
+        sleep_calls += 1
+        # Bekleme sırasında Max'a henüz HİÇ çağrı gitmemiş olmalı!
+        assert len(bridge.calls) == 0
+        assert agent_http_hits == 0
+        current_clock = current_clock + timedelta(hours=3, minutes=35)  # -> 22:05 TR
+
+    chat_id = "019da5d9-f4fc-7691-9e1e-34b5c1c9b888"
+    raw_curl = _build_windows_cmd_input_curl(chat_id=chat_id, sub="agent-night-sub")
+    agent_http_hits = 0
+    agent_turn = 0
+    last_sent_user_id = "019da5d9-f37d-71be-9d31-000000000001"
+    sent_to_agent_texts: list[str] = []
+
+    def mock_agent_http(request: httpx.Request) -> httpx.Response:
+        nonlocal agent_http_hits, agent_turn, last_sent_user_id
+        agent_http_hits += 1
+        path = request.url.path
+        if request.method == "GET" and path == "/" and not request.url.query:
+            return httpx.Response(200, text="<html>dpl_TestDeploy123</html>")
+        if request.method == "GET" and path == f"/api/chat/{chat_id}":
+            messages: list[dict[str, Any]] = [
+                {
+                    "id": last_sent_user_id,
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "prompt"}],
+                    "metadata": {"pending": False},
+                }
+            ]
+            if agent_turn > 0:
+                messages.append(
+                    {
+                        "id": f"019da5d9-f37d-71be-9d31-00000000030{agent_turn}",
+                        "role": "assistant",
+                        "parts": [
+                            {
+                                "type": "tool-bash",
+                                "state": "output-available",
+                                "input": {"command": "pytest -q"},
+                                "output": {
+                                    "stdout": "8 passed",
+                                    "stderr": "",
+                                    "exit_code": 0,
+                                    "status": "completed",
+                                },
+                            },
+                            {"type": "text", "text": f"Tur {agent_turn} tamam."},
+                        ],
+                        "metadata": {"pending": False},
+                    }
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "id": chat_id,
+                    "triggerAddress": f"agent-runner:{chat_id}",
+                    "lastEventId": str(agent_turn * 10),
+                    "messages": messages,
+                },
+            )
+        if request.method == "POST" and path == f"/api/chat/{chat_id}/input":
+            agent_turn += 1
+            body = json.loads(request.content.decode("utf-8"))
+            last_sent_user_id = body["payload"]["messageId"]
+            sent_to_agent_texts.append(body["payload"]["message"]["parts"][0]["text"])
+            return httpx.Response(200, json={"ok": True, "seq": agent_turn * 10 + 1})
+        if request.method == "GET" and path == f"/api/chat/{chat_id}/events":
+            sse = (
+                "event: batch\ndata: "
+                + json.dumps(
+                    {
+                        "records": [
+                            {
+                                "seq_num": agent_turn * 10 + 2,
+                                "headers": [["trigger-control", "turn-complete"]],
+                                "body": "",
+                            }
+                        ]
+                    }
+                )
+                + "\n\n"
+            )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=sse.encode("utf-8"),
+            )
+        return httpx.Response(404)
+
+    bridge = _FakeMaxBridge(
+        [
+            # Kickoff: Max projeyi kompakt bulup <HEDEF_TUR>4</HEDEF_TUR> seçer
+            "<DURUM>DEVAM</DURUM><ASAMA>1_VIZYON_VE_CEKIRDEK</ASAMA>"
+            "<HEDEF_TUR>4</HEDEF_TUR>"
+            "<GUNCEL_HAFIZA>4 turluk kompakt yol haritası.</GUNCEL_HAFIZA>"
+            "<AJANA_MESAJ>Çekirdek modülü kur.</AJANA_MESAJ>",
+            "<DURUM>DEVAM</DURUM><ASAMA>2_YARATICI_DERINLIK</ASAMA>"
+            "<GUNCEL_HAFIZA>Tur 2</GUNCEL_HAFIZA>"
+            "<AJANA_MESAJ>İmza simülasyon özelliğini ekle.</AJANA_MESAJ>",
+            "<DURUM>DEVAM</DURUM><ASAMA>3_DENEYIM_VE_CILA</ASAMA>"
+            "<GUNCEL_HAFIZA>Tur 3</GUNCEL_HAFIZA>"
+            "<AJANA_MESAJ>UX cilasını yap.</AJANA_MESAJ>",
+            "<DURUM>DEVAM</DURUM><ASAMA>4_DOGRULAMA_VE_SUNUCU</ASAMA>"
+            "<GUNCEL_HAFIZA>Tur 4</GUNCEL_HAFIZA>"
+            "<AJANA_MESAJ>Canlı sunucuyu 0.0.0.0 üzerinde doğrula.</AJANA_MESAJ>",
+            "<DURUM>TAMAMLANDI</DURUM><ASAMA>5_KABUL</ASAMA>"
+            "<DEGERLENDIRME>Tamamlandı.</DEGERLENDIRME>"
+            "<GUNCEL_HAFIZA>Bitti.</GUNCEL_HAFIZA><AJANA_MESAJ></AJANA_MESAJ>",
+        ],
+        sub="max-night-sub",
+    )
+
+    def track_progress(st: AutopilotRunState, _note: str) -> None:
+        nonlocal saw_waiting_status
+        if st.status == "waiting_window":
+            saw_waiting_status = True
+
+    orch = AutopilotOrchestrator(
+        config=AutopilotConfig(
+            project_idea="Kompakt birim dönüştürücü ve formül simülatörü",
+            max_turns=12,
+            auto_turns=True,
+            respect_night_window=True,
+            gap_min_seconds=0.0,
+            gap_max_seconds=0.0,
+            state_file=tmp_path / "night.json",
+        ),
+        agent=AgentSessionClient.from_curl(
+            raw_curl, turn_timeout=5.0, transport=httpx.MockTransport(mock_agent_http)
+        ),
+        max_bridge=bridge,
+        on_progress=track_progress,
+        now_fn=fake_now,
+        sleep_fn=fake_sleep,
+    )
+    st = await orch.run()
+
+    assert saw_waiting_status is True
+    assert sleep_calls == 1
+    assert st.status == "completed"
+    assert st.planned_turns == 4
+    assert len(st.turns) == 4
+    # 1. turda tam guardrail, 2., 3. ve 4. turların HEPSİNDE ask_user yasağı olmalı!
+    assert AGENT_OPERATING_GUARDRAILS in sent_to_agent_texts[0]
+    for later_msg in sent_to_agent_texts[1:]:
+        assert AGENT_FOLLOWUP_NO_ASK_GUARDRAIL in later_msg
+        assert "HEDEF_TUR" not in later_msg
+        # Saat/zaman bilgisi Max prompt'una karışmamalı:
+    for _, usr_prompt in bridge.calls:
+        assert "22:00" not in usr_prompt and "07:00" not in usr_prompt
 
 
 # ---------------------------------------------------------------------------

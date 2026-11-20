@@ -40,6 +40,10 @@ class StartAutopilotRequest(BaseModel):
     agent_curl: str = Field(..., min_length=20)
     chat_id: str | None = None
     max_turns: int = Field(default=8, ge=1, le=25)
+    auto_turns: bool = False
+    respect_night_window: bool = False
+    night_start_hour: int = Field(default=22, ge=0, le=23)
+    night_end_hour: int = Field(default=7, ge=0, le=23)
     gap_min_seconds: float = Field(default=5.0, ge=0.0, le=120.0)
     gap_max_seconds: float = Field(default=10.0, ge=0.0, le=180.0)
     agent_turn_timeout: float = Field(default=900.0, ge=60.0, le=3600.0)
@@ -100,6 +104,10 @@ async def start_autopilot_run(
             agent_curl=body.agent_curl,
             chat_id_override=body.chat_id,
             max_turns=body.max_turns,
+            auto_turns=body.auto_turns,
+            respect_night_window=body.respect_night_window,
+            night_start_hour=body.night_start_hour,
+            night_end_hour=body.night_end_hour,
             gap_min_seconds=body.gap_min_seconds,
             gap_max_seconds=body.gap_max_seconds,
             agent_turn_timeout=body.agent_turn_timeout,
@@ -123,6 +131,8 @@ async def start_autopilot_run(
         "agent_url": state.agent_url,
         "status": state.status,
         "max_turns": state.max_turns,
+        "auto_turns": state.auto_turns,
+        "respect_night_window": state.respect_night_window,
         "started_at": state.started_at,
     }
 
@@ -161,4 +171,18 @@ async def stop_autopilot_run(run_id: str, request: Request) -> dict[str, Any]:
         "run_id": state.run_id,
         "status": state.status,
         "stop_requested": True,
+    }
+
+
+@router.post("/autopilot/runs/{run_id}/start-now")
+async def start_autopilot_run_now(run_id: str, request: Request) -> dict[str, Any]:
+    """Gece penceresini bekleyen bir koşuyu 22:00'yi beklemeden derhal başlatır."""
+    manager = _get_manager(request)
+    state = manager.start_now(run_id)
+    if state is None:
+        raise ModelNotFoundError(f"Autopilot run '{run_id}' bulunamadı.", param="run_id")
+    return {
+        "run_id": state.run_id,
+        "status": state.status,
+        "bypassed_night_window": True,
     }
