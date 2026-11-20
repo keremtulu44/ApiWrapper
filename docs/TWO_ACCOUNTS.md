@@ -1,6 +1,9 @@
 # İki hesap: `UPSTREAM_CURL_2` — istekleri hesaplar arasında bölmek
 
-> **Durum (19 Kasım 2026):** kod ve testler PR #56'da (taslak); **canlıda değil**.
+> **Durum (20 Kasım 2026):** kod PR #56 ile canlı dala birleştirildi (`c5b5420`) ama
+> ikinci hesap **KAPALI**: operatör riskli buluyor, `UPSTREAM_CURL_2` girilmedi
+> (`LESSONS_2026_11_14.md §21.5`). Değişken girilmedikçe bu belgedeki hiçbir şey
+> devreye girmez; tek hesap çalışır.
 > Gerçek upstream'e karşı hiç çalışmadı: buradaki bütün ölçümler sahte upstream
 > ile, gerçek soketler üzerinde alındı (`tests/test_two_accounts_live.py`).
 > Canlıya alma: `ROLLBACK_2026_11_16.md §14`.

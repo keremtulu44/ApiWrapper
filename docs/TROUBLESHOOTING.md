@@ -25,7 +25,7 @@ Amaç her arızada log okumaya sıfırdan başlamamak.
 > | §3b görsel modu | ❌ mod yok |
 > | §4 CAPTCHA | ✅ yalnız **DÜZELTME (17 Kasım)** kutusu; üstündeki tablo çürütüldü |
 > | §5 zaman aşımı · §6 Telegram bildirimleri · §7 dağıtım sonrası | ✅ |
-> | §8 `/v1/ask` · §9 iki hesap | ✅ PR #56 (kod canlıda değil) |
+> | §8 `/v1/ask` · §9 iki hesap | ✅ PR #56 — 20 Kasım 2026'da canlı dala birleştirildi (`c5b5420`); ikinci hesap kapalı (`UPSTREAM_CURL_2` girilmedi) |
 >
 > **Bütün bölümlerin üstündeki dört kural** (`LESSONS_2026_11_14.md §19.1`):
 >
@@ -159,9 +159,17 @@ damga sorunu sayılmaz).
 
 **Hâlâ elle müdahale gereken durum**
 
-Logda `deployment_stamp_unchanged` görünüyorsa upstream damgayı değiştirmemiş ama
-isteği yine reddediyor: bu durumda oturum anlık görüntüsü (cookie/token) eskimiş
-olabilir. O zaman:
+Logda `deployment_stamp_unchanged` görünüyorsa otomatik kurtarma işe
+yaramamıştır. **Satırdaki `source` alanına bak** (20 Kasım 2026 düzeltmesi; bu
+paragraf eskiden "upstream damgayı değiştirmemiş" diyordu):
+
+| `source` | Anlamı |
+|---|---|
+| `configured` | Kanarya hedef sayfasından damgayı **okuyamadı** ve cURL'deki donmuş değere düştü. Damganın değişip değişmediği **bilinmiyor**. Canlıda bugüne dek hep bu görüldü (2 Kasım, 20 Kasım) ve iki seferde de hedef yeni sürüm yayınlamıştı |
+| `header` / `body` | Damga okundu ve gönderilenle aynı. O zaman eskiyen şey oturum anlık görüntüsü (cookie/token) olabilir |
+
+İki durumda da çare aynıdır ve **beklemek çözmez** (`429` / `recaptcha_rejected`'ın
+tersine; `LESSONS §21.7`):
 
 1. Tarayıcıda uygulamayı **Ctrl+Shift+R** ile sert yenile ve giriş yap.
 2. Yeni bir sohbet mesajı gönder, isteği **Copy as cURL** ile kopyala.
@@ -188,6 +196,16 @@ görünür olur; PR sonrası ayrıca Telegram'a tek bir özet bildirim gider.
 bildirimi haber verir.)*
 Kalıcı çözüm yukarıdaki otomatik kurtarma kademeleridir; ikisi de tutmazsa
 `deployment_stamp_unchanged` logu ile yeni cURL gerekir.
+
+**20 Kasım 2026'da yeniden görüldü** (gövde bu kez `{"error":"refresh_required"}`;
+`reason` alanı yok). Operatör bir gün önce hedef sitede görsel bir güncelleme
+görmüştü; kayda geçen sebep şimdilik odur. Kanarya yine okuyamadı
+(`source=configured`), yani otomatik kurtarma bu kurulumda **çalışmıyor**: her
+seferinde taze cURL gerekir. Aynı kod taze cURL ile yeniden deploy edilince
+çalıştı. O gün eski kodun günlük akış kontrolü arıza sürerken **yanlış** bir
+"✅ upstream yeniden çalışıyor" mesajı da gönderdi (akışın içindeki hatayı başarı
+saydı; PR #56'da düzeltildi) — bu mesajı gerçek bir istekle doğrulamadan geçerli
+sayma. Olay defteri ve kurallar: [`LESSONS_2026_11_14.md §21`](LESSONS_2026_11_14.md).
 
 **409 gövdesinde `cx` geçiyorsa**
 
@@ -609,7 +627,7 @@ hatası ayrı bir şeydir ve "Deploy failed" olarak görünür).
 
 ---
 
-## 8. `/v1/ask` ve istek sırası (PR #56 — henüz canlıda değil)
+## 8. `/v1/ask` ve istek sırası (PR #56 — 20 Kasım 2026'da birleştirildi)
 
 > Bu bölüm PR #56 canlıya alındıktan sonra geçerlidir (`ROLLBACK_2026_11_16.md §13`).
 > Sözleşme ve Telegram mesajlarının okunuşu: [`ASK_API.md`](ASK_API.md).
@@ -646,7 +664,7 @@ bota yazdığın bir mesaj upstream'e gider; başarılı olursa bekletme o anda 
 
 ---
 
-## 9. İki hesap (`UPSTREAM_CURL_2`) — PR #56, henüz canlıda değil
+## 9. İki hesap (`UPSTREAM_CURL_2`) — PR #56; kod canlı dalda, hesap **kapalı** (20 Kasım kararı)
 
 > Davranışın tamamı: [`TWO_ACCOUNTS.md`](TWO_ACCOUNTS.md). İlk bakılacak yer yine
 > `GET /v1/admin/queue` (§8); bu kez `accounts.lanes` bölümü.

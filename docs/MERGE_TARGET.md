@@ -136,4 +136,4 @@ Merge hedefi ve onay kuralı **aynen geçerli**. Değişen, merge'ün bedelidir:
 |---|---|---|---|
 | #49–#54 | `arena/1kasim-test` | sonuncusu `77d4011` | 15-16 Kasım |
 | #55 | `arena/1kasim-test` | `03aca2c` | 17 Kasım 07:55 UTC — **geri dönüş** (`ROLLBACK_2026_11_16.md`); canlıdaki sürüm |
-| #56 | `arena/1kasim-test` | — | Açık, taslak: `/v1/ask`, istek sırası, ikinci hesap |
+| #56 | `arena/1kasim-test` | `c5b5420` | **20 Kasım 12:30 UTC** — operatörün açık onayıyla ("merge et"), taze cURL env'e "Save only" ile kaydedildikten sonra. `/v1/ask`, istek sırası, sürüm sabitleme; ikinci hesap kodu içinde ama `UPSTREAM_CURL_2` girilmedi (uyuyor). Öncesi: `LESSONS §21` |
