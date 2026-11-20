@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from urllib.parse import urlsplit
 
+from app.core.config import MAX_ACCOUNT_SLOTS, Settings
 from app.upstream.auth import decode_jwt_claims, resolve_bearer_token
 from app.upstream.curl_import import (
     PASSTHROUGH_HEADERS,
@@ -346,6 +347,125 @@ def extract_identity_subject(cookie: str, access_token: str = "") -> str:
     claims = decode_jwt_claims(token)
     sub = claims.get("sub") if isinstance(claims, dict) else None
     return str(sub).strip() if sub else ""
+
+
+def extract_all_max_identities(settings: Settings) -> frozenset[str]:
+    """`Settings` içindeki tüm `max` hesap yuvalarının (`1..MAX_ACCOUNT_SLOTS`) JWT `sub` kümesi."""
+    identities: set[str] = set()
+    for slot in range(1, MAX_ACCOUNT_SLOTS + 1):
+        suffix = "" if slot <= 1 else f"_{slot}"
+        cookie = str(getattr(settings, f"upstream_cookie{suffix}", "") or "").strip()
+        access_token = str(
+            getattr(settings, f"upstream_access_token{suffix}", "") or ""
+        ).strip()
+        if not cookie and not access_token:
+            continue
+        sub = extract_identity_subject(cookie, access_token)
+        if sub:
+            identities.add(sub)
+    return frozenset(identities)
+
+
+def looks_like_agent_curl_start(raw: str) -> bool:
+    """Metnin yapıştırılmış bir `curl ...` komutunun başlangıcı olup olmadığını saptar.
+
+    Normal sohbet cümlelerini (ör. ``"curl nedir?"``) yanlış pozitif saymaz; gerçek
+    bir URL veya HTTP bayrağı içeren `curl` komutlarını yakalar ki çerez/token
+    yanlışlıkla `max` sohbetine gönderilmesin.
+    """
+    if not raw:
+        return False
+    cleaned = _clean_pasted_artifacts(raw).lstrip()
+    if not re.match(r"^curl(?:\.exe)?[\s\"'^]", cleaned, flags=re.IGNORECASE):
+        return False
+    return any(
+        marker in cleaned
+        for marker in ("https://", "http://", "--url", " -H ", " --header ")
+    )
+
+
+_TRAILING_CURL_FLAG_RE = re.compile(
+    r"(?:^|\s)(?:-H|-b|-d|-X|--header|--cookie|--data-raw|--data|--data-binary|--url)$"
+)
+
+
+def _smart_join_two_curl_chunks(prev: str, curr: str) -> str:
+    """Telegram'ın 4096 karakter sınırında böldüğü iki cURL parçasını kayıpsız birleştirir."""
+    p_no_nl = prev.rstrip("\r\n")
+    c_no_nl = curr.lstrip("\r\n")
+    p_trim = p_no_nl.rstrip(" \t")
+    c_trim = c_no_nl.lstrip(" \t")
+
+    if not p_no_nl:
+        return c_no_nl
+    if not c_no_nl:
+        return p_no_nl
+
+    # 1) Satır sonu devamından (`\` veya ` ^`) hemen sonra yeni bir cURL bayrağı başlıyorsa
+    if (p_trim.endswith("\\") or re.search(r"[ \t]\^$", p_no_nl)) and c_trim.startswith("-"):
+        return f"{p_no_nl}\n{c_no_nl}"
+    # 2) Önceki argüman kapanmış (`'` / `"` / `--compressed`) ve yeni bayrak başlıyorsa
+    if c_trim.startswith("-") and (
+        p_trim.endswith(("'", '"')) or p_trim.endswith("--compressed")
+    ):
+        return f"{p_no_nl}\n{c_no_nl}"
+    # 3) Bayrak adı ile değeri tam boşluktan bölündüyse (`-H` | `"cookie:..."`)
+    if _TRAILING_CURL_FLAG_RE.search(p_trim):
+        return f"{p_trim} {c_trim}"
+    # 4) Uzun çerez, JWT veya JSON gövdesinin tam ortasından (4096. karakterden) bölündüyse
+    return f"{p_no_nl}{c_no_nl}"
+
+
+def reassemble_agent_curl_chunks(
+    chunks: list[str],
+    *,
+    chat_id_override: str | None = None,
+) -> str:
+    """Telegram gibi mesaj boyutu sınırlı kanallardan gelen çok parçalı cURL'ü birleştirir.
+
+    Önce sınır-duyarlı akıllı birleştirmeyi üretir, ardından doğrudan/satırlı
+    alternatiflerle birlikte `parse_agent_curl` üzerinden puanlayarak JSON gövdesi,
+    çerez ve `recaptchaV3Token` bütünlüğünü en iyi koruyan adayı döndürür.
+    """
+    non_empty = [chunk for chunk in chunks if chunk and chunk.strip("\r\n")]
+    if not non_empty:
+        return ""
+    if len(non_empty) == 1:
+        return non_empty[0]
+
+    smart = non_empty[0]
+    for nxt in non_empty[1:]:
+        smart = _smart_join_two_curl_chunks(smart, nxt)
+
+    direct = "".join(c.strip("\r\n") for c in non_empty)
+    with_newlines = "\n".join(c.strip("\r\n") for c in non_empty)
+    with_spaces = " ".join(c.strip() for c in non_empty)
+
+    candidates: list[str] = []
+    for cand in (smart, direct, with_newlines, with_spaces):
+        if cand not in candidates:
+            candidates.append(cand)
+
+    best_cand = smart
+    best_score: tuple[int, int, int, int, int] | None = None
+    for idx, cand in enumerate(candidates):
+        try:
+            cfg = parse_agent_curl(cand, chat_id_override=chat_id_override)
+        except ValueError:
+            score = (0, 0, 0, 0, -idx)
+        else:
+            score = (
+                1,
+                -len(cfg.warnings),
+                int(bool(cfg.recaptcha_token)),
+                int(bool(cfg.last_user_message_id)),
+                -idx,
+            )
+        if best_score is None or score > best_score:
+            best_score = score
+            best_cand = cand
+
+    return best_cand
 
 
 def _extract_chat_id_from_text(text: str) -> str:

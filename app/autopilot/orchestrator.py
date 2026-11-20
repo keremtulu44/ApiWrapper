@@ -30,7 +30,7 @@ from typing import Any
 
 from app.autopilot.agent_client import AgentSessionClient, DeltaCallback
 from app.autopilot.events_parser import AgentMessage, format_sandbox_evidence
-from app.autopilot.max_bridge import MaxBridge
+from app.autopilot.max_bridge import MaxBridge, MaxBridgeError
 from app.autopilot.prompts import (
     AGENT_OPERATING_GUARDRAILS,
     MAX_SYSTEM_PROMPT,
@@ -108,6 +108,7 @@ class AutopilotRunState:
     run_id: str
     chat_id: str
     project_idea: str
+    target_domain: str = ""
     # starting | running | completed | stopped | failed | max_turns_reached
     status: str = "starting"
     current_turn: int = 0
@@ -120,8 +121,16 @@ class AutopilotRunState:
     error_detail: str = ""
     turns: list[AutopilotTurnRecord] = field(default_factory=list)
 
+    @property
+    def agent_url(self) -> str:
+        if self.target_domain and self.chat_id:
+            return f"https://{self.target_domain}/agent/{self.chat_id}"
+        return ""
+
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        payload = asdict(self)
+        payload["agent_url"] = self.agent_url
+        return payload
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> AutopilotRunState:
@@ -135,6 +144,7 @@ class AutopilotRunState:
             run_id=str(data.get("run_id") or ""),
             chat_id=str(data.get("chat_id") or ""),
             project_idea=str(data.get("project_idea") or ""),
+            target_domain=str(data.get("target_domain") or ""),
             status=str(data.get("status") or "starting"),
             current_turn=int(data.get("current_turn") or 0),
             max_turns=int(data.get("max_turns") or 8),
@@ -177,11 +187,14 @@ class AutopilotOrchestrator:
         if resume_state is not None:
             self.state = resume_state
             self.state.max_turns = config.max_turns
+            if not self.state.target_domain:
+                self.state.target_domain = agent.config.target_domain
         else:
             self.state = AutopilotRunState(
                 run_id=config.run_id,
                 chat_id=agent.config.chat_id,
                 project_idea=config.project_idea.strip(),
+                target_domain=agent.config.target_domain,
                 max_turns=config.max_turns,
             )
 
@@ -191,8 +204,8 @@ class AutopilotOrchestrator:
 
     def _verify_separate_accounts(self) -> None:
         agent_sub = self.agent.account_identity()
-        max_sub = self.max_bridge.account_identity()
-        if agent_sub and max_sub and agent_sub == max_sub:
+        max_subs = self.max_bridge.account_identities()
+        if agent_sub and max_subs and agent_sub in max_subs:
             raise SameAccountError(
                 "Agent cURL'ü ile Max cURL'ü AYNI Google hesabına (aynı oturum kimliğine) "
                 "ait! Aynı hesabı iki modda birden kullanmak oturumları düşürür. "
@@ -250,12 +263,59 @@ class AutopilotOrchestrator:
             )
         return out
 
+    def _project_header_lines(self) -> list[str]:
+        lines = [
+            f"Run: {self.state.run_id}",
+            f"Proje: {_summarize_one_line(self.state.project_idea, 100)}",
+        ]
+        if self.state.agent_url:
+            lines.append(f"Agent: {self.state.agent_url}")
+        else:
+            lines.append(f"Agent Sohbet: {self.state.chat_id}")
+        return lines
+
+    @staticmethod
+    def _is_non_retryable_max_error(exc: Exception) -> bool:
+        lowered = str(exc).lower()
+        return any(
+            marker in lowered
+            for marker in (
+                "401",
+                "403",
+                "409",
+                "429",
+                "auth",
+                "quota",
+                "limit",
+                "recaptcha",
+                "captcha",
+                "refresh_required",
+            )
+        )
+
+    async def _complete_max_safe(self, *, system_prompt: str, user_prompt: str) -> str:
+        """Geçici ağ/akış kesintilerinde `max` çağrısını en fazla 1 kez tekrar dener."""
+        try:
+            return await self.max_bridge.complete(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+        except MaxBridgeError as exc:
+            if self._stop_requested or self._is_non_retryable_max_error(exc):
+                raise
+            logger.warning("autopilot_max_transient_retry", run_id=self.state.run_id)
+            await asyncio.sleep(5.0)
+            return await self.max_bridge.complete(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+            )
+
     async def _ask_max_for_kickoff(self) -> MaxDecision:
         user_prompt = build_kickoff_user_prompt(
             project_idea=self.state.project_idea,
             max_turns=self.config.max_turns,
         )
-        raw = await self.max_bridge.complete(
+        raw = await self._complete_max_safe(
             system_prompt=MAX_SYSTEM_PROMPT,
             user_prompt=user_prompt,
         )
@@ -282,11 +342,26 @@ class AutopilotOrchestrator:
             sandbox_evidence=sandbox_evidence,
             anti_loop_warning=anti_loop_warning,
         )
-        raw = await self.max_bridge.complete(
+        raw = await self._complete_max_safe(
             system_prompt=MAX_SYSTEM_PROMPT,
             user_prompt=user_prompt,
         )
         return parse_max_decision(raw, fallback_memory=self.state.memory_summary)
+
+    async def _finish_stopped(self, reason: str) -> AutopilotRunState:
+        self.state.status = "stopped"
+        self.state.stop_reason = reason
+        self._emit_progress(reason)
+        await self._notify_telegram(
+            "\n".join(
+                [
+                    "🛑 ApiWrapper Autopilot durduruldu",
+                    *self._project_header_lines(),
+                    f"Tamamlanan Tur: {len(self.state.turns)}/{self.config.max_turns}",
+                ]
+            )
+        )
+        return self.state
 
     async def run(self) -> AutopilotRunState:
         """Otopilot döngüsünü baştan (veya `resume_state`'ten) sonuna dek yürütür."""
@@ -301,10 +376,13 @@ class AutopilotOrchestrator:
             self._emit_progress(f"Agent sohbetine bağlandı (chat_id={self.state.chat_id}).")
 
             await self._notify_telegram(
-                f"🚀 ApiWrapper Autopilot başladı\n"
-                f"Run: {self.state.run_id}\n"
-                f"Agent Sohbet: {self.state.chat_id}\n"
-                f"Azami Tur: {self.config.max_turns}"
+                "\n".join(
+                    [
+                        "🚀 ApiWrapper Autopilot başladı",
+                        *self._project_header_lines(),
+                        f"Azami Tur: {self.config.max_turns}",
+                    ]
+                )
             )
 
             # Devam (resume) modunda önceki turun son ajan cevabından karar üreterek başla;
@@ -338,10 +416,7 @@ class AutopilotOrchestrator:
 
             for turn in range(start_turn, self.config.max_turns + 1):
                 if self._stop_requested:
-                    self.state.status = "stopped"
-                    self.state.stop_reason = "Kullanıcı tarafından durduruldu."
-                    self._emit_progress(self.state.stop_reason)
-                    return self.state
+                    return await self._finish_stopped("Kullanıcı tarafından durduruldu.")
 
                 assert next_decision is not None
                 self.state.current_turn = turn
@@ -358,9 +433,14 @@ class AutopilotOrchestrator:
                         f"✅ Proje tamamlandı (Tur {turn - 1} sonunda kabul edildi)."
                     )
                     await self._notify_telegram(
-                        f"✅ ApiWrapper Autopilot tamamlandı\n"
-                        f"Run: {self.state.run_id} · Toplam Tur: {len(self.state.turns)}\n"
-                        f"Özet: {_summarize_one_line(self.state.stop_reason, 240)}"
+                        "\n".join(
+                            [
+                                "✅ ApiWrapper Autopilot tamamlandı",
+                                *self._project_header_lines(),
+                                f"Toplam Tur: {len(self.state.turns)}",
+                                f"Özet: {_summarize_one_line(self.state.stop_reason, 240)}",
+                            ]
+                        )
                     )
                     return self.state
 
@@ -372,9 +452,14 @@ class AutopilotOrchestrator:
                     )
                     self._emit_progress(f"⚠️ Otopilot durdu: {self.state.stop_reason}")
                     await self._notify_telegram(
-                        f"⚠️ ApiWrapper Autopilot takıldı\n"
-                        f"Run: {self.state.run_id} · Tur: {turn}\n"
-                        f"Neden: {_summarize_one_line(self.state.stop_reason, 240)}"
+                        "\n".join(
+                            [
+                                "⚠️ ApiWrapper Autopilot takıldı",
+                                *self._project_header_lines(),
+                                f"Tur: {turn}",
+                                f"Neden: {_summarize_one_line(self.state.stop_reason, 240)}",
+                            ]
+                        )
                     )
                     return self.state
 
@@ -385,10 +470,7 @@ class AutopilotOrchestrator:
 
                 await self._sleep_gap()
                 if self._stop_requested:
-                    self.state.status = "stopped"
-                    self.state.stop_reason = "Kullanıcı tarafından durduruldu."
-                    self._emit_progress(self.state.stop_reason)
-                    return self.state
+                    return await self._finish_stopped("Kullanıcı tarafından durduruldu.")
 
                 t0 = time.monotonic()
                 self._emit_progress(
@@ -427,10 +509,9 @@ class AutopilotOrchestrator:
                 )
 
                 if self._stop_requested:
-                    self.state.status = "stopped"
-                    self.state.stop_reason = "Kullanıcı tarafından tur sonunda durduruldu."
-                    self._emit_progress(self.state.stop_reason)
-                    return self.state
+                    return await self._finish_stopped(
+                        "Kullanıcı tarafından tur sonunda durduruldu."
+                    )
 
                 # Son tura ulaştıysak son kez Max'tan kabul/değerlendirme kararı alalım:
                 await self._sleep_gap()
@@ -467,9 +548,14 @@ class AutopilotOrchestrator:
                     )
                     self._emit_progress(f"✅ Proje Tur {turn} sonunda tamamlandı ve kabul edildi!")
                     await self._notify_telegram(
-                        f"✅ ApiWrapper Autopilot tamamlandı\n"
-                        f"Run: {self.state.run_id} · Toplam Tur: {turn}\n"
-                        f"Özet: {_summarize_one_line(self.state.stop_reason, 240)}"
+                        "\n".join(
+                            [
+                                "✅ ApiWrapper Autopilot tamamlandı",
+                                *self._project_header_lines(),
+                                f"Toplam Tur: {turn}",
+                                f"Özet: {_summarize_one_line(self.state.stop_reason, 240)}",
+                            ]
+                        )
                     )
                     return self.state
 
@@ -479,6 +565,16 @@ class AutopilotOrchestrator:
                         next_decision.evaluation or "Max ilerleme sağlanamadığını bildirdi."
                     )
                     self._emit_progress(f"⚠️ Otopilot durdu: {self.state.stop_reason}")
+                    await self._notify_telegram(
+                        "\n".join(
+                            [
+                                "⚠️ ApiWrapper Autopilot takıldı",
+                                *self._project_header_lines(),
+                                f"Tur: {turn}",
+                                f"Neden: {_summarize_one_line(self.state.stop_reason, 240)}",
+                            ]
+                        )
+                    )
                     return self.state
 
             # Döngü max_turns sınırına ulaştı
@@ -490,9 +586,13 @@ class AutopilotOrchestrator:
             )
             self._emit_progress(f"⏹️ Azami tur sınırına ({self.config.max_turns}) ulaşıldı.")
             await self._notify_telegram(
-                f"⏹️ ApiWrapper Autopilot tur sınırına ulaştı ({self.config.max_turns} tur)\n"
-                f"Run: {self.state.run_id}\n"
-                f"Son değerlendirme: {_summarize_one_line(self.state.stop_reason, 240)}"
+                "\n".join(
+                    [
+                        f"⏹️ ApiWrapper Autopilot tur sınırına ulaştı ({self.config.max_turns} tur)",
+                        *self._project_header_lines(),
+                        f"Son değerlendirme: {_summarize_one_line(self.state.stop_reason, 240)}",
+                    ]
+                )
             )
             return self.state
 
@@ -506,9 +606,14 @@ class AutopilotOrchestrator:
                 error_type=type(exc).__name__,
             )
             await self._notify_telegram(
-                f"🔴 ApiWrapper Autopilot hata ile durdu\n"
-                f"Run: {self.state.run_id} · Tur: {self.state.current_turn}\n"
-                f"Hata türü: {type(exc).__name__}"
+                "\n".join(
+                    [
+                        "🔴 ApiWrapper Autopilot hata ile durdu",
+                        *self._project_header_lines(),
+                        f"Tur: {self.state.current_turn}",
+                        f"Hata türü: {type(exc).__name__}",
+                    ]
+                )
             )
             raise
         finally:

@@ -21,7 +21,7 @@ from typing import Literal
 
 import httpx
 
-from app.autopilot.curl_parse import extract_identity_subject
+from app.autopilot.curl_parse import extract_all_max_identities, extract_identity_subject
 from app.core.config import Settings
 from app.core.logging import get_logger
 from app.schemas.openai import ChatCompletionRequest, ChatMessage
@@ -54,6 +54,11 @@ class MaxBridge(abc.ABC):
     def account_identity(self) -> str:
         """Biliniyorsa `max` oturumunun JWT `sub` kimliği (hesap çakışma kontrolü için)."""
         return ""
+
+    def account_identities(self) -> frozenset[str]:
+        """Yapılandırılmış tüm `max` hesap yuvalarının JWT `sub` kimlikleri."""
+        single = self.account_identity()
+        return frozenset({single}) if single else frozenset()
 
     @abc.abstractmethod
     async def complete(self, *, system_prompt: str, user_prompt: str) -> str:
@@ -217,6 +222,9 @@ class InProcessMaxBridge(MaxBridge):
         settings = self.service.settings
         return extract_identity_subject(settings.upstream_cookie, settings.upstream_access_token)
 
+    def account_identities(self) -> frozenset[str]:
+        return extract_all_max_identities(self.service.settings)
+
     async def complete(self, *, system_prompt: str, user_prompt: str) -> str:
         # `conversation_id=None` ve `client_identity=None` ile her tur yeni `chat_id` alır;
         # `session_reuse` açık olsa bile bu çağrı geçmiş taşımaz.
@@ -285,6 +293,9 @@ class DirectCurlMaxBridge(MaxBridge):
         return extract_identity_subject(
             self.settings.upstream_cookie, self.settings.upstream_access_token
         )
+
+    def account_identities(self) -> frozenset[str]:
+        return extract_all_max_identities(self.settings)
 
     async def startup(self) -> None:
         await self._upstream.startup()

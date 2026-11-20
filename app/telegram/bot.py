@@ -15,12 +15,18 @@ from __future__ import annotations
 
 import asyncio
 import json
-from typing import Any
+import time
+from dataclasses import dataclass, field
+from typing import Any, Literal
 
 import httpx
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.autopilot.curl_parse import (
+    looks_like_agent_curl_start,
+    reassemble_agent_curl_chunks,
+)
 from app.core.diagnostics import format_failure
 from app.core.logging import configure_logging, get_logger
 from app.services.request_queue import SOURCE_HEADER
@@ -28,11 +34,52 @@ from app.services.request_queue import SOURCE_HEADER
 logger = get_logger(__name__)
 
 _HELP = (
-    "ApiWrapper test botu aktif.\n"
-    "Bir metin gönderin; wrapper /v1/chat/completions üzerinden yanıt üretir.\n"
-    "Komutlar: /ping (wrapper health), /help.\n"
-    "Her mesaj bağımsızdır; konuşma geçmişi tutulmaz."
+    "ApiWrapper botu aktif.\n"
+    "Normal metin gönderin; /v1/chat/completions üzerinden tek turluk yanıt üretilir.\n\n"
+    "🤖 Otopilot (Model A — Agent Mode Proje):\n"
+    "• /curl — Agent Mode '/input' cURL parçalarını toplamaya başla\n"
+    "• /curl bitir (veya /bitir) — Yapıştırılan tüm cURL parçalarını birleştir ve doğrula\n"
+    "• /tur <1-25> — Başlatılacak projenin azami tur sayısını ayarla (varsayılan: 8)\n"
+    "• /projeler (veya /durum) — Çalışan ve biten projeleri listele\n"
+    "• /durum <run_id> — Seçilen projenin tur/hafıza detayını ve Agent linkini gör\n"
+    "• /durdur [run_id] — Çalışan projeyi güvenli biçimde durdur\n"
+    "• /iptal — Açık cURL/fikir girişini temizle\n\n"
+    "Diğer komutlar: /ping (wrapper health), /help."
 )
+
+_CURL_SESSION_TTL_SECONDS = 1800.0
+_MAX_CURL_CHUNKS = 25
+_MAX_CURL_BUFFER_CHARS = 250_000
+
+_STATUS_LABELS: dict[str, str] = {
+    "starting": "⏳ Başlatılıyor",
+    "running": "🔄 Çalışıyor",
+    "completed": "✅ Tamamlandı",
+    "max_turns_reached": "⏹️ Tur Sınırına Ulaştı",
+    "stopped": "🛑 Durduruldu",
+    "failed": "🔴 Hata / Takıldı",
+}
+
+
+@dataclass(slots=True)
+class _ChatAutopilotSession:
+    """Telegram sohbeti başına geçici cURL birleştirme ve proje başlatma durumu."""
+
+    mode: Literal["idle", "collecting_curl", "awaiting_idea"] = "idle"
+    curl_chunks: list[str] = field(default_factory=list)
+    validated_curl: str = ""
+    validated_chat_id: str = ""
+    validated_domain: str = ""
+    max_turns: int = 8
+    updated_at: float = field(default_factory=time.monotonic)
+
+    def clear_pending(self) -> None:
+        self.mode = "idle"
+        self.curl_chunks.clear()
+        self.validated_curl = ""
+        self.validated_chat_id = ""
+        self.validated_domain = ""
+        self.updated_at = time.monotonic()
 
 
 def parse_allowed_chat_ids(raw: str) -> frozenset[int]:
@@ -148,6 +195,21 @@ def wrapper_error_code(response: httpx.Response) -> str:
     return str(code)[:100] if code else ""
 
 
+def _autopilot_error_message(response: httpx.Response) -> str:
+    """Yalnız `/v1/autopilot/*` uçlarının yapısal, secret içermeyen hata mesajını okur."""
+    if response.status_code in {400, 404, 422}:
+        try:
+            payload = response.json()
+        except (ValueError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict) and isinstance(payload.get("error"), dict):
+            msg = str(payload["error"].get("message") or "").strip()
+            if msg:
+                return msg[:320]
+    code = wrapper_error_code(response)
+    return format_failure(response.status_code, code or None)
+
+
 class TelegramBot:
     """Küçük, sıralı long-polling istemcisi; aynı anda tek wrapper isteği yeterli."""
 
@@ -160,6 +222,21 @@ class TelegramBot:
         self.settings = settings
         self.telegram = telegram
         self.wrapper = wrapper
+        self._sessions: dict[int, _ChatAutopilotSession] = {}
+
+    def _session(self, chat_id: int) -> _ChatAutopilotSession:
+        sess = self._sessions.get(chat_id)
+        now = time.monotonic()
+        if sess is None:
+            sess = _ChatAutopilotSession(updated_at=now)
+            self._sessions[chat_id] = sess
+            return sess
+        if (
+            sess.mode != "idle"
+            and (now - sess.updated_at) > _CURL_SESSION_TTL_SECONDS
+        ):
+            sess.clear_pending()
+        return sess
 
     @property
     def telegram_api_url(self) -> str:
@@ -167,13 +244,22 @@ class TelegramBot:
         # bu URL veya token yazılmaz.
         return f"https://api.telegram.org/bot{self.settings.telegram_bot_token.strip()}"
 
-    async def send_text(self, chat_id: int, text: str) -> None:
+    async def send_text(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        disable_preview: bool = False,
+    ) -> None:
         for chunk in split_telegram_text(
             text, max_chars=self.settings.telegram_max_reply_chars
         ):
+            body: dict[str, Any] = {"chat_id": chat_id, "text": chunk}
+            if disable_preview:
+                body["disable_web_page_preview"] = True
             response = await self.telegram.post(
                 f"{self.telegram_api_url}/sendMessage",
-                json={"chat_id": chat_id, "text": chunk},
+                json=body,
             )
             if response.status_code >= 400:
                 logger.warning(
@@ -183,13 +269,13 @@ class TelegramBot:
 
     async def handle_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat")
-        text = message.get("text")
-        if not isinstance(chat, dict) or not isinstance(text, str):
+        raw_text = message.get("text")
+        if not isinstance(chat, dict) or not isinstance(raw_text, str):
             return
         chat_id = chat.get("id")
         if not isinstance(chat_id, int):
             return
-        text = text.strip()
+        text = raw_text.strip()
         if not text:
             return
 
@@ -207,17 +293,453 @@ class TelegramBot:
             logger.warning("telegram_message_ignored", reason="chat_not_allowed")
             return
 
-        command = text.split(maxsplit=1)[0].split("@", 1)[0].lower()
+        parts = text.split(maxsplit=1)
+        command = parts[0].split("@", 1)[0].lower()
+        arg = parts[1].strip() if len(parts) > 1 else ""
+        sess = self._session(chat_id)
+
         if command in {"/start", "/help"}:
             await self.send_text(chat_id, _HELP)
             return
         if command == "/ping":
             await self.ping(chat_id)
             return
+        if command in {"/iptal", "/cancel"}:
+            sess.clear_pending()
+            await self.send_text(
+                chat_id,
+                "🧹 Bekleyen cURL/proje girişi temizlendi. Normal sohbet modundasınız.",
+            )
+            return
+        if command == "/curl":
+            await self._handle_curl_command(chat_id, sess, arg)
+            return
+        if command in {"/bitir", "/curl_bitir", "/curlbitir", "/tamam"}:
+            await self._finish_curl_collection(chat_id, sess)
+            return
+        if command == "/tur":
+            await self._handle_turn_limit(chat_id, sess, arg)
+            return
+        if command in {"/proje", "/baslat"}:
+            if not arg:
+                await self.send_text(
+                    chat_id,
+                    "Kullanım: /proje <yaptırmak istediğiniz proje fikri>",
+                )
+                return
+            await self._start_autopilot_with_idea(chat_id, sess, arg)
+            return
+        if command == "/projeler":
+            await self._list_projects(chat_id)
+            return
+        if command in {"/durum", "/detay"}:
+            if arg:
+                await self._show_project_detail(chat_id, arg.split()[0])
+            else:
+                await self._list_projects(chat_id)
+            return
+        if command in {"/durdur", "/stop"}:
+            await self._stop_project(chat_id, arg.split()[0] if arg else "")
+            return
         if text.startswith("/"):
             await self.send_text(chat_id, "Bilinmeyen komut. /help yazın.")
             return
+
+        # Komut olmayan metin akışı:
+        if sess.mode == "collecting_curl":
+            await self._append_curl_chunk(chat_id, sess, raw_text)
+            return
+        if looks_like_agent_curl_start(raw_text):
+            # Kullanıcı /curl yazmayı unutup doğrudan cURL yapıştırdıysa çerezleri
+            # asla max sohbetine gönderme; otomatik toplama moduna al.
+            sess.clear_pending()
+            sess.mode = "collecting_curl"
+            await self._append_curl_chunk(chat_id, sess, raw_text, auto_detected=True)
+            return
+        if sess.mode == "awaiting_idea":
+            await self._start_autopilot_with_idea(chat_id, sess, text)
+            return
+
         await self.ask_wrapper(chat_id, text)
+
+    # ------------------------------------------------- Autopilot (Model A) akışı
+    async def _handle_curl_command(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+        arg: str,
+    ) -> None:
+        lowered = arg.lower()
+        if lowered in {"bitir", "bitti", "tamam", "son", "done"}:
+            await self._finish_curl_collection(chat_id, sess)
+            return
+        if lowered in {"iptal", "temizle", "sil", "cancel"}:
+            sess.clear_pending()
+            await self.send_text(chat_id, "🧹 cURL toplama iptal edildi.")
+            return
+
+        sess.clear_pending()
+        sess.mode = "collecting_curl"
+        sess.updated_at = time.monotonic()
+
+        if arg and looks_like_agent_curl_start(arg):
+            await self._append_curl_chunk(chat_id, sess, arg)
+            return
+
+        await self.send_text(
+            chat_id,
+            "📥 Agent cURL toplama modu açıldı.\n"
+            "Şimdi Agent Mode '/api/chat/<id>/input' cURL'ünü yapıştırın — Telegram "
+            "mesajı 3-4 parçaya bölse de hepsini sırayla bekleyip birleştireceğim.\n"
+            "Tüm parçalar gidince /curl bitir (veya /bitir) yazın. İptal: /iptal",
+        )
+
+    async def _append_curl_chunk(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+        raw_chunk: str,
+        *,
+        auto_detected: bool = False,
+    ) -> None:
+        total_after = sum(len(c) for c in sess.curl_chunks) + len(raw_chunk)
+        if len(sess.curl_chunks) >= _MAX_CURL_CHUNKS or total_after > _MAX_CURL_BUFFER_CHARS:
+            sess.clear_pending()
+            await self.send_text(
+                chat_id,
+                "⚠️ cURL tampon sınırı aşıldı ve temizlendi. /curl ile baştan deneyin.",
+            )
+            return
+
+        sess.curl_chunks.append(raw_chunk)
+        sess.updated_at = time.monotonic()
+        count = len(sess.curl_chunks)
+        prefix = "📥 Agent cURL algılandı — " if auto_detected else "📥 "
+        await self.send_text(
+            chat_id,
+            f"{prefix}Parça {count} alındı (toplam {total_after} krk). "
+            "Tüm parçalar gidince /curl bitir yazın.",
+        )
+
+    async def _finish_curl_collection(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+    ) -> None:
+        if sess.mode == "awaiting_idea" and sess.validated_curl:
+            await self.send_text(
+                chat_id,
+                "✅ Agent cURL zaten doğrulandı. Şimdi yaptırmak istediğiniz "
+                "proje fikrini mesaj olarak gönderin (İptal: /iptal).",
+            )
+            return
+
+        if not sess.curl_chunks:
+            await self.send_text(
+                chat_id,
+                "⚠️ Henüz hiç cURL parçası yapıştırılmadı. Önce /curl yazıp Agent "
+                "cURL'ünü yapıştırın, tüm parçalar gidince /curl bitir yazın.",
+            )
+            return
+
+        chunk_count = len(sess.curl_chunks)
+        joined = reassemble_agent_curl_chunks(sess.curl_chunks)
+        sess.curl_chunks.clear()
+
+        try:
+            response = await self.wrapper.post(
+                "/v1/autopilot/inspect-curl",
+                json={"agent_curl": joined},
+            )
+        except httpx.HTTPError as exc:
+            sess.clear_pending()
+            logger.warning("telegram_autopilot_inspect_failed", error_type=type(exc).__name__)
+            await self.send_text(
+                chat_id,
+                "Wrapper /v1/autopilot/inspect-curl ucuna ulaşılamadı.",
+            )
+            return
+
+        if response.status_code != 200:
+            sess.mode = "collecting_curl"
+            sess.updated_at = time.monotonic()
+            await self.send_text(
+                chat_id,
+                f"❌ Agent cURL doğrulanamadı: {_autopilot_error_message(response)}\n\n"
+                "Tekrar cURL yapıştırıp /curl bitir yazabilir veya /iptal diyebilirsiniz.",
+            )
+            return
+
+        data = response.json()
+        if data.get("same_account_conflict"):
+            sess.clear_pending()
+            await self.send_text(
+                chat_id,
+                "⛔ Hesap Çakışması: Yapıştırdığınız Agent cURL'ü sunucudaki Max hesabıyla "
+                "AYNI Google hesabına ait! İki oturumun birbirini düşürmemesi için Agent "
+                "Mode cURL'ünü farklı bir Google hesabından alıp /curl ile tekrar deneyin.",
+            )
+            return
+
+        sess.mode = "awaiting_idea"
+        sess.validated_curl = joined
+        sess.validated_chat_id = str(data.get("chat_id") or "")
+        sess.validated_domain = str(data.get("target_domain") or "")
+        sess.updated_at = time.monotonic()
+
+        warnings = [str(w) for w in (data.get("warnings") or []) if w]
+        warn_block = ("\n⚠️ Not: " + " ".join(warnings)) if warnings else ""
+        await self.send_text(
+            chat_id,
+            f"✅ Agent cURL doğrulandı ({chunk_count} parça birleştirildi)!\n"
+            f"• Agent Sohbet: {sess.validated_chat_id}\n"
+            f"• Kaynak Türü: {data.get('source_endpoint_kind', 'unknown')}\n"
+            f"• Azami Tur: {sess.max_turns} (değiştirmek için önce /tur 12 yazabilirsiniz)"
+            f"{warn_block}\n\n"
+            "✏️ Şimdi yaptırmak istediğiniz **proje fikrini** yazıp gönderin; "
+            "otopilot arka planda hemen başlayacak.",
+            disable_preview=True,
+        )
+
+    async def _handle_turn_limit(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+        arg: str,
+    ) -> None:
+        try:
+            turns = int(arg.strip())
+        except ValueError:
+            await self.send_text(chat_id, "Kullanım: /tur <1 ile 25 arası sayı> (ör. /tur 10)")
+            return
+        if turns < 1 or turns > 25:
+            await self.send_text(chat_id, "Tur sayısı 1 ile 25 arasında olmalıdır.")
+            return
+        sess.max_turns = turns
+        sess.updated_at = time.monotonic()
+        extra = (
+            " Şimdi proje fikrini gönderebilirsiniz."
+            if sess.mode == "awaiting_idea"
+            else ""
+        )
+        await self.send_text(
+            chat_id,
+            f"⚙️ Otopilot azami tur sayısı {turns} olarak ayarlandı.{extra}",
+        )
+
+    async def _start_autopilot_with_idea(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+        idea: str,
+    ) -> None:
+        if not sess.validated_curl:
+            await self.send_text(
+                chat_id,
+                "⚠️ Hazır Agent cURL yok. Önce /curl yazıp Agent cURL'ünü yapıştırın "
+                "ve /curl bitir ile doğrulayın.",
+            )
+            return
+
+        cleaned_idea = idea.strip()
+        if len(cleaned_idea) < 5:
+            await self.send_text(
+                chat_id,
+                "Proje fikri çok kısa (en az 5 karakter). Lütfen biraz daha detay yazın.",
+            )
+            return
+
+        agent_curl = sess.validated_curl
+        max_turns = sess.max_turns
+        try:
+            response = await self.wrapper.post(
+                "/v1/autopilot/runs",
+                json={
+                    "project_idea": cleaned_idea,
+                    "agent_curl": agent_curl,
+                    "max_turns": max_turns,
+                },
+            )
+        except httpx.HTTPError as exc:
+            logger.warning("telegram_autopilot_start_failed", error_type=type(exc).__name__)
+            await self.send_text(
+                chat_id,
+                "Wrapper /v1/autopilot/runs ucuna ulaşılamadı; cURL bellekte korundu, "
+                "fikri tekrar gönderebilirsiniz.",
+            )
+            return
+
+        if response.status_code != 200:
+            err_msg = _autopilot_error_message(response)
+            await self.send_text(
+                chat_id,
+                f"❌ Otopilot başlatılamadı: {err_msg}",
+            )
+            return
+
+        # Başarıyla başladı: ham cURL'ü bot belleğinden derhal temizle.
+        sess.clear_pending()
+        data = response.json()
+        run_id = str(data.get("run_id") or "")
+        agent_url = str(data.get("agent_url") or data.get("chat_id") or "")
+        await self.send_text(
+            chat_id,
+            f"🚀 Otopilot projesi arka planda başlatıldı!\n"
+            f"• Run ID: {run_id}\n"
+            f"• Agent: {agent_url}\n"
+            f"• Azami Tur: {data.get('max_turns', max_turns)}\n\n"
+            f"Durum takibi: /projeler veya /durum {run_id}\n"
+            f"Durdurmak için: /durdur {run_id}\n"
+            "Bu proje çalışırken veya bitince yeni proje eklemek için tekrar /curl yazabilirsiniz.",
+            disable_preview=True,
+        )
+
+    async def _list_projects(self, chat_id: int) -> None:
+        try:
+            response = await self.wrapper.get("/v1/autopilot/runs")
+        except httpx.HTTPError as exc:
+            logger.warning("telegram_autopilot_list_failed", error_type=type(exc).__name__)
+            await self.send_text(chat_id, "Proje listesine ulaşılamadı.")
+            return
+
+        if response.status_code != 200:
+            await self.send_text(chat_id, _autopilot_error_message(response))
+            return
+
+        data = response.json()
+        runs = data.get("runs") or []
+        active_count = data.get("active_count", 0)
+        if not runs:
+            await self.send_text(
+                chat_id,
+                "Henüz başlatılmış otopilot projesi yok.\n"
+                "Yeni proje başlatmak için /curl yazıp Agent cURL'ünü yapıştırın.",
+            )
+            return
+
+        lines = [f"📋 Otopilot Projeleri (Aktif: {active_count} · Toplam: {len(runs)})"]
+        for item in runs[:12]:
+            rid = item.get("run_id", "-")
+            st = str(item.get("status") or "")
+            badge = _STATUS_LABELS.get(st, st)
+            cur = item.get("current_turn", 0)
+            mx = item.get("max_turns", 0)
+            idea = str(item.get("project_idea") or "").strip()
+            link = str(item.get("agent_url") or item.get("chat_id") or "")
+            note = str(item.get("last_note") or "").strip()
+            block = [
+                f"\n• {rid} — {badge} (Tur {cur}/{mx})",
+            ]
+            if idea:
+                block.append(f"  Proje: {idea}")
+            if link:
+                block.append(f"  Agent: {link}")
+            if note and st in {"running", "starting"}:
+                block.append(f"  Son adım: {note}")
+            elif item.get("stop_reason") and st != "running":
+                reason_short = " ".join(str(item["stop_reason"]).split())[:140]
+                block.append(f"  Sonuç: {reason_short}")
+            lines.extend(block)
+
+        lines.append("\nDetay için: /durum <run_id> · Yeni proje: /curl")
+        await self.send_text(chat_id, "\n".join(lines), disable_preview=True)
+
+    async def _show_project_detail(self, chat_id: int, run_id: str) -> None:
+        try:
+            response = await self.wrapper.get(f"/v1/autopilot/runs/{run_id}")
+        except httpx.HTTPError as exc:
+            logger.warning("telegram_autopilot_detail_failed", error_type=type(exc).__name__)
+            await self.send_text(chat_id, "Proje detayına ulaşılamadı.")
+            return
+
+        if response.status_code != 200:
+            await self.send_text(chat_id, _autopilot_error_message(response))
+            return
+
+        data = response.json()
+        st = str(data.get("status") or "")
+        badge = _STATUS_LABELS.get(st, st)
+        link = str(data.get("agent_url") or data.get("chat_id") or "")
+        idea = " ".join(str(data.get("project_idea") or "").split())[:300]
+        lines = [
+            f"🔎 Proje Detayı: {data.get('run_id', run_id)}",
+            f"• Durum: {badge}",
+            f"• Tur: {data.get('current_turn', 0)}/{data.get('max_turns', 0)} "
+            f"({data.get('current_phase', '-')})",
+            f"• Agent: {link}",
+            f"• Fikir: {idea}",
+        ]
+        if data.get("last_note"):
+            lines.append(f"• Son Not: {data['last_note']}")
+        if data.get("stop_reason"):
+            lines.append(f"• Sonuç/Neden: {str(data['stop_reason'])[:300]}")
+        if data.get("error_detail"):
+            lines.append(f"• Hata: {str(data['error_detail'])[:220]}")
+        if data.get("memory_summary"):
+            mem = str(data["memory_summary"]).strip()
+            if len(mem) > 600:
+                mem = mem[:597].rstrip() + "..."
+            lines.append(f"\n🧠 Mimari Hafıza:\n{mem}")
+
+        turns = data.get("turns") or []
+        if turns:
+            lines.append("\n📜 Son Turlar:")
+            for t in turns[-4:]:
+                if not isinstance(t, dict):
+                    continue
+                lines.append(
+                    f"  - Tur {t.get('turn')}: [{t.get('phase')}] "
+                    f"{t.get('duration_seconds')} sn · {t.get('tool_count')} araç "
+                    f"({t.get('bash_count')} bash, {t.get('error_tool_count')} hata)"
+                )
+
+        await self.send_text(chat_id, "\n".join(lines), disable_preview=True)
+
+    async def _stop_project(self, chat_id: int, run_id: str) -> None:
+        target_id = run_id.strip()
+        if not target_id:
+            try:
+                list_resp = await self.wrapper.get("/v1/autopilot/runs")
+            except httpx.HTTPError:
+                await self.send_text(chat_id, "Çalışan projeler sorgulanamadı.")
+                return
+            if list_resp.status_code != 200:
+                await self.send_text(chat_id, _autopilot_error_message(list_resp))
+                return
+            runs = list_resp.json().get("runs") or []
+            active = [
+                str(r.get("run_id"))
+                for r in runs
+                if isinstance(r, dict) and r.get("status") in {"starting", "running"}
+            ]
+            if not active:
+                await self.send_text(chat_id, "Şu anda çalışan bir otopilot projesi yok.")
+                return
+            if len(active) > 1:
+                await self.send_text(
+                    chat_id,
+                    "Birden fazla aktif proje var; hangisini durduracağınızı belirtin:\n"
+                    + "\n".join(f"• /durdur {rid}" for rid in active),
+                )
+                return
+            target_id = active[0]
+
+        try:
+            response = await self.wrapper.post(f"/v1/autopilot/runs/{target_id}/stop")
+        except httpx.HTTPError as exc:
+            logger.warning("telegram_autopilot_stop_failed", error_type=type(exc).__name__)
+            await self.send_text(chat_id, "Durdurma isteği gönderilemedi.")
+            return
+
+        if response.status_code != 200:
+            await self.send_text(chat_id, _autopilot_error_message(response))
+            return
+
+        await self.send_text(
+            chat_id,
+            f"🛑 {target_id} için durdurma işareti gönderildi. Mevcut adım tamamlandığında "
+            "güvenli biçimde duracak.",
+        )
 
     async def ping(self, chat_id: int) -> None:
         try:

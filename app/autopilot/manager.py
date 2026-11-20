@@ -41,7 +41,7 @@ class ManagedRun:
 class AutopilotManager:
     """API üzerinden başlatılan otopilot koşularını izler ve yönetir."""
 
-    def __init__(self, *, max_concurrent_runs: int = 2) -> None:
+    def __init__(self, *, max_concurrent_runs: int = 3) -> None:
         self.max_concurrent_runs = max(1, max_concurrent_runs)
         self._runs: dict[str, ManagedRun] = {}
         self._order: list[str] = []
@@ -59,15 +59,22 @@ class AutopilotManager:
             if item is None:
                 continue
             st = item.orchestrator.state
+            idea_flat = " ".join(st.project_idea.split())
+            if len(idea_flat) > 120:
+                idea_flat = idea_flat[:119].rstrip() + "…"
             out.append(
                 {
                     "run_id": st.run_id,
                     "chat_id": st.chat_id,
+                    "target_domain": st.target_domain,
+                    "agent_url": st.agent_url,
+                    "project_idea": idea_flat,
                     "status": st.status,
                     "current_turn": st.current_turn,
                     "max_turns": st.max_turns,
                     "current_phase": st.current_phase,
                     "last_note": item.last_note,
+                    "stop_reason": st.stop_reason,
                     "started_at": st.started_at,
                     "updated_at": st.updated_at,
                     "turn_count": len(st.turns),

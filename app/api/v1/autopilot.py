@@ -13,7 +13,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
-from app.autopilot.curl_parse import extract_identity_subject, parse_agent_curl
+from app.autopilot.curl_parse import extract_all_max_identities, parse_agent_curl
 from app.autopilot.manager import AutopilotManager
 from app.autopilot.orchestrator import SameAccountError
 from app.core.errors import InvalidRequestError, ModelNotFoundError
@@ -63,14 +63,10 @@ async def inspect_agent_curl_endpoint(
 
     agent_sub = cfg.account_identity()
     settings = getattr(request.app.state, "settings", None)
-    server_max_sub = (
-        extract_identity_subject(
-            settings.upstream_cookie, settings.upstream_access_token
-        )
-        if settings is not None
-        else ""
+    server_max_subs = (
+        extract_all_max_identities(settings) if settings is not None else frozenset()
     )
-    same_conflict = bool(agent_sub and server_max_sub and agent_sub == server_max_sub)
+    same_conflict = bool(agent_sub and agent_sub in server_max_subs)
 
     return {
         "valid": True,
@@ -123,6 +119,8 @@ async def start_autopilot_run(
     return {
         "run_id": state.run_id,
         "chat_id": state.chat_id,
+        "target_domain": state.target_domain,
+        "agent_url": state.agent_url,
         "status": state.status,
         "max_turns": state.max_turns,
         "started_at": state.started_at,
