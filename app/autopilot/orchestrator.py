@@ -663,6 +663,14 @@ class AutopilotOrchestrator:
             )
         return decision
 
+    @staticmethod
+    def _is_waf_html_block(exc: Exception) -> bool:
+        """Render/Cloudflare güvenlik duvarının HTML `403 <title>Blocked</title>` yanıtı mı?"""
+        lowered = str(exc).lower()
+        return "403" in lowered and (
+            "<title>blocked</title>" in lowered or "<!doctype html" in lowered
+        )
+
     async def _ask_max_for_next_step(
         self,
         *,
@@ -694,10 +702,36 @@ class AutopilotOrchestrator:
             has_interactive_blocker=has_blocker,
             early_exit_rejection_note=early_exit_rejection_note,
         )
-        raw = await self._complete_max_safe(
-            system_prompt=MAX_SYSTEM_PROMPT,
-            user_prompt=user_prompt,
-        )
+        try:
+            raw = await self._complete_max_safe(
+                system_prompt=MAX_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+            )
+        except MaxBridgeError as exc:
+            if not self._is_waf_html_block(exc) or self._stop_requested:
+                raise
+            logger.warning("autopilot_waf_block_compact_retry", run_id=self.state.run_id)
+            fallback_prompt = build_turn_user_prompt(
+                project_idea=self.state.project_idea,
+                turn=next_turn_label,
+                max_turns=self.config.max_turns,
+                current_phase=self.state.current_phase,
+                memory_summary=self.state.memory_summary,
+                turn_digests=self._build_digests(),
+                last_sent_to_agent="",
+                agent_reply_text="(Ajan turu tamamladı; yalnız sayısal sandbox karnesi iletildi.)",
+                sandbox_evidence=sandbox_evidence,
+                anti_loop_warning=anti_loop_warning,
+                completed_turns=completed_turns,
+                min_turns=self._current_min_turns(),
+                planned_turns=self.state.planned_turns or None,
+                has_interactive_blocker=has_blocker,
+                early_exit_rejection_note=early_exit_rejection_note,
+            )
+            raw = await self._complete_max_safe(
+                system_prompt=MAX_SYSTEM_PROMPT,
+                user_prompt=fallback_prompt,
+            )
         return parse_max_decision(raw, fallback_memory=self.state.memory_summary)
 
     async def _guard_premature_completion(
@@ -866,7 +900,7 @@ class AutopilotOrchestrator:
             await self.max_bridge.startup()
             self.state.status = "running"
             self._emit_progress("Agent oturumuna bağlanılıyor...")
-            await self.agent.connect(wait_if_busy=True)
+            connected_state = await self.agent.connect(wait_if_busy=True)
             self._emit_progress(f"Agent sohbetine bağlandı (chat_id={self.state.chat_id}).")
 
             # Devam (resume) modunda önceki turun son ajan cevabından karar üreterek başla;
@@ -913,25 +947,33 @@ class AutopilotOrchestrator:
                     )
                 )
                 prev = self.state.turns[-1]
-                synthetic_msg = AgentMessage(
-                    id=prev.agent_message_id,
-                    role="assistant",
-                    text=prev.agent_reply_text,
-                )
+                live_msg = connected_state.last_assistant_message
+                if live_msg is not None and live_msg.tools:
+                    resume_msg = live_msg
+                    resume_evidence = format_sandbox_evidence(live_msg)
+                    prev.sandbox_evidence = resume_evidence
+                    self._persist_state()
+                else:
+                    resume_msg = AgentMessage(
+                        id=prev.agent_message_id,
+                        role="assistant",
+                        text=prev.agent_reply_text,
+                    )
+                    resume_evidence = prev.sandbox_evidence
                 done_so_far = len(self.state.turns)
                 self._emit_progress(f"Tur {start_turn}: Kaldığı yerden Max kararı alınıyor...")
                 next_decision = await self._ask_max_for_next_step(
                     completed_turns=done_so_far,
                     last_sent=prev.sent_to_agent,
-                    agent_reply=synthetic_msg,
-                    sandbox_evidence=prev.sandbox_evidence,
+                    agent_reply=resume_msg,
+                    sandbox_evidence=resume_evidence,
                 )
                 next_decision = await self._guard_premature_completion(
                     next_decision,
                     completed_turns=done_so_far,
                     last_sent=prev.sent_to_agent,
-                    agent_reply=synthetic_msg,
-                    sandbox_evidence=prev.sandbox_evidence,
+                    agent_reply=resume_msg,
+                    sandbox_evidence=resume_evidence,
                 )
 
             for turn in range(start_turn, self.config.max_turns + 1):

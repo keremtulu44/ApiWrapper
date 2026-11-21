@@ -266,11 +266,13 @@ def test_parse_chat_state_and_sandbox_evidence() -> None:
     assert len(state.last_assistant_message.tools) == 2
 
     evidence_txt = format_sandbox_evidence(state.last_assistant_message)
-    assert "write_file" in evidence_txt
-    assert "src/app.py" in evidence_txt
-    assert "pytest -q" in evidence_txt
-    assert "exit_code=0" in evidence_txt
-    assert "4 passed" in evidence_txt
+    assert "Sandbox özeti: toplam 2 işlem" in evidence_txt
+    assert "dosya yazma/düzenleme=1" in evidence_txt
+    assert "komut/test=1 başarılı / 0 hatalı" in evidence_txt
+    assert "çıkış kodu 0" in evidence_txt
+    # Ham bash komutu ve backtick WAF tetiklemesin diye kanıtta yer almamalı:
+    assert "pytest -q" not in evidence_txt
+    assert "`" not in evidence_txt
 
 
 def test_agent_event_stream_decoder_tracks_seq_and_turn_complete() -> None:
@@ -532,12 +534,24 @@ def test_max_system_prompt_enforces_human_persona_and_busy_rule() -> None:
         memory_summary="Not " * 1000,
         turn_digests=[],
         last_sent_to_agent="Talimat " * 600,
-        agent_reply_text="BAŞLANGIÇ " + ("orta metin " * 3000) + " SONUÇ_ÖZETİ",
-        sandbox_evidence="Kanıt " * 1000,
+        agent_reply_text=(
+            "ARA_GUNLUK_ADIMI "
+            + ("orta metin " * 3000)
+            + "\n## ✅ Teslim Özeti\nKomut `scripts/verify.sh` && `/bin/bash` curl -fsS "
+            + "SONUÇ_ÖZETİ " * 40
+        ),
+        sandbox_evidence=(
+            "Değiştirilen dosyalar: x\n  ✅ cmd=`pytest` exit_code=0\nKanıt özeti tamam."
+        ),
     )
-    assert "BAŞLANGIÇ" in huge_turn
+    assert "ARA_GUNLUK_ADIMI" not in huge_turn
     assert "SONUÇ_ÖZETİ" in huge_turn
-    assert len(huge_turn) <= 9500
+    assert "`" not in huge_turn
+    assert "&&" not in huge_turn
+    assert "/bin/bash" not in huge_turn
+    assert "verify.sh" not in huge_turn
+    assert "cmd=" not in huge_turn
+    assert len(huge_turn) <= 5500
 
 
 def test_events_parser_formats_web_search_and_fetch_page_evidence() -> None:
@@ -713,9 +727,11 @@ def test_head_tail_bash_evidence_and_interactive_blocker_recovery() -> None:
     assert msg is not None
     evidence = format_sandbox_evidence(msg)
 
-    # Hem başlangıç hem de en sondaki '24 passed' satırı korunmalı
-    assert "collecting test items" in evidence
-    assert "24 passed in 0.42s" in evidence
+    # Ham stdout hala nesnede baş+son olarak tutulur ama dış isteme ham bash sızmaz:
+    assert "collecting test items" in msg.tools[0].stdout_preview
+    assert "24 passed in 0.42s" in msg.tools[0].stdout_preview
+    assert "collecting test items" not in evidence
+    assert "`" not in evidence
     # ask_user sorusu ve etkileşim engeli açıkça görünmeli
     assert "ETKİLEŞİM ENGELİ" in evidence
     assert "Hangi veritabanını kullanayım?" in evidence
@@ -950,7 +966,9 @@ async def test_orchestrator_multi_turn_stateless_and_checkpoint_resume(
     assert st2.status == "completed"
     assert len(st2.turns) == 2
     assert "Adım 1 doğrulandı" in bridge_part2.calls[0][1]
-    assert "pytest -k step_2" in bridge_part2.calls[1][1]
+    assert "Tur 2 tamamlandı ve doğrulandı" in bridge_part2.calls[1][1]
+    assert "komut/test=1 başarılı / 0 hatalı" in bridge_part2.calls[1][1]
+    assert "pytest -k step_2" not in bridge_part2.calls[1][1]
 
 
 @pytest.mark.anyio

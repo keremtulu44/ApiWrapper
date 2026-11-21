@@ -330,79 +330,99 @@ def parse_chat_state(raw: dict[str, Any]) -> AgentChatState:
     )
 
 
+def _clean_plain_note(text: str, limit: int = 140) -> str:
+    """Kanıt notlarından kabuk/WAF tetikleyicilerini (`backtick`, `&&`, `.sh`) temizler."""
+    cleaned = (text or "").replace("`", "").replace("&&", " ve ").replace("||", " veya ")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1].rstrip() + "…"
+
+
 def format_sandbox_evidence(message: AgentMessage) -> str:
-    """Asistan mesajındaki gerçek araç kayıtlarından `max` için kanıt raporu üretir."""
+    """Asistan mesajındaki araç kayıtlarından kısa, WAF-güvenli Türkçe karne üretir.
+
+    Ham `bash` komutları, dosya yolları ve `stdout`/`stderr` dökümleri bilerek
+    gönderilmez: hem istemi gereksiz şişirir hem de dış HTTP güvenlik duvarlarında
+    (Cloudflare WAF RCE kuralları) yanlış pozitif `403 Blocked` üretebilir.
+    """
     if not message.tools:
         return (
-            "DİKKAT — SANDBOX KANITI: Ajan bu turda HİÇBİR araç (dosya yazma, düzenleme, "
-            "bash/test komutu veya sunucu başlatma) çalıştırmadı; yalnızca düz metin "
-            "yanıtı üretti. Eğer kod değiştirdiğini veya test çalıştırdığını iddia "
-            "ediyorsa bu iddia gerçek değildir."
+            "DİKKAT — SANDBOX KANITI: Ajan bu turda hiçbir araç çalıştırmadı; "
+            "yalnızca düz metin yanıtı üretti. Kod değiştirdiğini veya test "
+            "çalıştırdığını iddia ediyorsa bu iddia gerçek değildir."
         )
 
     writes = [t for t in message.tools if t.tool_name in {"write_file", "edit_file"}]
     reads = [t for t in message.tools if t.tool_name == "read_file"]
     bashes = [t for t in message.tools if t.tool_name == "bash"]
+    bash_ok = [t for t in bashes if not t.is_error]
+    bash_err = [t for t in bashes if t.is_error]
     procs = [t for t in message.tools if t.tool_name in {"start_process", "get_process_output"}]
     web_ops = [t for t in message.tools if t.tool_name in {"web_search", "fetch_page"}]
     errors = [t for t in message.tools if t.is_error]
     blockers = [t for t in message.tools if t.is_interactive_blocker]
 
-    web_part = f", web/doküman={len(web_ops)}" if web_ops else ""
     lines: list[str] = [
-        f"Toplam araç çağrısı: {len(message.tools)} "
+        f"Sandbox özeti: toplam {len(message.tools)} işlem "
         f"(dosya yazma/düzenleme={len(writes)}, okuma={len(reads)}, "
-        f"bash={len(bashes)}, süreç/sunucu={len(procs)}{web_part}, hatalı={len(errors)})"
+        f"komut/test={len(bash_ok)} başarılı / {len(bash_err)} hatalı, "
+        f"sunucu={len(procs)}, web/doküman={len(web_ops)}, toplam hata={len(errors)})"
     ]
     if message.duration_seconds is not None:
-        lines.append(f"Tur çalışma süresi: {message.duration_seconds:.1f} sn")
+        lines.append(f"Tur süresi: {message.duration_seconds:.0f} sn")
 
     if blockers:
         details = "; ".join(
-            f"{t.tool_name}({t.summary})" if t.summary else t.tool_name
+            f"{t.tool_name}({_clean_plain_note(t.summary, 110)})"
+            if t.summary
+            else t.tool_name
             for t in blockers[:3]
         )
         lines.append(
-            f"🚨 ETKİLEŞİM ENGELİ: Ajan kullanıcı onayı/seçimi bekleyen pencere açtı "
-            f"[{details}]! Bir sonraki mesajda net kararını doğrudan söyle ve pencere "
-            "açmadan uygulamasını emret."
+            f"🚨 ETKİLEŞİM ENGELİ: Ajan kullanıcı onayı bekleyen pencere açtı "
+            f"[{details}]! Net kararını söyle ve pencere açmadan uygulamasını iste."
         )
-
-    if web_ops:
-        lines.append("Web araması ve sayfa/API dokümanı okumaları:")
-        for item in web_ops[-6:]:
-            flag = "❌" if item.is_error else "🌐"
-            lines.append(f"  {flag} {item.tool_name}: {item.summary}")
-
-    if writes:
-        written_paths: list[str] = []
-        for item in writes:
-            if item.summary and item.summary not in written_paths:
-                written_paths.append(f"{item.tool_name}({item.summary})")
-        lines.append("Değiştirilen dosyalar: " + ", ".join(written_paths[:12]))
-        if len(written_paths) > 12:
-            lines.append(f"  … ve {len(written_paths) - 12} dosya işlemi daha.")
 
     if bashes:
-        lines.append("Çalıştırılan bash komutları (son 8):")
-        for item in bashes[-8:]:
-            flag = "❌" if item.is_error else "✅"
-            detail = f"  {flag} {item.summary}"
-            if item.stdout_preview:
-                detail += f" | stdout: {item.stdout_preview}"
-            if item.stderr_preview and item.is_error:
-                detail += f" | stderr: {item.stderr_preview}"
-            lines.append(detail)
-    else:
-        lines.append(
-            "NOT: Bu turda hiç bash/test/build komutu çalıştırılmadı "
-            "(yalnız dosya/diğer araçlar kullanıldı)."
+        last_bash = bashes[-1]
+        tail_state = (
+            "başarılı (çıkış kodu 0)"
+            if not last_bash.is_error
+            else f"hatalı (çıkış kodu {last_bash.exit_code})"
         )
+        lines.append(
+            f"Komut/test sonucu: {len(bash_ok)}/{len(bashes)} komut hatasız geçti; "
+            f"son çalıştırılan komut {tail_state}."
+        )
+    else:
+        lines.append("NOT: Bu turda hiç derleme/test komutu çalıştırılmadı.")
 
     if procs:
-        lines.append("Arka plan süreç / canlı önizleme işlemleri:")
-        for item in procs[-4:]:
-            lines.append(f"  • {item.tool_name}: {item.summary}")
+        ports_found: list[str] = []
+        alive_seen = False
+        preview_warn = ""
+        for item in procs:
+            if "alive=True" in item.summary:
+                alive_seen = True
+            for p in re.findall(r"ports=\[([0-9,\s]+)\]", item.summary):
+                for num in re.findall(r"\d{2,5}", p):
+                    if num not in ports_found:
+                        ports_found.append(num)
+            if "PREVIEW_UYARISI=" in item.summary:
+                raw_w = item.summary.split("PREVIEW_UYARISI=", 1)[1]
+                preview_warn = _clean_plain_note(raw_w, 140)
+        port_txt = f", portlar: {', '.join(ports_found)}" if ports_found else ""
+        state_txt = "aktif" if alive_seen else "kontrol edildi"
+        lines.append(f"Canlı önizleme sunucusu: {state_txt}{port_txt}.")
+        if preview_warn:
+            lines.append(f"UYARI — PREVIEW_UYARISI: {preview_warn}")
+
+    if web_ops:
+        topics: list[str] = []
+        for item in web_ops[-4:]:
+            topics.append(f"{item.tool_name}({_clean_plain_note(item.summary, 80)})")
+        lines.append("Web/API araştırması: " + ", ".join(topics))
 
     return "\n".join(lines)
 

@@ -55,47 +55,32 @@ AGENT_MORNING_HANDOFF_PROMPT = (
 
 MAX_SYSTEM_PROMPT = (
     "Sen vizyoner bir Ürün Kurucusu ve Baş Yazılım Mimarısın. Karşında tam yetkili "
-    "sandbox ortamına (dosya yazma, bash, arka plan sunucusu, uçtan uca test), "
-    "**web'de canlı arama/doküman okumaya (`web_search`, `fetch_page`) ve neredeyse "
-    "çoğu dış API'ye gerçek HTTP isteği atma** yeteneğine sahip bir Kodlama Ajanı var.\n\n"
-    "KİMLİK VE İLETİŞİM KURALLARI:\n"
-    "1. Doğal, zevkli ve kararlı bir insan proje sahibi gibi Türkçe konuş; ASLA "
-    '"yapay zekayım", "dil modeliyim", "sandbox\'um yok" gibi ifadeler kullanma.\n'
-    "2. Ajan senden kendi bilgisayarında bir şey denemeni/kurmanı isterse: "
-    '"Şu an müsait değilim, doğrudan kendi ortamında çalıştırıp test ederek sonucu '
-    'paylaş" de.\n'
-    "3. Ajan web'de arama yapabilir (`web_search`, `fetch_page`) ve dış API'lere "
-    "istek atabilir! Projeye canlı veri veya güncel doküman değer katıyorsa ajana "
-    "gerçek uç noktayı web aramasıyla doğrulat, uydurma URL yazdırma, çağrıyı test "
-    "ettir ve önbellek/yedekleme kurdur (yalnız verilmeyen ücretli gizli API "
-    "anahtarlarını zorunlu tutma).\n"
-    "4. Ajana soru/seçenek penceresi (`ask_user`, `offer_options`, `add_voice`) "
-    "açtırma; açtıysa net kararını verip penceresiz uygulat.\n\n"
-    "ÜRÜN KALİTESİ VE 5 AŞAMALI YOL HARİTASI:\n"
-    "- Sıradan CRUD/klişe şablona razı olma; karakterli arayüz, gerçekçi Türkçe "
-    "içerik ve 2-3 yaratıcı İMZA ÖZELLİK (canlı API analizi, etkileşimli hesaplama, "
-    "akıllı akış, karşılaştırma, dışa/içe aktarma, kalıcı veri vb.) kazandır.\n"
-    "- İlk iskelette erken bitirip kaçma; her turda somut yeni katman eklet. Laf "
-    "kalabalığına değil `[SANDBOX GERÇEK EYLEM KANITI]` kaydına (`exit_code=0`, "
-    "gerçek test ve sunucu çıktısı) bak; çalışmayan sahte buton bırakma.\n"
-    "- Aşamalar: `1_VIZYON_VE_CEKIRDEK` (mimari, tasarım dili, çekirdek akış) -> "
-    "`2_YARATICI_DERINLIK` (imza özellikler, gerçek dış API/veri iş mantığı) -> "
-    "`3_DENEYIM_VE_CILA` (UX, hata/boş/yüklenme durumları, mobil/klavye) -> "
-    "`4_DOGRULAMA_VE_SUNUCU` (uçtan uca testler + `start_process` ile `0.0.0.0` "
-    "canlı sunucu, tarayıcıda localhost sabitlemeden HTTP doğrulaması) -> "
-    "`5_KABUL` (yalnız olgunluk kapısı ve 1..4 kanıtla tamamlandığında).\n\n"
+    "sandbox ortamına (dosya yazma, terminal, arka plan sunucusu, uçtan uca test), "
+    "web'de canlı arama/doküman okumaya (web_search, fetch_page) ve neredeyse çoğu "
+    "dış API'ye gerçek HTTP isteği atma gücüne sahip bir Kodlama Ajanı var.\n\n"
+    "KURALLAR:\n"
+    "1. Doğal ve kararlı bir insan proje sahibi gibi Türkçe konuş; ASLA "
+    '"yapay zekayım", "dil modeliyim", "sandbox\'um yok" deme.\n'
+    '2. Ajan senden bir şey denemeni isterse: "Şu an müsait değilim, kendi '
+    'ortamında çalıştırıp test ederek sonucu paylaş" de.\n'
+    "3. Ajan web'de arama yapabilir (web_search, fetch_page) ve dış API'lere "
+    "istek atabilir; canlı veri yakışıyorsa gerçek ucu doğrulat, test ettir ve "
+    "önbellek/yedekleme kurdur (verilmeyen ücretli gizli anahtarları zorunlu tutma).\n"
+    "4. Ajana soru/seçim penceresi (ask_user, offer_options, add_voice) açtırma; "
+    "açtıysa net kararını verip penceresiz uygulat.\n"
+    "5. Sıradan CRUD şablonuna razı olma; karakterli arayüz, gerçekçi Türkçe veri "
+    "ve 2-3 yaratıcı imza özellik kazandır. İlk iskelette erken bitirip kaçma; "
+    "SANDBOX KANITI özetindeki gerçek test ve sunucu sonucuna bak.\n"
+    "6. Yol Haritası: 1_VIZYON_VE_CEKIRDEK -> 2_YARATICI_DERINLIK -> "
+    "3_DENEYIM_VE_CILA -> 4_DOGRULAMA_VE_SUNUCU (otomatik testler + 0.0.0.0 canlı "
+    "sunucu doğrulaması) -> 5_KABUL.\n\n"
     "ÇIKTI BİÇİMİ (YALNIZ BU ETİKETLERİ VER, İÇ NOTLARI KISA TUT):\n"
     "<DURUM>DEVAM veya TAMAMLANDI veya TAKILDI</DURUM>\n"
     "<ASAMA>1_VIZYON_VE_CEKIRDEK | 2_YARATICI_DERINLIK | 3_DENEYIM_VE_CILA | "
     "4_DOGRULAMA_VE_SUNUCU | 5_KABUL</ASAMA>\n"
-    "<DEGERLENDIRME>(En fazla 2-3 kısa cümle: kanıt kontrolü ve adım gerekçesi)</DEGERLENDIRME>\n"
-    "<GUNCEL_HAFIZA>\n"
-    "(Geçmişin yok; sonraki turda yalnız bunu okuyacaksın. En fazla 10 kısa "
-    "maddeyle: vizyon, bitenler ve kalan yol haritası.)\n"
-    "</GUNCEL_HAFIZA>\n"
-    "<AJANA_MESAJ>\n"
-    "(Ajana gidecek doğal, net Türkçe talimat. TAMAMLANDI ise boş bırak.)\n"
-    "</AJANA_MESAJ>"
+    "<DEGERLENDIRME>(En fazla 2 kısa cümle)</DEGERLENDIRME>\n"
+    "<GUNCEL_HAFIZA>(En fazla 8 kısa madde: vizyon, bitenler, sıradaki adımlar)</GUNCEL_HAFIZA>\n"
+    "<AJANA_MESAJ>(Ajana gidecek net Türkçe talimat; TAMAMLANDI ise boş)</AJANA_MESAJ>"
 )
 
 _INTERNAL_TAG_NAMES = (
@@ -159,12 +144,57 @@ class MaxDecision:
     evening_plan: str = ""
 
 
-def _clip_head_tail(text: str, max_chars: int, *, head_ratio: float = 0.4) -> str:
-    """Metin sınırı aşarsa başını ve sonunu koruyarak ortasını kırpar."""
-    cleaned = (text or "").strip()
+def sanitize_for_waf(text: str) -> str:
+    """Dış HTTP güvenlik duvarlarının (Cloudflare OWASP RCE/SQLi/XSS kuralları)
+    kodlama özetlerini saldırı sanıp `403 Blocked` döndürmesini önler.
+    """
+    if not text:
+        return ""
+    # Eski kayıtlardan (`resume`) kalabilecek ham bash/dosya satırlarını temizle:
+    kept_lines: list[str] = []
+    for raw_line in text.splitlines():
+        stripped = raw_line.strip()
+        if stripped.startswith(("Değiştirilen dosyalar:", "Çalıştırılan bash komutları")):
+            continue
+        if "cmd=" in stripped and ("exit_code=" in stripped or "stdout:" in stripped):
+            continue
+        kept_lines.append(raw_line)
+    cleaned = "\n".join(kept_lines)
+    # Backtick (`...`) Unix komut ikamesi olarak WAF'ı tetikler:
+    cleaned = cleaned.replace("`", "")
+    cleaned = cleaned.replace("&&", " ve ").replace("||", " veya ")
+    cleaned = re.sub(r"/(?:usr/)?bin/(?:ba)?sh\b", "kabuk", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"/etc/[a-zA-Z0-9_./-]+", "sistem-ayari", cleaned)
+    cleaned = re.sub(r"/dev/null\b", "bos-cikti", cleaned)
+    cleaned = re.sub(r"\b([\w./-]+)\.(?:sh|bash|cjs)\b", r"\1 betigi", cleaned)
+    cleaned = re.sub(r"\bcurl\s+-[a-zA-Z]+", "http-istegi", cleaned)
+    cleaned = re.sub(r"<\s*!?\s*doctype\b", "[doctype]", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"<\s*/?\s*script\b", "[script]", cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+
+def extract_agent_final_summary(text: str, max_chars: int = 1800) -> str:
+    """Ajanın uzun adım-adım çalışma günlüğünü atıp sondaki teslim özetini alır."""
+    cleaned = sanitize_for_waf(text)
+    if not cleaned:
+        return ""
     if len(cleaned) <= max_chars:
         return cleaned
-    marker = "\n\n…[kısaltıldı]…\n\n"
+    tail_window = cleaned[-(max_chars + 900) :]
+    heading_match = re.search(r"\n#{2,3}\s+[^\n]+", tail_window)
+    if heading_match:
+        candidate = tail_window[heading_match.start() + 1 :].strip()
+        if len(candidate) >= 350:
+            return candidate[:max_chars].rstrip()
+    return "…\n" + cleaned[-max_chars:].lstrip()
+
+
+def _clip_head_tail(text: str, max_chars: int, *, head_ratio: float = 0.4) -> str:
+    """Metin sınırı aşarsa başını ve sonunu koruyarak ortasını kırpar."""
+    cleaned = sanitize_for_waf(text)
+    if len(cleaned) <= max_chars:
+        return cleaned
+    marker = "\n…\n"
     usable = max(80, max_chars - len(marker))
     head = max(40, int(usable * head_ratio))
     tail = max(40, usable - head)
@@ -195,8 +225,8 @@ def build_kickoff_user_prompt(
         f"[PROJE FİKRİ]\n{project_idea.strip()}\n\n"
         f"[BÜTÇE]\n{budget_header}\n\n"
         "[MEVCUT DURUM]\n"
-        "Sandbox hazır; ajan dosya/bash/sunucu araçlarının yanında web'de arama "
-        "(`web_search`, `fetch_page`) yapabilir ve neredeyse çoğu dış API'ye HTTP "
+        "Sandbox hazır; ajan dosya/terminal/sunucu araçlarının yanında web'de arama "
+        "(web_search, fetch_page) yapabilir ve neredeyse çoğu dış API'ye HTTP "
         "isteği atabilir. Proje henüz tarif edilmedi.\n\n"
         "[1. TUR GÖREVİN]\n"
         "1. Fikri sıradan CRUD olmaktan çıkar; karakterli arayüz, gerçekçi Türkçe veri "
@@ -206,7 +236,7 @@ def build_kickoff_user_prompt(
         "3. <AKSAM_PLANI> içine proje sahibine gönderilecek kısa, maddeli akşam "
         "başlangıç planını yaz (Vizyon, İmza Özellikler, Mimari; en fazla 6-8 satır).\n"
         "4. <GUNCEL_HAFIZA> içine kısa maddelerle 4 aşamalı yol haritasını yaz.\n"
-        "5. <AJANA_MESAJ> içinde tüm projeyi tek tura yığmadan yalnız `1_VIZYON_VE_CEKIRDEK` "
+        "5. <AJANA_MESAJ> içinde tüm projeyi tek tura yığmadan yalnız 1_VIZYON_VE_CEKIRDEK "
         "aşamasını (dizin kontrolü, veri/API temeli, özgün arayüz iskeleti ve çalışan "
         "çekirdek akış) kurup doğrulamasını iste."
     )
@@ -272,11 +302,11 @@ def build_turn_user_prompt(
     ]
     history_block = "\n".join(history_lines) if history_lines else "(Yok)"
 
-    clipped_memory = _clip_head_tail(memory_summary, 1600, head_ratio=0.45) or "(Boş)"
-    clipped_last_msg = _clip_head_tail(last_sent_to_agent, 900, head_ratio=0.45)
-    clipped_evidence = _clip_head_tail(sandbox_evidence, 2400, head_ratio=0.38)
+    clipped_memory = _clip_head_tail(memory_summary, 1100, head_ratio=0.45) or "(Boş)"
+    clipped_last_msg = _clip_head_tail(last_sent_to_agent, 600, head_ratio=0.45)
+    clipped_evidence = _clip_head_tail(sandbox_evidence, 900, head_ratio=0.5)
     clipped_agent_reply = (
-        _clip_head_tail(agent_reply_text, 2600, head_ratio=0.38)
+        extract_agent_final_summary(agent_reply_text, 1800)
         or "(Ajan metin üretmedi)"
     )
 
