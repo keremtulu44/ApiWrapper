@@ -192,3 +192,364 @@ def test_long_text_is_bounded():
     shortened = split_telegram_text("x" * 20000, limit=3500, max_chars=12000)
     assert sum(len(part) for part in shortened) <= 12000
     assert "yanıt kısaltıldı" in shortened[-1]
+
+
+def _sample_windows_cmd_agent_curl() -> str:
+    chat_id = "019d8420-fa0b-76a8-8b2f-268c897d22a9"
+    long_cookie = "a=" + ("X" * 4500) + "; arena-auth-prod-v1.0=tok_part_1; cf_clearance=ok"
+    long_recaptcha = "03AFcWeA_" + ("R" * 4200)
+    raw_json = json.dumps(
+        {
+            "kind": "message",
+            "payload": {
+                "chatId": f"agent-runner:{chat_id}",
+                "message": {
+                    "parts": [{"type": "text", "text": "Selam"}],
+                    "id": "019d8420-fa0b-7000-8000-000000000001",
+                    "role": "user",
+                    "metadata": {
+                        "lastUserMessageId": "019d8420-fa0b-7000-8000-000000000000"
+                    },
+                },
+                "metadata": {"recaptchaV3Token": long_recaptcha, "cx": "cx_ok"},
+            },
+        },
+        separators=(",", ":"),
+    )
+    # Gerçek Chrome "Copy as cURL (cmd)" kaçışları: `"` -> `\^"`, `{` -> `^{`, `}` -> `^}`
+    cmd_body = (
+        raw_json.replace('"', r'\^"')
+        .replace("{", "^{")
+        .replace("}", "^}")
+    )
+    return (
+        f'curl ^"https://target.example/api/chat/{chat_id}/input^" ^\n'
+        '  -H ^"accept: */*^" ^\n'
+        f'  -b ^"{long_cookie}^" ^\n'
+        '  -H ^"content-type: application/json^" ^\n'
+        f'  --data-raw ^"{cmd_body}^"'
+    )
+
+
+@pytest.mark.asyncio
+async def test_telegram_multipart_curl_collection_and_multi_project_flow():
+    """Telegram'ın 4 parçaya böldüğü CMD cURL'ünü birleştirip arka arkaya proje başlatır."""
+    from app.autopilot.curl_parse import parse_agent_curl
+
+    agent_link = "https://target.example/agent/019d8420-fa0b-76a8-8b2f-268c897d22a9"
+    full_curl = _sample_windows_cmd_agent_curl()
+    assert len(full_curl) > 8500
+    # 3000 karakterlik 4 parçaya böl (hem çerezin hem JSON gövdesinin tam ortasından keser)
+    chunks = [full_curl[i : i + 3000] for i in range(0, len(full_curl), 3000)]
+    assert len(chunks) == 4
+
+    sent: list[str] = []
+    started_runs: list[dict[str, Any]] = []
+    chat_completion_calls = 0
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["text"])
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal chat_completion_calls
+        path = request.url.path
+        if path == "/v1/chat/completions":
+            chat_completion_calls += 1
+            return httpx.Response(
+                200,
+                json={"choices": [{"message": {"role": "assistant", "content": "Normal"}}]},
+            )
+        if path == "/v1/autopilot/inspect-curl":
+            body = json.loads(request.content)
+            cfg = parse_agent_curl(body["agent_curl"])
+            assert cfg.recaptcha_token.startswith("03AFcWeA_")
+            assert len(cfg.recaptcha_token) == 4209
+            assert "arena-auth-prod-v1.0=tok_part_1" in cfg.cookie
+            assert cfg.warnings == []
+            return httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "target_domain": cfg.target_domain,
+                    "chat_id": cfg.chat_id,
+                    "source_endpoint_kind": cfg.source_endpoint_kind,
+                    "same_account_conflict": False,
+                    "warnings": [],
+                },
+            )
+        if path == "/v1/autopilot/runs" and request.method == "POST":
+            body = json.loads(request.content)
+            started_runs.append(body)
+            idx = len(started_runs)
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": f"auto_proj{idx}",
+                    "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                    "target_domain": "target.example",
+                    "agent_url": agent_link,
+                    "status": "running",
+                    "max_turns": body["max_turns"],
+                },
+            )
+        if path == "/v1/autopilot/runs" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "active_count": 1,
+                    "runs": [
+                        {
+                            "run_id": "auto_proj2",
+                            "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                            "agent_url": agent_link,
+                            "project_idea": "İkinci proje: Kanban panosu",
+                            "status": "running",
+                            "current_turn": 2,
+                            "max_turns": 8,
+                            "last_note": "Tur 2 çalışıyor",
+                        },
+                        {
+                            "run_id": "auto_proj1",
+                            "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                            "agent_url": agent_link,
+                            "project_idea": "Birinci proje: Kişisel finans uygulaması",
+                            "status": "completed",
+                            "current_turn": 6,
+                            "max_turns": 10,
+                            "stop_reason": "Tüm testler geçti.",
+                        },
+                    ],
+                },
+            )
+        if path == "/v1/autopilot/runs/auto_proj1" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": "auto_proj1",
+                    "status": "completed",
+                    "current_turn": 6,
+                    "max_turns": 10,
+                    "current_phase": "4_DOGRULAMA_CILALAMA",
+                    "agent_url": agent_link,
+                    "project_idea": "Birinci proje: Kişisel finans uygulaması",
+                    "stop_reason": "Tüm testler geçti.",
+                    "memory_summary": "FastAPI + SQLite + grafikler tamamlandı.",
+                    "turns": [
+                        {
+                            "turn": 6,
+                            "phase": "4_DOGRULAMA_CILALAMA",
+                            "duration_seconds": 18.4,
+                            "tool_count": 3,
+                            "bash_count": 2,
+                            "error_tool_count": 0,
+                        }
+                    ],
+                },
+            )
+        if path == "/v1/autopilot/runs/auto_proj2/stop" and request.method == "POST":
+            return httpx.Response(
+                200, json={"run_id": "auto_proj2", "status": "running", "stop_requested": True}
+            )
+        return httpx.Response(404)
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+
+        # 1. Proje: /curl -> 4 parça yapıştır -> /curl bitir -> /tur 10 -> proje fikri
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl"})
+        for piece in chunks:
+            await bot.handle_message({"chat": {"id": 42}, "text": piece})
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl bitir"})
+        assert "Agent cURL doğrulandı (4 parça birleştirildi)" in sent[-1]
+
+        await bot.handle_message({"chat": {"id": 42}, "text": "/tur 10"})
+        await bot.handle_message(
+            {"chat": {"id": 42}, "text": "Birinci proje: Kişisel finans uygulaması"}
+        )
+        assert "auto_proj1" in sent[-1]
+        assert started_runs[0]["max_turns"] == 10
+
+        # 2. Proje (/curl yazmayı unutup doğrudan yapıştırma koruması + /bitir kısayolu)
+        for piece in chunks:
+            await bot.handle_message({"chat": {"id": 42}, "text": piece})
+        await bot.handle_message({"chat": {"id": 42}, "text": "/bitir"})
+        await bot.handle_message({"chat": {"id": 42}, "text": "/tur 8"})
+        await bot.handle_message(
+            {"chat": {"id": 42}, "text": "İkinci proje: Kanban panosu"}
+        )
+        assert "auto_proj2" in sent[-1]
+
+        # Diğer projelere bakma (/projeler ve /durum auto_proj1) ve durdurma (/durdur)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/projeler"})
+        assert "auto_proj1" in sent[-1] and "auto_proj2" in sent[-1]
+
+        await bot.handle_message({"chat": {"id": 42}, "text": "/durum auto_proj1"})
+        assert "FastAPI + SQLite" in sent[-1]
+
+        await bot.handle_message({"chat": {"id": 42}, "text": "/durdur"})
+        assert "auto_proj2 için durdurma işareti gönderildi" in sent[-1]
+
+    # Hiçbir cURL parçası yanlışlıkla /v1/chat/completions'a gitmemeli!
+    assert chat_completion_calls == 0
+    assert len(started_runs) == 2
+
+
+@pytest.mark.asyncio
+async def test_telegram_rejects_same_google_account_conflict():
+    sent: list[str] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["text"])
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "valid": True,
+                "target_domain": "target.example",
+                "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                "source_endpoint_kind": "input",
+                "same_account_conflict": True,
+                "warnings": [],
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl"})
+        await bot.handle_message(
+            {"chat": {"id": 42}, "text": 'curl "https://target.example/api/chat/1/input" -b "a=1"'}
+        )
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl bitir"})
+
+    assert "AYNI Google hesabına" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_telegram_default_night_window_auto_turns_and_simdi_wake():
+    sent: list[str] = []
+    started_payloads: list[dict[str, object]] = []
+    start_now_called: list[str] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["text"])
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v1/autopilot/inspect-curl":
+            return httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "target_domain": "target.example",
+                    "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                    "source_endpoint_kind": "input",
+                    "same_account_conflict": False,
+                    "warnings": [],
+                },
+            )
+        if path == "/v1/autopilot/runs" and request.method == "POST":
+            body = json.loads(request.content.decode("utf-8"))
+            started_payloads.append(body)
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": "auto_night1",
+                    "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                    "agent_url": "https://target.example/agent/019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                    "status": "waiting_window",
+                    "max_turns": body["max_turns"],
+                    "auto_turns": body["auto_turns"],
+                    "respect_night_window": body["respect_night_window"],
+                },
+            )
+        if path == "/v1/autopilot/runs" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "active_count": 1,
+                    "runs": [
+                        {
+                            "run_id": "auto_night1",
+                            "status": "waiting_window",
+                            "current_turn": 0,
+                            "max_turns": 12,
+                            "planned_turns": 0,
+                            "project_idea": "Gece yapılacak proje",
+                        }
+                    ],
+                },
+            )
+        if path == "/v1/autopilot/runs/auto_night1/start-now" and request.method == "POST":
+            start_now_called.append("auto_night1")
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": "auto_night1",
+                    "status": "running",
+                    "bypassed_night_window": True,
+                },
+            )
+        if path == "/v1/autopilot/runs/auto_night1" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": "auto_night1",
+                    "status": "completed",
+                    "agent_url": "https://target.example/agent/019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                    "evening_plan": "- Mimari: FastAPI + React",
+                    "handoff_report": "1. Neler Yapıldı: Simülatör tamamlandı.\n3. Kontrol edin.",
+                },
+            )
+        return httpx.Response(404)
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/curl"})
+        sample_curl = (
+            'curl "https://target.example/api/chat/'
+            '019d8420-fa0b-76a8-8b2f-268c897d22a9/input" -b "a=1"'
+        )
+        await bot.handle_message({"chat": {"id": 42}, "text": sample_curl})
+        await bot.handle_message({"chat": {"id": 42}, "text": "/bitir"})
+        # Hiç /tur yazmadan doğrudan proje fikri gönderildiğinde varsayılan:
+        # auto_turns=True, respect_night_window=True, max_turns=12
+        await bot.handle_message(
+            {"chat": {"id": 42}, "text": "Akıllı envanter ve tedarik simülatörü"}
+        )
+        assert len(started_payloads) == 1
+        assert started_payloads[0]["auto_turns"] is True
+        assert started_payloads[0]["respect_night_window"] is True
+        assert started_payloads[0]["max_turns"] == 12
+        assert "gece sırasına alındı" in sent[-1]
+
+        # Kullanıcı isterse /simdi yazarak bekleyen gece projesini hemen uyandırabilir
+        await bot.handle_message({"chat": {"id": 42}, "text": "/simdi"})
+        assert start_now_called == ["auto_night1"]
+
+        # /rapor komutu akşam planını ve sabah Agent teslim raporunu birlikte göstermeli
+        await bot.handle_message({"chat": {"id": 42}, "text": "/rapor"})
+        assert "Akşam Başlangıç Planı" in sent[-1]
+        assert "Sabah Teslim Raporu" in sent[-1]
+

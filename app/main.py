@@ -4,16 +4,16 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
-from app.api.v1 import admin, ask, chat, health, models
+from app.api.v1 import admin, ask, autopilot, chat, health, models
+from app.autopilot.upstream_slots import UpstreamSlotRuntimeManager
 from app.core.config import Settings, get_settings
-from app.core.diagnostics import explain_failure
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import (
@@ -23,10 +23,10 @@ from app.core.middleware import (
     RequestIDMiddleware,
 )
 from app.services.account import build_account_pool
-from app.services.alerting import ProbeResult, build_alerter
+from app.services.alerting import build_alerter
 from app.services.completion_service import CompletionService
 from app.services.keepalive import run_upstream_keepalive
-from app.services.lanes import Lane, LaneSet
+from app.services.lanes import LaneSet
 from app.services.model_registry import ModelEntry, ModelRegistry
 from app.services.recaptcha import create_recaptcha_provider
 from app.services.session_manager import SessionManager
@@ -202,43 +202,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
             hint="UPSTREAM_LOGIN_EMAIL / UPSTREAM_LOGIN_PASSWORD eksik.",
         )
 
-    keepalive_tasks: list[asyncio.Task[None]] = []
-    keepalive_interval = settings.upstream_keepalive_interval_seconds
-    if keepalive_interval > 0:
-        # Aynı görev hem canlılık denemesi hem teşhis/bildirim kaynağıdır. Her
-        # hesabın kendi döngüsü vardır: probe o hesaba sabitlenir ve o hesabın son
-        # başarılı isteğine göre ertelenir. İlk probe'lar hesaplar arasında
-        # kaydırılır ki iki hesap aynı saniyede yoklanmasın.
-        stagger = min(60.0, keepalive_interval / len(lanes))
-
-        def probe_notes(lane: Lane) -> Callable[[ProbeResult], tuple[str, ...]]:
-            def build(result: ProbeResult) -> tuple[str, ...]:
-                critical = explain_failure(result.status_code, result.code).severity == "critical"
-                outlook = lanes.outlook(lane)
-                return (
-                    *((outlook,) if outlook else ()),
-                    *lanes.incident_notes(lane, critical=critical),
-                )
-
-            return build
-
-        for lane in lanes.lanes:
-            pinned = lane.slot if lanes.multi else None
-            keepalive_tasks.append(
-                asyncio.create_task(
-                    run_upstream_keepalive(
-                        settings,
-                        alerter=alerter,
-                        health=lane.health,
-                        queue=lane.queue,
-                        account_slot=pinned,
-                        scope=lanes.scope(lane),
-                        start_delay=lane.index * stagger,
-                        notes=probe_notes(lane) if lanes.multi else None,
-                    ),
-                    name=f"upstream-keepalive-{lane.index + 1}",
-                )
-            )
+    slot_manager = UpstreamSlotRuntimeManager(
+        app,
+        keepalive_runner=lambda *a, **kw: run_upstream_keepalive(*a, **kw),
+    )
+    app.state.slot_manager = slot_manager
+    slot_manager.start_initial_keepalives()
 
     logger.info(
         "application_started",
@@ -259,15 +228,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 await keeper_task
             with contextlib.suppress(Exception):
                 await app.state.session_keeper.shutdown()
-        for keepalive_task in keepalive_tasks:
-            keepalive_task.cancel()
-        for keepalive_task in keepalive_tasks:
-            with contextlib.suppress(asyncio.CancelledError):
-                await keepalive_task
+        await slot_manager.shutdown()
         if telegram_task is not None:
             telegram_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await telegram_task
+        if autopilot_mgr := getattr(app.state, "autopilot_manager", None):
+            await autopilot_mgr.shutdown()
         # Süren `/v1/ask` işleri ve gönderilmekte olan bildirimler.
         await tasks.shutdown()
         with contextlib.suppress(Exception):
@@ -319,6 +286,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app.include_router(ask.router, prefix="/v1")
     app.include_router(models.router, prefix="/v1")
     app.include_router(admin.router, prefix="/v1")
+    app.include_router(autopilot.router, prefix="/v1")
     # OpenAI SDK `base_url` bazen `/v1` olmadan verilir; aksi halde /chat/completions 404 olur.
     app.include_router(chat.router, include_in_schema=False)
     app.include_router(ask.router, include_in_schema=False)

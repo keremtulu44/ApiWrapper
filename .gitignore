@@ -12,3 +12,8 @@ dist/
 build/
 htmlcov/
 .coverage
+agent_curl*.txt
+max_curl*.txt
+autopilot_state*.json
+idea*.txt
+

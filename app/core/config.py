@@ -273,8 +273,8 @@ class Settings(BaseSettings):
     #: Bir istek bitince sıradaki, bu aralıktan rastgele seçilen süre (saniye)
     #: kadar bekletilir. Yalnız upstream'e gerçekten gidilmiş isteklerden sonra
     #: uygulanır; yerelde reddedilen istek sırayı bekletmez.
-    request_gap_min_seconds: float = 5.0
-    request_gap_max_seconds: float = 10.0
+    request_gap_min_seconds: float = 15.0
+    request_gap_max_seconds: float = 30.0
     #: Bir hesabın sırasında aynı anda bekleyebilecek en fazla istek (0 =
     #: sınırsız). Dolunca yeni istek beklemeden reddedilir (`queue_full`).
     request_queue_max_waiting: int = 20
