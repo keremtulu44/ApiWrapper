@@ -13,9 +13,10 @@ from typing import Any, Literal
 from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 
-from app.autopilot.curl_parse import extract_all_max_identities, parse_agent_curl
+from app.autopilot.curl_parse import extract_max_slot_identities, parse_agent_curl
 from app.autopilot.manager import AutopilotManager
 from app.autopilot.orchestrator import SameAccountError
+from app.autopilot.upstream_slots import UpstreamSlotRuntimeManager
 from app.core.errors import InvalidRequestError, ModelNotFoundError
 from app.core.security import api_key_dependency
 
@@ -30,9 +31,22 @@ def _get_manager(request: Request) -> AutopilotManager:
     return manager
 
 
+def _get_slot_manager(request: Request) -> UpstreamSlotRuntimeManager:
+    slot_mgr: UpstreamSlotRuntimeManager | None = getattr(
+        request.app.state, "slot_manager", None
+    )
+    if slot_mgr is None:
+        raise InvalidRequestError("Upstream slot yöneticisi hazır değil.")
+    return slot_mgr
+
+
 class InspectAgentCurlRequest(BaseModel):
     agent_curl: str = Field(..., min_length=10)
     chat_id: str | None = None
+
+
+class UpdateUpstreamSlotRequest(BaseModel):
+    upstream_curl: str = Field(..., min_length=20)
 
 
 class StartAutopilotRequest(BaseModel):
@@ -67,10 +81,15 @@ async def inspect_agent_curl_endpoint(
 
     agent_sub = cfg.account_identity()
     settings = getattr(request.app.state, "settings", None)
-    server_max_subs = (
-        extract_all_max_identities(settings) if settings is not None else frozenset()
+    slot_subs = (
+        extract_max_slot_identities(settings) if settings is not None else {}
     )
-    same_conflict = bool(agent_sub and agent_sub in server_max_subs)
+    conflict_slots = (
+        sorted(slot for slot, sub in slot_subs.items() if sub == agent_sub)
+        if agent_sub
+        else []
+    )
+    same_conflict = bool(conflict_slots)
 
     return {
         "valid": True,
@@ -84,6 +103,7 @@ async def inspect_agent_curl_endpoint(
         "has_last_user_message_id": bool(cfg.last_user_message_id),
         "has_account_identity": bool(agent_sub),
         "same_account_conflict": same_conflict,
+        "conflict_slots": conflict_slots,
         "warnings": cfg.warnings,
     }
 
@@ -186,3 +206,51 @@ async def start_autopilot_run_now(run_id: str, request: Request) -> dict[str, An
         "status": state.status,
         "bypassed_night_window": True,
     }
+
+
+@router.get("/autopilot/upstream-slots")
+async def get_upstream_slots_status(request: Request) -> dict[str, Any]:
+    """Canlı `max` hesap yuvalarının (Yuva 1 & Yuva 2) secret-free durumunu döndürür."""
+    slot_mgr = _get_slot_manager(request)
+    autopilot_mgr: AutopilotManager | None = getattr(
+        request.app.state, "autopilot_manager", None
+    )
+    snap = slot_mgr.status_snapshot()
+    snap["active_autopilot_runs"] = (
+        autopilot_mgr.active_count() if autopilot_mgr is not None else 0
+    )
+    return snap
+
+
+@router.post("/autopilot/upstream-slots/2/close")
+async def close_upstream_slot_2(request: Request) -> dict[str, Any]:
+    """2. `max` hesabının (`upstream_curl2`) bağlantısını ve kaydını kökten kapatır."""
+    slot_mgr = _get_slot_manager(request)
+    return await slot_mgr.close_slot_2()
+
+
+@router.post("/autopilot/upstream-slots/{slot}")
+async def update_upstream_slot(
+    slot: int,
+    body: UpdateUpstreamSlotRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """1. veya 2. `max` hesabının (`upstream_curl` / `upstream_curl2`) cURL'ünü canlı günceller."""
+    if slot not in (1, 2):
+        raise InvalidRequestError(
+            "Yalnızca 1 veya 2 numaralı Max yuvası güncellenebilir.", param="slot"
+        )
+    slot_mgr = _get_slot_manager(request)
+    autopilot_mgr: AutopilotManager | None = getattr(
+        request.app.state, "autopilot_manager", None
+    )
+    lit_slot: Literal[1, 2] = 1 if slot == 1 else 2
+    try:
+        return await slot_mgr.update_slot(
+            lit_slot,
+            body.upstream_curl,
+            autopilot_manager=autopilot_mgr,
+        )
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc), param="upstream_curl") from exc
+

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from typing import Any, Literal
@@ -24,8 +25,10 @@ from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.autopilot.curl_parse import (
+    detect_pasted_curl_kind,
     looks_like_agent_curl_start,
     reassemble_agent_curl_chunks,
+    reassemble_upstream_curl_chunks,
 )
 from app.core.diagnostics import format_failure
 from app.core.logging import configure_logging, get_logger
@@ -36,9 +39,14 @@ logger = get_logger(__name__)
 _HELP = (
     "ApiWrapper botu aktif.\n"
     "Normal metin gönderin; /v1/chat/completions üzerinden tek turluk yanıt üretilir.\n\n"
+    "🔑 Canlı Hesap & cURL Yönetimi (Deploy Gerekmez):\n"
+    "• /upstream_curl — 1. ana Max hesabının cURL'ünü canlı güncelle (+ /bitir)\n"
+    "• /upstream_curl2 — Gündüz 2. Max hesabını canlı ekle/güncelle (+ /bitir)\n"
+    "• /upstream_curl2 kapat — 2. Max hesabının bağlantısını ve keepalive'ını kökten kes\n"
+    "• /hesaplar — Açık Max yuvalarını ve bağlantı durumunu görüntüle\n\n"
     "🤖 Otopilot (Model A — Agent Mode Proje):\n"
-    "• /curl — Agent Mode '/input' cURL parçalarını toplamaya başla\n"
-    "• /curl bitir (veya /bitir) — Yapıştırılan tüm cURL parçalarını birleştir ve doğrula\n"
+    "• /agent_curl (veya /curl) — Agent Mode '/input' cURL'ünü yapıştır (+ /bitir)\n"
+    "• /bitir — Yapıştırılan (Telegram'ın böldüğü) tüm cURL parçalarını birleştir ve kaydet\n"
     "• /tur oto | /tur <1-25> — Otomatik tur (Max projeye göre seçer) veya sabit tavan\n"
     "• /gece — Yalnız 22:00–07:00 (TR) arasında çalıştır (varsayılan)\n"
     "• /simdi [run_id] — 22:00'yi beklemeden hemen çalıştır / sıradaki projeyi uyandır\n"
@@ -54,6 +62,51 @@ _CURL_SESSION_TTL_SECONDS = 1800.0
 _MAX_CURL_CHUNKS = 25
 _MAX_CURL_BUFFER_CHARS = 250_000
 
+_KNOWN_BOT_COMMANDS: frozenset[str] = frozenset(
+    {
+        "/start",
+        "/help",
+        "/ping",
+        "/iptal",
+        "/cancel",
+        "/curl",
+        "/agent_curl",
+        "/upstream_curl",
+        "/upstream_curl2",
+        "/hesaplar",
+        "/bitir",
+        "/curl_bitir",
+        "/curlbitir",
+        "/tamam",
+        "/tur",
+        "/gece",
+        "/simdi",
+        "/hemen",
+        "/proje",
+        "/baslat",
+        "/projeler",
+        "/durum",
+        "/detay",
+        "/rapor",
+        "/ozet",
+        "/durdur",
+        "/stop",
+    }
+)
+_LONG_ARG_COMMANDS: frozenset[str] = frozenset(
+    {"/upstream_curl", "/upstream_curl2", "/agent_curl", "/curl", "/proje", "/baslat"}
+)
+_CMD_PREFIX_RE = re.compile(r"^\s*(/[^\s@]+)(?:@\S+)?(?:[ \t]+|\r?\n|$)")
+
+CurlTarget = Literal["agent", "upstream_1", "upstream_2", "unassigned_max"]
+
+_CURL_TARGET_LABELS: dict[str, str] = {
+    "agent": "Agent Mode",
+    "upstream_1": "Max 1. Hesap (upstream_curl)",
+    "upstream_2": "Max 2. Hesap (upstream_curl2)",
+    "unassigned_max": "Max Hesabı (yuva seçilmedi)",
+}
+
 _STATUS_LABELS: dict[str, str] = {
     "starting": "⏳ Başlatılıyor",
     "waiting_window": "🌙 Gece Sırasında (22:00–07:00)",
@@ -65,11 +118,24 @@ _STATUS_LABELS: dict[str, str] = {
 }
 
 
+def _extract_raw_command_body(raw_text: str) -> str:
+    """Komut önekini silerken mesajın sağ ucundaki boşluk/yeni satırı birebir korur.
+
+    Telegram uzun bir `/upstream_curl2 curl ...` mesajını tam 4096. karakterdeki
+    bir boşluktan böldüğünde sondaki boşluğun `.strip()` ile yutulmaması gerekir.
+    """
+    match = _CMD_PREFIX_RE.match(raw_text)
+    if not match:
+        return ""
+    return raw_text[match.end() :]
+
+
 @dataclass(slots=True)
 class _ChatAutopilotSession:
     """Telegram sohbeti başına geçici cURL birleştirme ve proje başlatma durumu."""
 
     mode: Literal["idle", "collecting_curl", "awaiting_idea"] = "idle"
+    curl_target: CurlTarget = "agent"
     curl_chunks: list[str] = field(default_factory=list)
     validated_curl: str = ""
     validated_chat_id: str = ""
@@ -81,6 +147,7 @@ class _ChatAutopilotSession:
 
     def clear_pending(self) -> None:
         self.mode = "idle"
+        self.curl_target = "agent"
         self.curl_chunks.clear()
         self.validated_curl = ""
         self.validated_chat_id = ""
@@ -306,73 +373,99 @@ class TelegramBot:
         parts = text.split(maxsplit=1)
         command = parts[0].split("@", 1)[0].lower()
         arg = parts[1].strip() if len(parts) > 1 else ""
+        raw_arg = _extract_raw_command_body(raw_text)
         sess = self._session(chat_id)
 
-        if command in {"/start", "/help"}:
-            await self.send_text(chat_id, _HELP)
-            return
-        if command == "/ping":
-            await self.ping(chat_id)
-            return
-        if command in {"/iptal", "/cancel"}:
-            sess.clear_pending()
-            await self.send_text(
-                chat_id,
-                "🧹 Bekleyen cURL/proje girişi temizlendi. Normal sohbet modundasınız.",
-            )
-            return
-        if command == "/curl":
-            await self._handle_curl_command(chat_id, sess, arg)
-            return
-        if command in {"/bitir", "/curl_bitir", "/curlbitir", "/tamam"}:
-            await self._finish_curl_collection(chat_id, sess)
-            return
-        if command == "/tur":
-            await self._handle_turn_limit(chat_id, sess, arg)
-            return
-        if command == "/gece":
-            await self._handle_night_mode(chat_id, sess)
-            return
-        if command in {"/simdi", "/hemen"}:
-            await self._handle_start_now(chat_id, sess, arg)
-            return
-        if command in {"/proje", "/baslat"}:
-            if not arg:
+        is_real_command = (command in _KNOWN_BOT_COMMANDS) and (
+            command in _LONG_ARG_COMMANDS or len(text) <= 160
+        )
+
+        if is_real_command:
+            if command in {"/start", "/help"}:
+                await self.send_text(chat_id, _HELP)
+                return
+            if command == "/ping":
+                await self.ping(chat_id)
+                return
+            if command in {"/iptal", "/cancel"}:
+                sess.clear_pending()
                 await self.send_text(
                     chat_id,
-                    "Kullanım: /proje <yaptırmak istediğiniz proje fikri>",
+                    "🧹 Bekleyen cURL/proje girişi temizlendi. Normal sohbet modundasınız.",
                 )
                 return
-            await self._start_autopilot_with_idea(chat_id, sess, arg)
-            return
-        if command == "/projeler":
-            await self._list_projects(chat_id)
-            return
-        if command in {"/durum", "/detay"}:
-            if arg:
-                await self._show_project_detail(chat_id, arg.split()[0])
-            else:
+            if command == "/hesaplar":
+                await self._show_accounts_status(chat_id)
+                return
+            if command == "/upstream_curl":
+                await self._handle_upstream_curl_command(
+                    chat_id, sess, arg=arg, raw_arg=raw_arg, slot=1
+                )
+                return
+            if command == "/upstream_curl2":
+                await self._handle_upstream_curl_command(
+                    chat_id, sess, arg=arg, raw_arg=raw_arg, slot=2
+                )
+                return
+            if command in {"/agent_curl", "/curl"}:
+                await self._handle_curl_command(chat_id, sess, arg=arg, raw_arg=raw_arg)
+                return
+            if command in {"/bitir", "/curl_bitir", "/curlbitir", "/tamam"}:
+                await self._finish_curl_collection(chat_id, sess)
+                return
+            if command == "/tur":
+                await self._handle_turn_limit(chat_id, sess, arg)
+                return
+            if command == "/gece":
+                await self._handle_night_mode(chat_id, sess)
+                return
+            if command in {"/simdi", "/hemen"}:
+                await self._handle_start_now(chat_id, sess, arg)
+                return
+            if command in {"/proje", "/baslat"}:
+                if not arg:
+                    await self.send_text(
+                        chat_id,
+                        "Kullanım: /proje <yaptırmak istediğiniz proje fikri>",
+                    )
+                    return
+                await self._start_autopilot_with_idea(chat_id, sess, arg)
+                return
+            if command == "/projeler":
                 await self._list_projects(chat_id)
+                return
+            if command in {"/durum", "/detay"}:
+                if arg:
+                    await self._show_project_detail(chat_id, arg.split()[0])
+                else:
+                    await self._list_projects(chat_id)
+                return
+            if command in {"/rapor", "/ozet"}:
+                await self._show_project_report(chat_id, arg.split()[0] if arg else "")
+                return
+            if command in {"/durdur", "/stop"}:
+                await self._stop_project(chat_id, arg.split()[0] if arg else "")
+                return
+
+        # cURL toplama modundayken Telegram'ın 4096. karakterde böldüğü bir parça
+        # `/` ile başlasa bile (ör. `/537.36`, `/9kQ+...`, `/*`) komut değil parçadır!
+        if sess.mode == "collecting_curl":
+            await self._append_curl_chunk(chat_id, sess, raw_text)
             return
-        if command in {"/rapor", "/ozet"}:
-            await self._show_project_report(chat_id, arg.split()[0] if arg else "")
-            return
-        if command in {"/durdur", "/stop"}:
-            await self._stop_project(chat_id, arg.split()[0] if arg else "")
-            return
+
         if text.startswith("/"):
             await self.send_text(chat_id, "Bilinmeyen komut. /help yazın.")
             return
 
-        # Komut olmayan metin akışı:
-        if sess.mode == "collecting_curl":
-            await self._append_curl_chunk(chat_id, sess, raw_text)
-            return
         if looks_like_agent_curl_start(raw_text):
-            # Kullanıcı /curl yazmayı unutup doğrudan cURL yapıştırdıysa çerezleri
+            # Kullanıcı komut yazmayı unutup doğrudan cURL yapıştırdıysa çerezleri
             # asla max sohbetine gönderme; otomatik toplama moduna al.
+            detected_kind = detect_pasted_curl_kind(raw_text)
             sess.clear_pending()
             sess.mode = "collecting_curl"
+            sess.curl_target = (
+                "unassigned_max" if detected_kind == "max" else "agent"
+            )
             await self._append_curl_chunk(chat_id, sess, raw_text, auto_detected=True)
             return
         if sess.mode == "awaiting_idea":
@@ -381,12 +474,173 @@ class TelegramBot:
 
         await self.ask_wrapper(chat_id, text)
 
-    # ------------------------------------------------- Autopilot (Model A) akışı
+    # ------------------------------------------------- Canlı Max Yuva & Agent cURL akışı
+    async def _handle_upstream_curl_command(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+        *,
+        arg: str,
+        raw_arg: str,
+        slot: Literal[1, 2],
+    ) -> None:
+        lowered = arg.lower()
+        target: CurlTarget = "upstream_1" if slot == 1 else "upstream_2"
+        cmd_name = "/upstream_curl" if slot == 1 else "/upstream_curl2"
+
+        if slot == 2 and lowered in {"kapat", "sil", "durdur", "close", "off"}:
+            if sess.mode == "collecting_curl" and sess.curl_target == "upstream_2":
+                sess.clear_pending()
+            await self._close_upstream_slot_2(chat_id)
+            return
+
+        if slot == 1 and lowered in {"kapat", "sil", "close", "off"}:
+            await self.send_text(
+                chat_id,
+                "⚠️ 1. ana Max hesabı (/upstream_curl) kapatılamaz; yalnızca yeni cURL "
+                "ile güncellenebilir. 2. hesabı kapatmak için: /upstream_curl2 kapat",
+            )
+            return
+
+        if lowered in {"durum", "status", "bilgi"}:
+            await self._show_accounts_status(chat_id)
+            return
+
+        if lowered in {"bitir", "bitti", "tamam", "son", "done"}:
+            if sess.curl_chunks and sess.curl_target in {"unassigned_max", target}:
+                sess.curl_target = target
+            await self._finish_curl_collection(chat_id, sess)
+            return
+
+        if lowered in {"iptal", "temizle", "cancel"}:
+            sess.clear_pending()
+            await self.send_text(chat_id, "🧹 cURL toplama iptal edildi.")
+            return
+
+        sess.clear_pending()
+        sess.mode = "collecting_curl"
+        sess.curl_target = target
+        sess.updated_at = time.monotonic()
+
+        if raw_arg.strip():
+            await self._append_curl_chunk(chat_id, sess, raw_arg)
+            return
+
+        extra_hint = (
+            "\n(2. hesabı tamamen kapatmak isterseniz: /upstream_curl2 kapat)"
+            if slot == 2
+            else ""
+        )
+        await self.send_text(
+            chat_id,
+            f"📥 Max {slot}. Hesap ({cmd_name}) cURL toplama modu açıldı.\n"
+            "Şimdi tarayıcıdan kopyaladığınız 'create-evaluation' cURL'ünü bölmeden "
+            "doğrudan yapıştırın — Telegram mesajı 3-4 parçaya bölse de tamamını "
+            "kayıpsız birleştireceğim.\n"
+            f"Yapıştırma bitince /bitir yazın. İptal: /iptal{extra_hint}",
+        )
+
+    async def _close_upstream_slot_2(self, chat_id: int) -> None:
+        try:
+            response = await self.wrapper.post("/v1/autopilot/upstream-slots/2/close")
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "telegram_upstream_slot2_close_failed", error_type=type(exc).__name__
+            )
+            await self.send_text(
+                chat_id,
+                "Wrapper /v1/autopilot/upstream-slots/2/close ucuna ulaşılamadı.",
+            )
+            return
+
+        if response.status_code != 200:
+            await self.send_text(
+                chat_id,
+                f"❌ 2. Max hesabı kapatılamadı: {_autopilot_error_message(response)}",
+            )
+            return
+
+        data = response.json()
+        active_slots = data.get("active_slots") or []
+        if not data.get("was_active"):
+            await self.send_text(
+                chat_id,
+                "ℹ️ 2. Max hesabı (upstream_curl2) zaten kapalı; açık HTTP havuzu veya "
+                f"keepalive görevi bulunmuyor (Aktif Max yuvaları: {active_slots}).",
+            )
+            return
+
+        reassigned = int(data.get("reassigned_waiters") or 0)
+        extra_line = (
+            f"\n• Sıradaki {reassigned} istek kesintisiz 1. hesaba aktarıldı"
+            if reassigned > 0
+            else ""
+        )
+        await self.send_text(
+            chat_id,
+            "🔌 2. Max hesabı (upstream_curl2) kökten kapatıldı!\n"
+            "• HTTP/2 bağlantı havuzu ve çerez kavanozu: Kapatıldı ve silindi ✅\n"
+            "• Keepalive arka plan görevi: Durduruldu ✅\n"
+            f"• Aktif kalan Max yuvaları: {active_slots} (yalnız 1. ana hesap)"
+            f"{extra_line}\n\n"
+            "🌙 Artık bu 2. Google hesabını çakışma olmadan /agent_curl ile gece "
+            "Agent Mode projelerinde kullanabilirsiniz.",
+        )
+
+    async def _show_accounts_status(self, chat_id: int) -> None:
+        try:
+            response = await self.wrapper.get("/v1/autopilot/upstream-slots")
+        except httpx.HTTPError as exc:
+            logger.warning(
+                "telegram_upstream_slots_status_failed", error_type=type(exc).__name__
+            )
+            await self.send_text(chat_id, "Hesap durumu ucuna ulaşılamadı.")
+            return
+
+        if response.status_code != 200:
+            await self.send_text(chat_id, _autopilot_error_message(response))
+            return
+
+        data = response.json()
+        slots = data.get("slots") or []
+        multi = bool(data.get("multi_lane"))
+        active_ap = int(data.get("active_autopilot_runs") or 0)
+        mode_str = "Çift Hesap (50/50 Yük Paylaşımı)" if multi else "Tek Hesap"
+        lines = [f"🔑 Canlı Max Hesap Yuvaları — {mode_str}"]
+        for item in slots:
+            if not isinstance(item, dict):
+                continue
+            s_num = item.get("slot")
+            cmd_tag = "/upstream_curl" if s_num == 1 else "/upstream_curl2"
+            if not item.get("configured"):
+                lines.append(
+                    f"\n• Yuva {s_num} ({cmd_tag}): ⚫ Kapalı "
+                    "(açık bağlantı ve keepalive yok — Agent için uygun)"
+                )
+                continue
+            usable = bool(item.get("usable"))
+            health_badge = "🟢 Sağlıklı" if usable else "🟠 Beklemede/Arızalı"
+            fp = item.get("identity_fingerprint") or "kimlik-yok"
+            ka_txt = "Açık" if item.get("keepalive_running") else "Kapalı"
+            msgs = item.get("messages_in_window", 0)
+            budget = item.get("effective_budget", 0)
+            q_wait = item.get("queue_waiting", 0)
+            lines.append(
+                f"\n• Yuva {s_num} ({cmd_tag}): {health_badge} · {fp}\n"
+                f"  Pencere: {msgs}/{budget} msj · Sıra bekleyen: {q_wait} · Keepalive: {ka_txt}"
+            )
+            if item.get("failure_code"):
+                lines.append(f"  Son arıza kodu: {item['failure_code']}")
+        lines.append(f"\n🤖 Aktif/Gece Sırasındaki Agent Projesi: {active_ap}")
+        await self.send_text(chat_id, "\n".join(lines))
+
     async def _handle_curl_command(
         self,
         chat_id: int,
         sess: _ChatAutopilotSession,
+        *,
         arg: str,
+        raw_arg: str = "",
     ) -> None:
         lowered = arg.lower()
         if lowered in {"bitir", "bitti", "tamam", "son", "done"}:
@@ -399,18 +653,21 @@ class TelegramBot:
 
         sess.clear_pending()
         sess.mode = "collecting_curl"
+        sess.curl_target = "agent"
         sess.updated_at = time.monotonic()
 
-        if arg and looks_like_agent_curl_start(arg):
-            await self._append_curl_chunk(chat_id, sess, arg)
+        effective_raw = raw_arg if raw_arg.strip() else arg
+        if effective_raw.strip():
+            await self._append_curl_chunk(chat_id, sess, effective_raw)
             return
 
         await self.send_text(
             chat_id,
             "📥 Agent cURL toplama modu açıldı.\n"
-            "Şimdi Agent Mode '/api/chat/<id>/input' cURL'ünü yapıştırın — Telegram "
-            "mesajı 3-4 parçaya bölse de hepsini sırayla bekleyip birleştireceğim.\n"
-            "Tüm parçalar gidince /curl bitir (veya /bitir) yazın. İptal: /iptal",
+            "Şimdi Agent Mode '/api/chat/<id>/input' cURL'ünü bölmeden doğrudan "
+            "yapıştırın — Telegram mesajı 3-4 parçaya bölse de hepsini sırayla "
+            "bekleyip birleştireceğim.\n"
+            "Tüm parçalar gidince /bitir yazın. İptal: /iptal",
         )
 
     async def _append_curl_chunk(
@@ -426,18 +683,33 @@ class TelegramBot:
             sess.clear_pending()
             await self.send_text(
                 chat_id,
-                "⚠️ cURL tampon sınırı aşıldı ve temizlendi. /curl ile baştan deneyin.",
+                "⚠️ cURL tampon sınırı aşıldı ve temizlendi. Baştan deneyin.",
             )
             return
 
         sess.curl_chunks.append(raw_chunk)
         sess.updated_at = time.monotonic()
         count = len(sess.curl_chunks)
-        prefix = "📥 Agent cURL algılandı — " if auto_detected else "📥 "
+        target_label = _CURL_TARGET_LABELS.get(sess.curl_target, "cURL")
+        if sess.curl_target == "unassigned_max":
+            await self.send_text(
+                chat_id,
+                f"📥 Max cURL parçası {count} alındı (toplam {total_after} krk).\n"
+                "Tüm parçalar gidince hangi yuvaya kaydedileceğini seçerek bitirin:\n"
+                "• 1. hesap için: /upstream_curl bitir\n"
+                "• 2. hesap için: /upstream_curl2 bitir",
+            )
+            return
+
+        prefix = (
+            f"📥 {target_label} algılandı — "
+            if auto_detected
+            else f"📥 [{target_label}] "
+        )
         await self.send_text(
             chat_id,
             f"{prefix}Parça {count} alındı (toplam {total_after} krk). "
-            "Tüm parçalar gidince /curl bitir yazın.",
+            "Tüm parçalar gidince /bitir yazın.",
         )
 
     async def _finish_curl_collection(
@@ -456,9 +728,25 @@ class TelegramBot:
         if not sess.curl_chunks:
             await self.send_text(
                 chat_id,
-                "⚠️ Henüz hiç cURL parçası yapıştırılmadı. Önce /curl yazıp Agent "
-                "cURL'ünü yapıştırın, tüm parçalar gidince /curl bitir yazın.",
+                "⚠️ Henüz hiç cURL parçası yapıştırılmadı. Önce /upstream_curl, "
+                "/upstream_curl2 veya /agent_curl yazıp cURL'ü yapıştırın, ardından "
+                "/bitir yazın.",
             )
+            return
+
+        if sess.curl_target == "unassigned_max":
+            await self.send_text(
+                chat_id,
+                "⚠️ Yapıştırılan Max cURL'ünün hangi yuvaya yazılacağını seçin:\n"
+                "• 1. ana hesap için: /upstream_curl bitir\n"
+                "• 2. hesap için: /upstream_curl2 bitir\n"
+                "(İptal: /iptal)",
+            )
+            return
+
+        if sess.curl_target in {"upstream_1", "upstream_2"}:
+            slot: Literal[1, 2] = 1 if sess.curl_target == "upstream_1" else 2
+            await self._finish_upstream_slot_curl(chat_id, sess, slot=slot)
             return
 
         chunk_count = len(sess.curl_chunks)
@@ -481,23 +769,37 @@ class TelegramBot:
 
         if response.status_code != 200:
             sess.mode = "collecting_curl"
+            sess.curl_target = "agent"
             sess.updated_at = time.monotonic()
             await self.send_text(
                 chat_id,
                 f"❌ Agent cURL doğrulanamadı: {_autopilot_error_message(response)}\n\n"
-                "Tekrar cURL yapıştırıp /curl bitir yazabilir veya /iptal diyebilirsiniz.",
+                "Tekrar cURL yapıştırıp /bitir yazabilir veya /iptal diyebilirsiniz.",
             )
             return
 
         data = response.json()
         if data.get("same_account_conflict"):
+            conflict_slots = data.get("conflict_slots") or []
             sess.clear_pending()
-            await self.send_text(
-                chat_id,
-                "⛔ Hesap Çakışması: Yapıştırdığınız Agent cURL'ü sunucudaki Max hesabıyla "
-                "AYNI Google hesabına ait! İki oturumun birbirini düşürmemesi için Agent "
-                "Mode cURL'ünü farklı bir Google hesabından alıp /curl ile tekrar deneyin.",
-            )
+            if 2 in conflict_slots and 1 not in conflict_slots:
+                await self.send_text(
+                    chat_id,
+                    "⛔ Hesap Çakışması: Yapıştırdığınız Agent cURL'ü şu anda açık olan "
+                    "2. Max hesabıyla (upstream_curl2) AYNI Google hesabına ait!\n\n"
+                    "Önce 2. Max hesabının bağlantısını ve keepalive görevini kökten "
+                    "kapatmak için:\n"
+                    "👉 /upstream_curl2 kapat\n"
+                    "yazın, ardından /agent_curl ile tekrar yapıştırın.",
+                )
+            else:
+                await self.send_text(
+                    chat_id,
+                    "⛔ Hesap Çakışması: Yapıştırdığınız Agent cURL'ü sunucudaki 1. ana "
+                    "Max hesabıyla (upstream_curl) AYNI Google hesabına ait! İki oturumun "
+                    "birbirini düşürmemesi için Agent Mode cURL'ünü diğer Google "
+                    "hesabından alıp /agent_curl ile tekrar deneyin.",
+                )
             return
 
         sess.mode = "awaiting_idea"
@@ -527,6 +829,75 @@ class TelegramBot:
             f"• Çalışma Zamanı: {schedule_label}"
             f"{warn_block}\n\n"
             "✏️ Şimdi yaptırmak istediğiniz **proje fikrini** yazıp gönderin.",
+            disable_preview=True,
+        )
+
+    async def _finish_upstream_slot_curl(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+        *,
+        slot: Literal[1, 2],
+    ) -> None:
+        chunk_count = len(sess.curl_chunks)
+        joined = reassemble_upstream_curl_chunks(sess.curl_chunks)
+        sess.curl_chunks.clear()
+        cmd_name = "/upstream_curl" if slot == 1 else "/upstream_curl2"
+
+        try:
+            response = await self.wrapper.post(
+                f"/v1/autopilot/upstream-slots/{slot}",
+                json={"upstream_curl": joined},
+            )
+        except httpx.HTTPError as exc:
+            sess.clear_pending()
+            logger.warning(
+                "telegram_upstream_slot_update_failed",
+                slot=slot,
+                error_type=type(exc).__name__,
+            )
+            await self.send_text(
+                chat_id,
+                f"Wrapper /v1/autopilot/upstream-slots/{slot} ucuna ulaşılamadı.",
+            )
+            return
+
+        if response.status_code != 200:
+            sess.mode = "collecting_curl"
+            sess.curl_target = "upstream_1" if slot == 1 else "upstream_2"
+            sess.updated_at = time.monotonic()
+            await self.send_text(
+                chat_id,
+                f"❌ Max {slot}. Hesap ({cmd_name}) doğrulanamadı: "
+                f"{_autopilot_error_message(response)}\n\n"
+                "Tekrar cURL yapıştırıp /bitir yazabilir veya /iptal diyebilirsiniz.",
+            )
+            return
+
+        sess.clear_pending()
+        data = response.json()
+        active_slots = data.get("active_slots") or []
+        multi_lane = bool(data.get("multi_lane"))
+        fp = data.get("identity_fingerprint") or "kimlik-yok"
+        label = data.get("label") or f"hesap-{slot}"
+        lane_txt = (
+            "Çift Hat (50/50 Yük Paylaşımı)"
+            if multi_lane
+            else "Tek Hat"
+        )
+        close_note = (
+            "\n🌙 Akşam bu hesabı Agent Mode'a devretmeden önce "
+            "'/upstream_curl2 kapat' yazmanız yeterli."
+            if slot == 2
+            else ""
+        )
+        await self.send_text(
+            chat_id,
+            f"✅ Max {slot}. Hesap ({cmd_name}) canlı olarak kaydedildi "
+            f"({chunk_count} parça birleştirildi)!\n"
+            f"• Hesap: {label} ({fp})\n"
+            f"• Aktif Max Yuvaları: {active_slots} — {lane_txt}"
+            f"{close_note}",
             disable_preview=True,
         )
 

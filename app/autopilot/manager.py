@@ -54,6 +54,20 @@ class AutopilotManager:
     def active_count(self) -> int:
         return sum(1 for item in self._runs.values() if not item.task.done())
 
+    def active_agent_identities(self) -> dict[str, str]:
+        """Aktif/gece sırasındaki koşuların Google `sub` -> `run_id` eşlemesini döndürür."""
+        active: dict[str, str] = {}
+        for rid, item in self._runs.items():
+            if item.task.done():
+                continue
+            st = item.orchestrator.state.status
+            if st not in {"starting", "waiting_window", "running"}:
+                continue
+            sub = item.orchestrator.agent.config.account_identity()
+            if sub:
+                active[sub] = rid
+        return active
+
     def get(self, run_id: str) -> ManagedRun | None:
         return self._runs.get(run_id)
 

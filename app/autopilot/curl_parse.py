@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from app.core.config import MAX_ACCOUNT_SLOTS, Settings
@@ -29,7 +29,10 @@ from app.upstream.curl_import import (
     PASSTHROUGH_HEADERS,
     TELEMETRY_HOSTS,
     TELEMETRY_PATH_PREFIXES,
+    build_settings,
     extract_authorization,
+    load_body,
+    parse_curl,
 )
 
 #: UUID (v4/v7) yakalayıcı.
@@ -349,9 +352,9 @@ def extract_identity_subject(cookie: str, access_token: str = "") -> str:
     return str(sub).strip() if sub else ""
 
 
-def extract_all_max_identities(settings: Settings) -> frozenset[str]:
-    """`Settings` içindeki tüm `max` hesap yuvalarının (`1..MAX_ACCOUNT_SLOTS`) JWT `sub` kümesi."""
-    identities: set[str] = set()
+def extract_max_slot_identities(settings: Settings) -> dict[int, str]:
+    """Yapılandırılmış `max` hesap yuvalarının (`slot -> JWT sub`) eşlemesini döndürür."""
+    by_slot: dict[int, str] = {}
     for slot in range(1, MAX_ACCOUNT_SLOTS + 1):
         suffix = "" if slot <= 1 else f"_{slot}"
         cookie = str(getattr(settings, f"upstream_cookie{suffix}", "") or "").strip()
@@ -362,8 +365,30 @@ def extract_all_max_identities(settings: Settings) -> frozenset[str]:
             continue
         sub = extract_identity_subject(cookie, access_token)
         if sub:
-            identities.add(sub)
-    return frozenset(identities)
+            by_slot[slot] = sub
+    return by_slot
+
+
+def extract_all_max_identities(settings: Settings) -> frozenset[str]:
+    """`Settings` içindeki tüm `max` hesap yuvalarının (`1..MAX_ACCOUNT_SLOTS`) JWT `sub` kümesi."""
+    return frozenset(extract_max_slot_identities(settings).values())
+
+
+def detect_pasted_curl_kind(raw: str) -> Literal["agent", "max", "unknown"]:
+    """Yapıştırılan cURL metninin Agent Mode mu yoksa Max sohbeti mi olduğunu saptar."""
+    if not raw:
+        return "unknown"
+    lowered = _clean_pasted_artifacts(raw).lower()
+    if "create-evaluation" in lowered or "post-to-evaluation" in lowered:
+        return "max"
+    if (
+        "/api/chat/" in lowered
+        or "/agent/" in lowered
+        or "nextjs-api/stream/create-chat" in lowered
+        or "/stream/create-chat" in lowered
+    ):
+        return "agent"
+    return "unknown"
 
 
 def looks_like_agent_curl_start(raw: str) -> bool:
@@ -385,12 +410,14 @@ def looks_like_agent_curl_start(raw: str) -> bool:
 
 
 _TRAILING_CURL_FLAG_RE = re.compile(
-    r"(?:^|\s)(?:-H|-b|-d|-X|--header|--cookie|--data-raw|--data|--data-binary|--url)$"
+    r"(?:^|\s)(?:-H|-b|-d|-X|--header|--cookie|--data-raw|--data|--data-binary|--url|curl(?:\.exe)?)$",
+    flags=re.IGNORECASE,
 )
+_COOKIE_PAIR_START_RE = re.compile(r"^[A-Za-z0-9_.-]+=")
 
 
 def _smart_join_two_curl_chunks(prev: str, curr: str) -> str:
-    """Telegram'ın 4096 karakter sınırında böldüğü iki cURL parçasını kayıpsız birleştirir."""
+    """Telegram'ın ~4096 karakter sınırında böldüğü iki cURL parçasını kayıpsız birleştirir."""
     p_no_nl = prev.rstrip("\r\n")
     c_no_nl = curr.lstrip("\r\n")
     p_trim = p_no_nl.rstrip(" \t")
@@ -401,19 +428,56 @@ def _smart_join_two_curl_chunks(prev: str, curr: str) -> str:
     if not c_no_nl:
         return p_no_nl
 
-    # 1) Satır sonu devamından (`\` veya ` ^`) hemen sonra yeni bir cURL bayrağı başlıyorsa
-    if (p_trim.endswith("\\") or re.search(r"[ \t]\^$", p_no_nl)) and c_trim.startswith("-"):
+    # 1) Satır sonu devamından (` \`, ` ^`, `` ` ``) bölündüyse yeni satırı geri koy
+    #    (JSON gövdesi içindeki kaçışlardan ayırmak için önünde boşluk şartı aranır).
+    if re.search(r"[ \t](?:\\|\^|`)$", p_no_nl) or (
+        p_no_nl == "curl \\" or p_no_nl == "curl ^"
+    ):
         return f"{p_no_nl}\n{c_no_nl}"
     # 2) Önceki argüman kapanmış (`'` / `"` / `--compressed`) ve yeni bayrak başlıyorsa
     if c_trim.startswith("-") and (
         p_trim.endswith(("'", '"')) or p_trim.endswith("--compressed")
     ):
         return f"{p_no_nl}\n{c_no_nl}"
-    # 3) Bayrak adı ile değeri tam boşluktan bölündüyse (`-H` | `"cookie:..."`)
+    # 3) Bayrak adı (`-H`, `-b`, `--data-raw`, `curl`) ile değeri tam boşluktan bölündüyse
     if _TRAILING_CURL_FLAG_RE.search(p_trim):
         return f"{p_trim} {c_trim}"
-    # 4) Uzun çerez, JWT veya JSON gövdesinin tam ortasından (4096. karakterden) bölündüyse
+    # 4) Authorization `Bearer <token>` tam boşluktan bölündüyse
+    if re.search(r"(?:^|[\s:])bearer$", p_trim, flags=re.IGNORECASE) and re.match(
+        r"^[A-Za-z0-9_.-]", c_trim
+    ):
+        return f"{p_trim} {c_trim}"
+    # 5) Cookie başlığı `; ` noktasından bölünüp aradaki boşluk Telegram tarafından yutulduysa
+    if p_no_nl.endswith(";") and _COOKIE_PAIR_START_RE.match(c_no_nl):
+        return f"{p_no_nl} {c_no_nl}"
+    # 6) Uzun çerez, JWT veya JSON gövdesinin tam ortasından (4096. karakterden) bölündüyse
     return f"{p_no_nl}{c_no_nl}"
+
+
+def _build_curl_join_candidates(chunks: list[str]) -> list[str]:
+    """Ham dilimleme, sınır-duyarlı birleştirme ve satır/boşluk adaylarını sırayla üretir."""
+    non_empty = [chunk for chunk in chunks if chunk and chunk.strip("\r\n")]
+    if not non_empty:
+        return []
+    if len(non_empty) == 1:
+        return [non_empty[0]]
+
+    smart = non_empty[0]
+    for nxt in non_empty[1:]:
+        smart = _smart_join_two_curl_chunks(smart, nxt)
+
+    # Telegram istemcisi tam 4096. karakterden ham dilimleme yaptıysa `raw_concat`
+    # orijinal panodaki metni bayt-bayt (satır sonları dahil) korur.
+    raw_concat = "".join(non_empty)
+    direct = "".join(c.strip("\r\n") for c in non_empty)
+    with_newlines = "\n".join(c.strip("\r\n") for c in non_empty)
+    with_spaces = " ".join(c.strip() for c in non_empty)
+
+    candidates: list[str] = []
+    for cand in (smart, raw_concat, direct, with_newlines, with_spaces):
+        if cand and cand not in candidates:
+            candidates.append(cand)
+    return candidates
 
 
 def reassemble_agent_curl_chunks(
@@ -421,44 +485,112 @@ def reassemble_agent_curl_chunks(
     *,
     chat_id_override: str | None = None,
 ) -> str:
-    """Telegram gibi mesaj boyutu sınırlı kanallardan gelen çok parçalı cURL'ü birleştirir.
+    """Telegram gibi mesaj boyutu sınırlı kanallardan gelen çok parçalı Agent cURL'ünü birleştirir.
 
-    Önce sınır-duyarlı akıllı birleştirmeyi üretir, ardından doğrudan/satırlı
+    Önce sınır-duyarlı akıllı birleştirmeyi ve ham birleştirmeyi üretir, ardından
     alternatiflerle birlikte `parse_agent_curl` üzerinden puanlayarak JSON gövdesi,
     çerez ve `recaptchaV3Token` bütünlüğünü en iyi koruyan adayı döndürür.
     """
-    non_empty = [chunk for chunk in chunks if chunk and chunk.strip("\r\n")]
-    if not non_empty:
+    candidates = _build_curl_join_candidates(chunks)
+    if not candidates:
         return ""
-    if len(non_empty) == 1:
-        return non_empty[0]
+    if len(candidates) == 1:
+        return candidates[0]
 
-    smart = non_empty[0]
-    for nxt in non_empty[1:]:
-        smart = _smart_join_two_curl_chunks(smart, nxt)
-
-    direct = "".join(c.strip("\r\n") for c in non_empty)
-    with_newlines = "\n".join(c.strip("\r\n") for c in non_empty)
-    with_spaces = " ".join(c.strip() for c in non_empty)
-
-    candidates: list[str] = []
-    for cand in (smart, direct, with_newlines, with_spaces):
-        if cand not in candidates:
-            candidates.append(cand)
-
-    best_cand = smart
-    best_score: tuple[int, int, int, int, int] | None = None
+    best_cand = candidates[0]
+    best_score: tuple[int, int, int, int, int, int] | None = None
     for idx, cand in enumerate(candidates):
         try:
             cfg = parse_agent_curl(cand, chat_id_override=chat_id_override)
         except ValueError:
-            score = (0, 0, 0, 0, -idx)
+            score = (0, 0, 0, 0, 0, -idx)
         else:
             score = (
                 1,
                 -len(cfg.warnings),
                 int(bool(cfg.recaptcha_token)),
                 int(bool(cfg.last_user_message_id)),
+                int(bool(cfg.account_identity())),
+                -idx,
+            )
+        if best_score is None or score > best_score:
+            best_score = score
+            best_cand = cand
+
+    return best_cand
+
+
+def _quote_for_upstream_curl_import(value: str) -> str:
+    """`app.upstream.curl_import._split_top_level` ile %100 uyumlu çift tırnaklama."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{escaped}"'
+
+
+def normalize_windows_cmd_curl_for_upstream(raw: str) -> str:
+    """Windows `Copy as cURL (cmd)` (`^"`, `^{`, `^}`) çıktısını `curl_import` biçimine çevirir.
+
+    Bash biçimindeki cURL'lere hiç dokunmaz; yalnızca `is_windows_cmd_curl(raw)`
+    doğru olduğunda Windows kaçış katmanlarını kayıpsız çözüp standart bayraklara
+    dönüştürür.
+    """
+    if not raw or not is_windows_cmd_curl(raw):
+        return raw
+    parsed = parse_raw_agent_curl(raw)
+    url = str(parsed.get("url") or "").strip()
+    headers: dict[str, str] = parsed.get("headers") or {}
+    body = str(parsed.get("body") or "")
+    if not url:
+        return raw
+
+    parts = [f"curl {_quote_for_upstream_curl_import(url)}"]
+    for name, val in headers.items():
+        if name == "cookie":
+            parts.append(f"-b {_quote_for_upstream_curl_import(val)}")
+        else:
+            parts.append(f"-H {_quote_for_upstream_curl_import(f'{name}: {val}')}")
+    if body:
+        parts.append(f"--data-raw {_quote_for_upstream_curl_import(body)}")
+    return " \\\n  ".join(parts)
+
+
+def reassemble_upstream_curl_chunks(chunks: list[str]) -> str:
+    """Telegram'ın böldüğü çok parçalı `max` (`create-evaluation`) cURL'ünü kayıpsız birleştirir.
+
+    Hem Bash (`Copy as cURL (bash)`) hem Windows CMD (`Copy as cURL (cmd)`) girdilerini
+    destekler. Her aday `parse_curl` + `build_settings` + JSON gövde ve JWT kimlik
+    kontrolünden geçirilerek en eksiksiz sonuç seçilir.
+    """
+    raw_candidates = _build_curl_join_candidates(chunks)
+    if not raw_candidates:
+        return ""
+    candidates = [normalize_windows_cmd_curl_for_upstream(c) for c in raw_candidates]
+    if len(candidates) == 1:
+        return candidates[0]
+
+    best_cand = candidates[0]
+    best_score: tuple[int, int, int, int, int, int] | None = None
+    for idx, cand in enumerate(candidates):
+        try:
+            parsed = parse_curl(cand)
+            env, warnings, _model_id = build_settings(parsed)
+        except Exception:
+            score = (0, 0, 0, 0, 0, -idx)
+        else:
+            critical = any(w.startswith("KRİTİK") for w in warnings)
+            has_url = bool(env.get("TARGET_DOMAIN") and env.get("UPSTREAM_STREAM_PATH"))
+            cookie = env.get("UPSTREAM_COOKIE", "")
+            token = env.get("UPSTREAM_ACCESS_TOKEN", "")
+            has_auth = bool(cookie or token)
+            valid = int(has_url and has_auth and not critical)
+            body_ok = int(bool(load_body(str(parsed.get("body") or ""))))
+            has_captcha = int(bool(env.get("RECAPTCHA_STATIC_TOKEN")))
+            has_sub = int(bool(extract_identity_subject(cookie, token)))
+            score = (
+                valid,
+                body_ok,
+                has_captcha,
+                has_sub,
+                -len(warnings),
                 -idx,
             )
         if best_score is None or score > best_score:
@@ -486,6 +618,14 @@ def parse_agent_curl(
     """
     if not raw or not raw.strip():
         raise ValueError("Agent cURL metni boş.")
+
+    trimmed_head = _clean_pasted_artifacts(raw).lstrip()
+    if re.match(r"^(?:Invoke-WebRequest|iwr|fetch\s*\()", trimmed_head, flags=re.IGNORECASE):
+        raise ValueError(
+            "Bu metin PowerShell/fetch biçiminde kopyalanmış. Tarayıcı Network "
+            "sekmesinde sağ tıklayıp 'Copy -> Copy as cURL (bash)' (veya Copy as "
+            "cURL (cmd)) seçeneğini kullanın."
+        )
 
     parsed = parse_raw_agent_curl(raw)
     url = parsed["url"]
