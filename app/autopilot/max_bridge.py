@@ -210,9 +210,11 @@ class ExternalHttpMaxBridge(MaxBridge):
                 if status == "wait":
                     continue
                 if status == "done":
-                    answer = str(event.get("answer") or "").strip()
+                    # `/v1/ask` sözleşmesi yanıtı `"text"` alanında döner (`ask_line`);
+                    # geriye dönük uyumluluk için `"answer"` da yedek olarak kontrol edilir.
+                    answer = str(event.get("text") or event.get("answer") or "").strip()
                     if not answer:
-                        raise MaxBridgeError("Dış max /v1/ask boş 'answer' döndürdü.")
+                        raise MaxBridgeError("Dış max /v1/ask boş yanıt ('text') döndürdü.")
                     return answer
                 if status == "problem":
                     reason = event.get("reason") or "unknown"

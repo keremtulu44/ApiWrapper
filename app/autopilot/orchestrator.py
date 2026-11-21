@@ -570,7 +570,11 @@ class AutopilotOrchestrator:
         except MaxBridgeError as exc:
             if self._stop_requested or self._is_non_retryable_max_error(exc):
                 raise
-            logger.warning("autopilot_max_transient_retry", run_id=self.state.run_id)
+            logger.warning(
+                "autopilot_max_transient_retry",
+                run_id=self.state.run_id,
+                reason=str(exc),
+            )
             await asyncio.sleep(5.0)
             return await self.max_bridge.complete(
                 system_prompt=system_prompt,

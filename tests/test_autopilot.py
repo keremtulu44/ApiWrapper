@@ -1377,3 +1377,59 @@ def test_autopilot_api_inspect_curl_and_auth() -> None:
         )
         assert conflict_resp.status_code == 200
         assert conflict_resp.json()["same_account_conflict"] is True
+
+
+@pytest.mark.asyncio
+async def test_external_http_max_bridge_via_real_ask_endpoint() -> None:
+    """`ExternalHttpMaxBridge(endpoint_mode='ask')` gerçek `/v1/ask` ucuyla (`text` alanı)
+    birebir uyumlu çalışmalıdır.
+    """
+    from app.autopilot.max_bridge import ExternalHttpMaxBridge
+
+    max_cookie = _make_fake_supabase_cookie("max-ask-account")
+    settings = Settings(
+        _env_file=None,
+        api_keys=["sk-ask-bridge"],
+        target_domain="target.example",
+        upstream_cookie=max_cookie,
+        recaptcha_static_token="test-recaptcha-token",
+        session_warmup_on_startup=False,
+        keepalive_enabled=False,
+        upstream_keepalive_interval_seconds=0.0,
+        models_config_path="config/models.yaml",
+    )
+    def fake_upstream(request: httpx.Request) -> httpx.Response:
+        if request.method == "GET":
+            return httpx.Response(200, text="<html></html>")
+        sse = '0:"<DURUM>DEVAM</DURUM>\\n<AJANA_MESAJ>Merhaba</AJANA_MESAJ>"\n'
+        sse += 'd:{"finishReason":"stop"}\n'
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, text=sse)
+
+    app = create_app(settings)
+
+    async with app.router.lifespan_context(app):
+        mock_tr = httpx.MockTransport(fake_upstream)
+        app.state.upstream._build_client = lambda _s: httpx.AsyncClient(
+            base_url="https://target.example",
+            transport=mock_tr,
+        )
+        app.state.upstream._client = app.state.upstream._build_client(app.state.settings)
+        app.state.upstream._account_clients.clear()
+        bridge = ExternalHttpMaxBridge(
+            "http://wrapper.internal",
+            "sk-ask-bridge",
+            endpoint_mode="ask",
+            transport=httpx.ASGITransport(app=app),
+        )
+        await bridge.startup()
+        try:
+            reply = await bridge.complete(
+                system_prompt="Sistem",
+                user_prompt="Proje başlat",
+            )
+        finally:
+            await bridge.shutdown()
+
+    assert "<DURUM>DEVAM</DURUM>" in reply
+    assert "Merhaba" in reply
+
