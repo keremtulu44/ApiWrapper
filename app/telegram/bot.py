@@ -797,6 +797,8 @@ class TelegramBot:
                 block.append(f"  Agent: {link}")
             if note and st in {"running", "starting", "waiting_window"}:
                 block.append(f"  Son adım: {note}")
+            elif item.get("morning_report_pending"):
+                block.append(f"  Sabah Raporu: 🌅 Hazır (07:00'de iletilecek · /rapor {rid})")
             elif item.get("stop_reason") and st != "running":
                 reason_short = " ".join(str(item["stop_reason"]).split())[:140]
                 block.append(f"  Sonuç: {reason_short}")

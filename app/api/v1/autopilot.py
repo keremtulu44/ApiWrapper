@@ -46,7 +46,7 @@ class StartAutopilotRequest(BaseModel):
     night_end_hour: int = Field(default=7, ge=0, le=23)
     gap_min_seconds: float = Field(default=5.0, ge=0.0, le=120.0)
     gap_max_seconds: float = Field(default=10.0, ge=0.0, le=180.0)
-    agent_turn_timeout: float = Field(default=900.0, ge=60.0, le=3600.0)
+    agent_turn_timeout: float = Field(default=1500.0, ge=60.0, le=3600.0)
     max_mode: Literal["in_process", "external_http", "direct_curl"] = "in_process"
     max_base_url: str = ""
     max_api_key: str = ""

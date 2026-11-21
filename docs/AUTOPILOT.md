@@ -1,82 +1,67 @@
 # Otopilot (`max` ↔ Agent Mode) Kullanım Kılavuzu
 
-Bu modül (`app/autopilot/`), canlı `max` sohbet hattına (`app/upstream/*`) hiç dokunmadan, **durumsuz (stateless) `max` modelini** bir Ürün Sahibi / Baş Mimar gibi konumlandırarak hedef sitedeki **sandbox sahibi Agent Mode** oturumuyla çok turlu bir yazılım/web projesi geliştirmesini sağlar.
+Bu modül (`app/autopilot/`), canlı `max` sohbet hattına (`app/upstream/*`) hiç dokunmadan, **durumsuz (stateless) `max` modelini** bir Ürün Kurucusu / Baş Yazılım Mimarı gibi konumlandırarak hedef sitedeki **sandbox sahibi Agent Mode** oturumuyla uçtan uca çalışan, yaratıcı web/yazılım projeleri geliştirmesini sağlar.
 
 ---
 
 ## 1. Altın Kurallar
 
-1. **İki ayrı Google hesabı zorunludur:** `max` için kullanılan cURL ile Agent Mode için alınan cURL **farklı Google hesaplarından** olmalıdır. Sistem JWT `sub` kimliklerini karşılaştırır ve aynı hesap algılanırsa çalışmayı reddeder.
+1. **İki ayrı Google hesabı zorunludur:** `max` için kullanılan cURL (`UPSTREAM_CURL`..`UPSTREAM_CURL_4`) ile Agent Mode için alınan cURL **farklı Google hesaplarından** olmalıdır. Sistem JWT `sub` kimliklerini karşılaştırır ve aynı hesap algılanırsa çalışmayı reddeder.
 2. **Hangi Agent cURL'ü kopyalanmalı?**
    - Hedef sitede (Agent hesabıyla) yeni bir **Agent Mode** sohbeti açın.
    - Kısa bir başlangıç mesajı gönderin (ör. `"Merhaba, yeni bir proje üzerinde çalışacağız, hazır olduğunda bildir."`) ki sandbox konteyneri ve sohbet kimliği oluşsun.
-   - Yanıt geldikten sonra F12 → **Network** sekmesini açıp ikinci bir kısa mesaj (ör. `"Başlayalım"`) gönderin ve **`POST /api/chat/{chat_id}/input`** isteğine sağ tıklayıp **Copy as cURL (cmd)** veya **Copy as cURL (bash)** seçin.
+   - Yanıt geldikten sonra F12 → **Network** sekmesini açıp ikinci bir kısa mesaj (ör. `"Hazır"`) gönderin ve **`POST /api/chat/{chat_id}/input`** isteğine sağ tıklayıp **Copy as cURL (cmd)** veya **Copy as cURL (bash)** seçin.
    - Tarayıcı sekmesini kapatabilirsiniz; tüm iş sunucu tarafındaki sandbox ve `/events` akışı üzerinden yürür.
-   - *(Not: `/input` isteği hem oturum çerezini, hem sohbet kimliğini, hem de `recaptchaV3Token` ve `cx` alanlarını tek seferde içerir.)*
 
 ---
 
-## 2. Komut Satırından (CLI) Kullanım — En Düşük Riskli Yöntem
+## 2. Telegram Üzerinden Kullanım (Model A — Önerilen Üretim Akışı)
 
-Agent cURL'ünü bir metin dosyasına (ör. `agent_curl.txt` — git'e eklemeyin) kaydedin.
+Render Web Service içindeki gömülü (veya ayrı) Telegram botu üzerinden sunucuyu yeniden başlatmadan proje başlatabilirsiniz:
 
-### Adım 1: cURL'ü ağa çıkmadan doğrulayın
-```bash
-python -m app.autopilot inspect --agent-curl-file agent_curl.txt
-```
-İki cURL dosyanız varsa aynı hesap çakışmasını da anında kontrol edebilirsiniz:
+1. **`/curl`** yazın ve kopyaladığınız Agent `/input` cURL'ünü yapıştırın *(Telegram 4096 karakter sınırı nedeniyle 3–4 mesaja bölse bile tüm parçalar sırayla toplanır)*.
+2. Tüm parçalar gidince **`/curl bitir`** (veya kısaca **`/bitir`**) yazın — cURL birleştirilir, doğrulanır ve hesap ayrılığı kontrol edilir.
+3. Doğrudan **yaptırmak istediğiniz proje fikrini** yazıp gönderin.
+
+### Otomatik Gece Döngüsü (`22:00 – 07:00` TR), Akşam Planı ve Sabah Raporu
+- **Gece Penceresi (Varsayılan):** Gündüz `max` aktif kullanıldığı için bıraktığınız projeler `22:00`'ye kadar `max`'a tek bir istek bile atmadan sırada bekler; `22:00 – 07:00` (TR) arasında sırayla (biri bitince diğeri) yürütülür.
+- **Otomatik Tur Planlaması (`<HEDEF_TUR>`):** Tur sayısını elle girmeniz gerekmez; `max` 1. turda projenin kapsamına göre ideal tur hedefini (ör. 4–5, 6–8 veya 9–12 tur) kendi belirler ve erken bitirip kaçmayı önleyen olgunluk kapısı o projeye göre kurulur.
+- **🌆 Akşam Başlangıç Planı:** Saat `22:00` olup geliştirme başlarken `max` ürün vizyonunu, yaratıcı imza özellikleri ve yol haritasını çıkarıp Telegram'dan size gönderir.
+- **🌅 Sabah Teslim Raporu:** Geliştirme turları bittiğinde doğrudan **Agent** (*"Neler Yapıldı · Canlı Önizleme · Senin Yapman Gerekenler"*) teslim raporunu hazırlar; gece bittiyse sabah saat **`07:00` (TR)** civarında Telegram'dan size iletilir.
+
+### Telegram Komut Özeti
+- `/curl` · `/bitir` — Parçalı Agent cURL toplama ve birleştirme
+- `/tur oto` | `/tur <1-25>` — Otomatik tur (varsayılan) veya sabit tur tavanı
+- `/gece` | `/simdi [run_id]` — `22:00–07:00` gece modu (varsayılan) veya beklemeden hemen çalıştır
+- `/projeler` | `/durum [run_id]` — Tüm projelerin anlık durumu ve Agent linkleri
+- `/rapor [run_id]` — Akşam başlangıç planı ve Agent sabah teslim raporunu görüntüle
+- `/durdur [run_id]` — Çalışan veya gece sırasındaki projeyi güvenli biçimde durdur
+- `/iptal` — Açık cURL/fikir girişini temizle
+
+---
+
+## 3. Komut Satırından (CLI) Kullanım
+
 ```bash
 python -m app.autopilot inspect --agent-curl-file agent_curl.txt --max-curl-file max_curl.txt
-```
-
-### Adım 2: Agent oturumunun canlı olduğunu test edin (mesaj göndermez)
-```bash
 python -m app.autopilot check-agent --agent-curl-file agent_curl.txt
-```
-
-### Adım 3: Projeyi başlatın (`run`)
-
-**Seçenek A — Canlı Render (veya yerel) ApiWrapper `max` sunucusu üzerinden (Önerilen Hibrit Mod):**
-```bash
 python -m app.autopilot run \
   --agent-curl-file agent_curl.txt \
   --max-url https://SIZIN-SERVISINIZ.onrender.com \
   --max-api-key sk-SIZIN_ANAHTARINIZ \
   --max-endpoint ask \
-  --max-turns 8 \
+  --auto-turns \
   --state-file autopilot_state.json \
-  --idea "Abonelikleri, yaklaşan ödemeleri ve kategori bazlı aylık nakit akışını takip eden, SQLite tabanlı, karanlık temalı ve interaktif grafikli tam kapsamlı bir kişisel finans web uygulaması geliştir."
-```
-*(İpucu: `--max-endpoint ask` seçildiğinde Render arkasındaki uzun düşüncelerde 30 saniyede bir boşluk nabzı gönderen `/v1/ask` ucu kullanılır; böylece vekil sunucu zaman aşımı yaşanmaz.)*
-
-**Seçenek B — Doğrudan ikinci bir `max` cURL dosyasıyla (Sunucusuz):**
-```bash
-python -m app.autopilot run \
-  --agent-curl-file agent_curl.txt \
-  --max-curl-file max_curl.txt \
-  --max-turns 8 \
   --idea "..."
-```
-
-### Adım 4: Kaldığı yerden devam ettirme (`resume`)
-Tur bütçesi dolduğunda, oturum çerezi yenilendiğinde veya `Ctrl+C` ile durdurduğunuzda (gizli veri içermeyen) `autopilot_state.json` dosyası korunur:
-```bash
-python -m app.autopilot resume \
-  --state-file autopilot_state.json \
-  --agent-curl-file yeni_agent_curl.txt \
-  --max-url https://SIZIN-SERVISINIZ.onrender.com \
-  --max-api-key sk-SIZIN_ANAHTARINIZ \
-  --max-turns 12
 ```
 
 ---
 
-## 3. HTTP API Üzerinden Kullanım (`/v1/autopilot/*`)
+## 4. HTTP API Uçları (`/v1/autopilot/*`, `Authorization: Bearer <API_KEYS>`)
 
-Aynı FastAPI servisi içinde doğrudan iç `CompletionService` (`InProcessMaxBridge`) veya dış `external_max_url` ile arka planda da çalıştırılabilir (`Authorization: Bearer <API_KEYS>` gerektirir):
-
-- **`POST /v1/autopilot/inspect-curl`** — Agent cURL'ünü ve sunucudaki `max` hesabıyla çakışıp çakışmadığını doğrular.
-- **`POST /v1/autopilot/runs`** — Yeni bir arka plan otopilot koşusu başlatır (`project_idea`, `agent_curl`, `max_turns`).
-- **`GET /v1/autopilot/runs`** — Koşuları listeler.
-- **`GET /v1/autopilot/runs/{run_id}`** — Güncel aşamayı, hafıza defterini ve tur geçmişini döner.
-- **`POST /v1/autopilot/runs/{run_id}/stop`** — Koşuyu güvenli biçimde durdurma sinyali gönderir.
+- `POST /v1/autopilot/inspect-curl` — Agent cURL doğrulaması ve hesap ayrılığı kontrolü
+- `POST /v1/autopilot/runs` — Yeni otopilot koşusu başlatma (`auto_turns`, `respect_night_window` destekli)
+- `GET  /v1/autopilot/runs` — Koşuları listeleme
+- `GET  /v1/autopilot/runs/{run_id}` — Detay, hafıza defteri, akşam planı ve sabah teslim raporu
+- `POST /v1/autopilot/runs/{run_id}/start-now` — Gece sırasındaki koşuyu derhal uyandırma
+- `POST /v1/autopilot/runs/{run_id}/stop` — Güvenli durdurma

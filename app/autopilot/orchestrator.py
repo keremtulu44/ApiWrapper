@@ -738,6 +738,57 @@ class AutopilotOrchestrator:
         )
         return self.state
 
+    async def _acquire_night_slot_or_wake(self) -> bool:
+        """Gece sıralı yürütme kilidini bekler; `/durdur` veya `/simdi` gelirse anında uyanır.
+
+        Dönüş:
+        - ``True``: semafor alındı (iş bitince ``release()`` çağrılmalı).
+        - ``False``: semafor alınmadı (ya `/durdur` geldi ya da `/simdi` ile gece kilidi kalktı).
+        """
+        sem = self._execution_semaphore
+        if sem is None or not self.config.respect_night_window:
+            return False
+        if sem.locked():
+            self.state.status = "waiting_window"
+            self._emit_progress(
+                "⏳ Önceki gece projesinin tamamlanması bekleniyor (sıralı yürütme)..."
+            )
+        acquire_task = asyncio.create_task(sem.acquire())
+        try:
+            while not acquire_task.done():
+                if self._stop_requested or not self.config.respect_night_window:
+                    acquire_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await acquire_task
+                    return False
+                self._wake_event.clear()
+                wait_wake = asyncio.create_task(self._wake_event.wait())
+                try:
+                    await asyncio.wait(
+                        {acquire_task, wait_wake},
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                finally:
+                    if not wait_wake.done():
+                        wait_wake.cancel()
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await wait_wake
+            await acquire_task
+            if self._stop_requested:
+                sem.release()
+                return False
+            return True
+        except BaseException:
+            if (
+                acquire_task.done()
+                and not acquire_task.cancelled()
+                and acquire_task.exception() is None
+            ):
+                sem.release()
+            else:
+                acquire_task.cancel()
+            raise
+
     async def run(self) -> AutopilotRunState:
         """Otopilot döngüsünü baştan (veya `resume_state`'ten) sonuna dek yürütür."""
         self._verify_separate_accounts()
@@ -747,24 +798,25 @@ class AutopilotOrchestrator:
         if not await self._wait_for_night_window_if_needed(stage_note="başlangıç öncesi"):
             return await self._finish_stopped("Gece penceresini beklerken durduruldu.")
 
-        if self._execution_semaphore is not None and self.config.respect_night_window:
-            if self._execution_semaphore.locked():
-                self.state.status = "waiting_window"
-                self._emit_progress(
-                    "⏳ Önceki gece projesinin tamamlanması bekleniyor (sıralı yürütme)..."
-                )
-            async with self._execution_semaphore:
-                return await self._run_inside_slot()
-        return await self._run_inside_slot()
+        acquired_slot = await self._acquire_night_slot_or_wake()
+        if self._stop_requested:
+            if acquired_slot and self._execution_semaphore is not None:
+                self._execution_semaphore.release()
+            return await self._finish_stopped("Sıra beklerken durduruldu.")
+
+        try:
+            return await self._run_inside_slot()
+        finally:
+            if acquired_slot and self._execution_semaphore is not None:
+                self._execution_semaphore.release()
 
     async def _run_inside_slot(self) -> AutopilotRunState:
         if not await self._wait_for_night_window_if_needed(stage_note="sıra alındı"):
             return await self._finish_stopped("Sıra beklerken durduruldu.")
 
-        await self.agent.startup()
-        await self.max_bridge.startup()
-
         try:
+            await self.agent.startup()
+            await self.max_bridge.startup()
             self.state.status = "running"
             self._emit_progress("Agent oturumuna bağlanılıyor...")
             await self.agent.connect(wait_if_busy=True)

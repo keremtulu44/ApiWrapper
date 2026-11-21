@@ -212,6 +212,8 @@ async def _run_or_resume_async(args: argparse.Namespace, *, resume: bool) -> int
     cfg = AutopilotConfig(
         project_idea=idea,
         max_turns=args.max_turns,
+        auto_turns=args.auto_turns,
+        respect_night_window=args.night_window,
         gap_min_seconds=args.gap_min,
         gap_max_seconds=args.gap_max,
         state_file=state_path,
@@ -245,6 +247,8 @@ async def _run_or_resume_async(args: argparse.Namespace, *, resume: bool) -> int
     print(f"Durum Dosyası: {state_path}")
     if final_state.stop_reason:
         print(f"Açıklama     : {final_state.stop_reason}")
+    if final_state.handoff_report:
+        print("\n--- Agent Teslim Özeti ---\n" + final_state.handoff_report)
     print("=" * 64)
     return 0 if final_state.status in {"completed", "max_turns_reached", "stopped"} else 1
 
@@ -304,7 +308,19 @@ def build_parser() -> argparse.ArgumentParser:
             help="Sunucusuz kullanım için ayrı Google hesabından Max cURL dosyası",
         )
         target.add_argument(
-            "--max-turns", type=int, default=8, help="Azami tur sayısı (varsayılan: 8)"
+            "--max-turns", type=int, default=12, help="Üst tur sınırı (varsayılan: 12)"
+        )
+        target.add_argument(
+            "--auto-turns",
+            action="store_true",
+            default=False,
+            help="Max projenin kapsamına göre ideal tur sayısını otomatik belirlesin",
+        )
+        target.add_argument(
+            "--night-window",
+            action="store_true",
+            default=False,
+            help="Yalnız 22:00–07:00 (TR) gece penceresinde çalıştır",
         )
         target.add_argument(
             "--gap-min",
@@ -321,8 +337,8 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument(
             "--agent-timeout",
             type=float,
-            default=900.0,
-            help="Tur başına azami Agent bekleme süresi (sn)",
+            default=1500.0,
+            help="Tur başına azami Agent bekleme süresi (sn, varsayılan: 1500)",
         )
         target.add_argument(
             "--state-file",

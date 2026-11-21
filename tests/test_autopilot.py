@@ -1241,6 +1241,47 @@ async def test_night_window_queue_auto_turns_and_every_turn_no_ask_guardrail(
         assert "22:00" not in usr_prompt and "07:00" not in usr_prompt
 
 
+@pytest.mark.anyio
+async def test_stop_cancels_semaphore_waiting_night_run_immediately(tmp_path: Path) -> None:
+    """Semafor kuyruğunda bekleyen 2. gece projesi /durdur ile anında durmalı."""
+    import asyncio
+    from datetime import datetime
+
+    sem = asyncio.Semaphore(1)
+    await sem.acquire()  # 1. proje çalışıyor gibi semafor kilitli
+
+    raw_curl = _build_windows_cmd_input_curl(sub="agent-sem-sub")
+
+    def fail_if_called(_req: httpx.Request) -> httpx.Response:
+        raise AssertionError("Semafor beklerken durdurulan proje ağa çıkmamalı!")
+
+    orch = AutopilotOrchestrator(
+        config=AutopilotConfig(
+            project_idea="İkinci gece projesi",
+            max_turns=6,
+            respect_night_window=True,
+            gap_min_seconds=0.0,
+            gap_max_seconds=0.0,
+            state_file=tmp_path / "sem2.json",
+        ),
+        agent=AgentSessionClient.from_curl(
+            raw_curl, transport=httpx.MockTransport(fail_if_called)
+        ),
+        max_bridge=_FakeMaxBridge([], sub="max-sem-sub"),
+        now_fn=lambda: datetime(2026, 11, 20, 23, 0, tzinfo=TR_TZ),
+        execution_semaphore=sem,
+    )
+
+    run_task = asyncio.create_task(orch.run())
+    await asyncio.sleep(0.05)
+    assert orch.state.status == "waiting_window"
+    orch.request_stop()
+    result = await asyncio.wait_for(run_task, timeout=1.0)
+    assert result.status == "stopped"
+    assert sem.locked()  # 1. projenin kilidini yanlışlıkla serbest bırakmamalı!
+    sem.release()
+
+
 # ---------------------------------------------------------------------------
 # 6. FastAPI /v1/autopilot/* uç noktası testleri
 # ---------------------------------------------------------------------------

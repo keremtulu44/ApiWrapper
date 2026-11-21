@@ -105,7 +105,7 @@ class AutopilotManager:
         night_end_hour: int = 7,
         gap_min_seconds: float = 5.0,
         gap_max_seconds: float = 10.0,
-        agent_turn_timeout: float = 900.0,
+        agent_turn_timeout: float = 1500.0,
         max_mode: Literal["in_process", "external_http", "direct_curl"] = "in_process",
         in_process_service: CompletionService | None = None,
         external_max_url: str = "",
@@ -161,6 +161,9 @@ class AutopilotManager:
         def _schedule_morning(rid: str, report_text: str, delay_seconds: float) -> None:
             if alerter is None or not alerter.enabled:
                 return
+            old_task = self._morning_tasks.pop(rid, None)
+            if old_task is not None and not old_task.done():
+                old_task.cancel()
 
             async def _deliver() -> None:
                 try:
