@@ -31,10 +31,12 @@ from app.autopilot.orchestrator import (
     AutopilotRunState,
     SameAccountError,
     is_in_night_window,
+    seconds_until_morning_hour,
     seconds_until_window_opens,
 )
 from app.autopilot.prompts import (
     AGENT_FOLLOWUP_NO_ASK_GUARDRAIL,
+    AGENT_MORNING_HANDOFF_PROMPT,
     AGENT_OPERATING_GUARDRAILS,
     MAX_SYSTEM_PROMPT,
     build_turn_user_prompt,
@@ -45,6 +47,7 @@ from app.autopilot.prompts import (
 from app.core.config import Settings
 from app.main import create_app
 from app.schemas.openai import ChatMessage
+from app.services.alerting import TelegramAlerter
 
 
 def _make_fake_supabase_cookie(sub: str) -> str:
@@ -1146,9 +1149,10 @@ async def test_night_window_queue_auto_turns_and_every_turn_no_ask_guardrail(
 
     bridge = _FakeMaxBridge(
         [
-            # Kickoff: Max projeyi kompakt bulup <HEDEF_TUR>4</HEDEF_TUR> seçer
+            # Kickoff: Max projeyi kompakt bulup <HEDEF_TUR>4</HEDEF_TUR> ve <AKSAM_PLANI> üretir
             "<DURUM>DEVAM</DURUM><ASAMA>1_VIZYON_VE_CEKIRDEK</ASAMA>"
             "<HEDEF_TUR>4</HEDEF_TUR>"
+            "<AKSAM_PLANI>- Vizyon: Canlı formül laboratuvarı\n- İmza: Anlık grafik</AKSAM_PLANI>"
             "<GUNCEL_HAFIZA>4 turluk kompakt yol haritası.</GUNCEL_HAFIZA>"
             "<AJANA_MESAJ>Çekirdek modülü kur.</AJANA_MESAJ>",
             "<DURUM>DEVAM</DURUM><ASAMA>2_YARATICI_DERINLIK</ASAMA>"
@@ -1166,6 +1170,20 @@ async def test_night_window_queue_auto_turns_and_every_turn_no_ask_guardrail(
         ],
         sub="max-night-sub",
     )
+
+    immediate_alerts: list[str] = []
+    scheduled_morning: list[tuple[str, str, float]] = []
+
+    class _FakeAlerter(TelegramAlerter):
+        def __init__(self) -> None:
+            super().__init__("fake-token", 42)
+
+        async def send(self, text: str, *, label: str | None = None) -> bool:
+            immediate_alerts.append(text)
+            return True
+
+    def capture_morning(rid: str, text: str, delay: float) -> None:
+        scheduled_morning.append((rid, text, delay))
 
     def track_progress(st: AutopilotRunState, _note: str) -> None:
         nonlocal saw_waiting_status
@@ -1186,9 +1204,11 @@ async def test_night_window_queue_auto_turns_and_every_turn_no_ask_guardrail(
             raw_curl, turn_timeout=5.0, transport=httpx.MockTransport(mock_agent_http)
         ),
         max_bridge=bridge,
+        alerter=_FakeAlerter(),
         on_progress=track_progress,
         now_fn=fake_now,
         sleep_fn=fake_sleep,
+        morning_dispatcher=capture_morning,
     )
     st = await orch.run()
 
@@ -1197,12 +1217,26 @@ async def test_night_window_queue_auto_turns_and_every_turn_no_ask_guardrail(
     assert st.status == "completed"
     assert st.planned_turns == 4
     assert len(st.turns) == 4
-    # 1. turda tam guardrail, 2., 3. ve 4. turların HEPSİNDE ask_user yasağı olmalı!
+    assert "Canlı formül laboratuvarı" in st.evening_plan
+    assert st.handoff_report == "Tur 5 tamam."
+    assert sent_to_agent_texts[-1] == AGENT_MORNING_HANDOFF_PROMPT
+
+    # Akşam 22:05'te başlayan iş bittiğinde sabah 07:00'ye (8 sa 55 dk = 32100 sn) planlanmalı!
+    assert seconds_until_morning_hour(datetime(2026, 11, 21, 1, 0, tzinfo=TR_TZ)) == 21600.0
+    assert any("🌆 Akşam Proje Planı Hazır" in msg for msg in immediate_alerts)
+    assert len(scheduled_morning) == 1
+    assert "🌅 Sabah Teslim Raporu" in scheduled_morning[0][1]
+    assert "Tur 5 tamam." in scheduled_morning[0][1]
+    assert scheduled_morning[0][2] == 32100.0
+
+    # 1. turda tam guardrail, 2..N turların HEPSİNDE ask_user yasağı olmalı; iç etiket sızmamalı!
     assert AGENT_OPERATING_GUARDRAILS in sent_to_agent_texts[0]
+    assert "AKSAM_PLANI" not in sent_to_agent_texts[0]
     for later_msg in sent_to_agent_texts[1:]:
         assert AGENT_FOLLOWUP_NO_ASK_GUARDRAIL in later_msg
         assert "HEDEF_TUR" not in later_msg
-        # Saat/zaman bilgisi Max prompt'una karışmamalı:
+        assert "AKSAM_PLANI" not in later_msg
+    # Saat/zaman bilgisi Max prompt'una karışmamalı:
     for _, usr_prompt in bridge.calls:
         assert "22:00" not in usr_prompt and "07:00" not in usr_prompt
 

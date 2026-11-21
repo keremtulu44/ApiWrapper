@@ -505,6 +505,17 @@ async def test_telegram_default_night_window_auto_turns_and_simdi_wake():
                     "bypassed_night_window": True,
                 },
             )
+        if path == "/v1/autopilot/runs/auto_night1" and request.method == "GET":
+            return httpx.Response(
+                200,
+                json={
+                    "run_id": "auto_night1",
+                    "status": "completed",
+                    "agent_url": "https://target.example/agent/019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                    "evening_plan": "- Mimari: FastAPI + React",
+                    "handoff_report": "1. Neler Yapıldı: Simülatör tamamlandı.\n3. Kontrol edin.",
+                },
+            )
         return httpx.Response(404)
 
     async with (
@@ -536,4 +547,9 @@ async def test_telegram_default_night_window_auto_turns_and_simdi_wake():
         # Kullanıcı isterse /simdi yazarak bekleyen gece projesini hemen uyandırabilir
         await bot.handle_message({"chat": {"id": 42}, "text": "/simdi"})
         assert start_now_called == ["auto_night1"]
+
+        # /rapor komutu akşam planını ve sabah Agent teslim raporunu birlikte göstermeli
+        await bot.handle_message({"chat": {"id": 42}, "text": "/rapor"})
+        assert "Akşam Başlangıç Planı" in sent[-1]
+        assert "Sabah Teslim Raporu" in sent[-1]
 

@@ -44,6 +44,7 @@ _HELP = (
     "• /simdi [run_id] — 22:00'yi beklemeden hemen çalıştır / sıradaki projeyi uyandır\n"
     "• /projeler (veya /durum) — Çalışan, sırada bekleyen ve biten projeleri listele\n"
     "• /durum <run_id> — Seçilen projenin tur/hafıza detayını ve Agent linkini gör\n"
+    "• /rapor [run_id] — Akşam planını ve Agent sabah teslim özetini gör\n"
     "• /durdur [run_id] — Çalışan veya gece sırasındaki projeyi güvenli biçimde durdur\n"
     "• /iptal — Açık cURL/fikir girişini temizle\n\n"
     "Diğer komutlar: /ping (wrapper health), /help."
@@ -352,6 +353,9 @@ class TelegramBot:
                 await self._show_project_detail(chat_id, arg.split()[0])
             else:
                 await self._list_projects(chat_id)
+            return
+        if command in {"/rapor", "/ozet"}:
+            await self._show_project_report(chat_id, arg.split()[0] if arg else "")
             return
         if command in {"/durdur", "/stop"}:
             await self._stop_project(chat_id, arg.split()[0] if arg else "")
@@ -832,7 +836,19 @@ class TelegramBot:
             lines.append(f"• Sonuç/Neden: {str(data['stop_reason'])[:300]}")
         if data.get("error_detail"):
             lines.append(f"• Hata: {str(data['error_detail'])[:220]}")
-        if data.get("memory_summary"):
+        if data.get("evening_plan"):
+            plan_txt = str(data["evening_plan"]).strip()
+            if len(plan_txt) > 500:
+                plan_txt = plan_txt[:497].rstrip() + "..."
+            lines.append(f"\n🌆 Akşam Başlangıç Planı:\n{plan_txt}")
+        if data.get("handoff_report"):
+            rep_txt = str(data["handoff_report"]).strip()
+            if len(rep_txt) > 1200:
+                rep_txt = rep_txt[:1197].rstrip() + "...\n(Tamamı için: /rapor " + str(
+                    data.get("run_id", run_id)
+                ) + ")"
+            lines.append(f"\n🌅 Sabah Teslim Özeti:\n{rep_txt}")
+        elif data.get("memory_summary"):
             mem = str(data["memory_summary"]).strip()
             if len(mem) > 600:
                 mem = mem[:597].rstrip() + "..."
@@ -851,6 +867,53 @@ class TelegramBot:
                 )
 
         await self.send_text(chat_id, "\n".join(lines), disable_preview=True)
+
+    async def _show_project_report(self, chat_id: int, run_id: str) -> None:
+        target_id = run_id.strip()
+        if not target_id:
+            try:
+                list_resp = await self.wrapper.get("/v1/autopilot/runs")
+            except httpx.HTTPError:
+                await self.send_text(chat_id, "Proje listesine ulaşılamadı.")
+                return
+            if list_resp.status_code != 200:
+                await self.send_text(chat_id, _autopilot_error_message(list_resp))
+                return
+            runs = list_resp.json().get("runs") or []
+            if not runs:
+                await self.send_text(chat_id, "Henüz kayıtlı bir otopilot projesi yok.")
+                return
+            target_id = str(runs[0].get("run_id") or "")
+
+        try:
+            response = await self.wrapper.get(f"/v1/autopilot/runs/{target_id}")
+        except httpx.HTTPError:
+            await self.send_text(chat_id, "Proje raporuna ulaşılamadı.")
+            return
+        if response.status_code != 200:
+            await self.send_text(chat_id, _autopilot_error_message(response))
+            return
+
+        data = response.json()
+        link = str(data.get("agent_url") or data.get("chat_id") or "")
+        raw_st = str(data.get("status") or "")
+        parts = [
+            f"📑 Proje Raporu: {data.get('run_id', target_id)}",
+            f"• Durum: {_STATUS_LABELS.get(raw_st, raw_st)}",
+            f"• Agent: {link}",
+        ]
+        if data.get("evening_plan"):
+            parts.append(f"\n🌆 Akşam Başlangıç Planı (Max):\n{str(data['evening_plan']).strip()}")
+        if data.get("handoff_report"):
+            parts.append(
+                f"\n🌅 Sabah Teslim Raporu (Agent):\n{str(data['handoff_report']).strip()}"
+            )
+        elif not data.get("evening_plan"):
+            parts.append("\nHenüz akşam planı veya sabah teslim özeti oluşmadı.")
+        else:
+            parts.append("\n⏳ Sabah teslim raporu geliştirme turları bittiğinde oluşacak.")
+
+        await self.send_text(chat_id, "\n".join(parts), disable_preview=True)
 
     async def _stop_project(self, chat_id: int, run_id: str) -> None:
         target_id = run_id.strip()

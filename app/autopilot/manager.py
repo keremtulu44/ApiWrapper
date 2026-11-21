@@ -23,6 +23,7 @@ from app.autopilot.orchestrator import (
     AutopilotConfig,
     AutopilotOrchestrator,
     AutopilotRunState,
+    split_notification_chunks,
 )
 from app.core.logging import get_logger
 from app.services.alerting import TelegramAlerter
@@ -48,6 +49,7 @@ class AutopilotManager:
         # Gece sırasına bırakılan projelerin 22:00'de aynı saniyede Max'a yüklenmemesi
         # için sıralı yürütme kilidi (biri bitince sıradaki başlar).
         self._night_semaphore = asyncio.Semaphore(1)
+        self._morning_tasks: dict[str, asyncio.Task[None]] = {}
 
     def active_count(self) -> int:
         return sum(1 for item in self._runs.values() if not item.task.done())
@@ -78,6 +80,8 @@ class AutopilotManager:
                     "planned_turns": st.planned_turns,
                     "auto_turns": st.auto_turns,
                     "respect_night_window": st.respect_night_window,
+                    "has_handoff_report": bool(st.handoff_report.strip()),
+                    "morning_report_pending": rid in self._morning_tasks,
                     "current_phase": st.current_phase,
                     "last_note": item.last_note,
                     "stop_reason": st.stop_reason,
@@ -154,6 +158,30 @@ class AutopilotManager:
             if managed is not None:
                 managed.last_note = note
 
+        def _schedule_morning(rid: str, report_text: str, delay_seconds: float) -> None:
+            if alerter is None or not alerter.enabled:
+                return
+
+            async def _deliver() -> None:
+                try:
+                    await asyncio.sleep(delay_seconds)
+                    for chunk in split_notification_chunks(report_text):
+                        await alerter.send(chunk, label="autopilot_morning")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "autopilot_morning_report_send_failed",
+                        run_id=rid,
+                        error_type=type(exc).__name__,
+                    )
+                finally:
+                    self._morning_tasks.pop(rid, None)
+
+            self._morning_tasks[rid] = asyncio.create_task(
+                _deliver(), name=f"autopilot-morning-{rid}"
+            )
+
         orch = AutopilotOrchestrator(
             config=cfg,
             agent=agent,
@@ -161,6 +189,7 @@ class AutopilotManager:
             alerter=alerter,
             on_progress=_on_progress,
             execution_semaphore=self._night_semaphore,
+            morning_dispatcher=_schedule_morning,
         )
         # Hesap ayrılığı kontrolünü senkron olarak hemen yap ki 400 dönebilsin.
         orch._verify_separate_accounts()
@@ -202,9 +231,15 @@ class AutopilotManager:
 
     async def shutdown(self) -> None:
         active = [item for item in self._runs.values() if not item.task.done()]
+        morning = list(self._morning_tasks.values())
         for item in active:
             item.orchestrator.request_stop()
             item.task.cancel()
+        for mtask in morning:
+            mtask.cancel()
         for item in active:
             with contextlib.suppress(asyncio.CancelledError, Exception):
                 await item.task
+        for mtask in morning:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await mtask

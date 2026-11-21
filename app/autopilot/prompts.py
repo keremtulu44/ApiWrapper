@@ -37,6 +37,22 @@ AGENT_FOLLOWUP_NO_ASK_GUARDRAIL = (
     "verip kendi ortamında çalıştırarak doğrula."
 )
 
+#: Proje turları bittiğinde doğrudan Agent'tan sabah teslim özeti isteyen istem.
+AGENT_MORNING_HANDOFF_PROMPT = (
+    "Projenin geliştirme turlarını tamamladık. Şimdi hiçbir kod dosyasını veya "
+    "arka planda çalışan canlı sunucuyu bozmadan, sabah projeyi teslim alacak "
+    "proje sahibi için net, samimi ve maddeli bir **Sabah Teslim Raporu** yaz "
+    "(Türkçe, özlü ve okunaklı olsun):\n"
+    "1. **Neler Yapıldı:** Kurulan mimari, çalışan ana ekranlar/akışlar, eklenen "
+    "yaratıcı imza özellikler ve çalıştırılıp doğrulanan testlerin kısa özeti.\n"
+    "2. **Canlı Önizleme ve Nasıl Denenir:** Arka plan sunucusunun durumu ve "
+    "uygulamayı incelerken özellikle denememi önerdiğin senaryolar.\n"
+    "3. **Benim Yapmam Gerekenler / Sonraki Adımlar:** Projeyi teslim aldıktan "
+    "sonra kontrol etmem, karar vermem veya ileride geliştirmemi önerdiğin somut "
+    "maddeler."
+    + AGENT_FOLLOWUP_NO_ASK_GUARDRAIL
+)
+
 MAX_SYSTEM_PROMPT = (
     "Sen vizyoner bir Ürün Kurucusu (Product Owner) ve Baş Yazılım Mimarısın. "
     "Karşında tam yetkili bir geliştirme ortamına (dosya yazma, terminal/bash "
@@ -102,6 +118,11 @@ MAX_SYSTEM_PROMPT = (
     "<HEDEF_TUR>(Yalnız 1. turda zorunlu; projenin gerçek kapsamına göre ideal "
     "toplam tur tahmini: odaklı küçük araç=4-5, orta kapsamlı zengin uygulama=6-8, "
     "çok modüllü kapsamlı sistem=9-12)</HEDEF_TUR>\n"
+    "<AKSAM_PLANI>\n"
+    "(Yalnız 1. turda zorunlu; proje sahibine kodlama başlamadan önce gönderilecek "
+    "net, maddeli akşam başlangıç özeti: ürün vizyonu, planlanan yaratıcı imza "
+    "özellikler, seçilen mimari ve aşamalar.)\n"
+    "</AKSAM_PLANI>\n"
     "<DEGERLENDIRME>\n"
     "Ajanın bu turda yaptığı işin gerçek kalitesi, laf kalabalığı mı yoksa somut "
     "çalışan ilerleme mi olduğu ve yol haritasında neden bu adımı seçtiğinin analizi.\n"
@@ -121,6 +142,7 @@ _INTERNAL_TAG_NAMES = (
     "DURUM",
     "ASAMA",
     "HEDEF_TUR",
+    "AKSAM_PLANI",
     "DEGERLENDIRME",
     "GUNCEL_HAFIZA",
 )
@@ -174,6 +196,7 @@ class MaxDecision:
     message_to_agent: str
     raw_response: str
     planned_turns: int | None = None
+    evening_plan: str = ""
 
 
 def build_kickoff_user_prompt(
@@ -216,12 +239,16 @@ def build_kickoff_user_prompt(
         "YOL HARİTASI yaz (Aşama 1: Çekirdek & Tasarım Temeli -> Aşama 2: Yaratıcı İmza "
         "Özellikler -> Aşama 3: UX Derinliği & Uç Durum Cilası -> Aşama 4: Uçtan Uca "
         "Otomatik Doğrulama & 0.0.0.0 Canlı Sunucu).\n"
-        "4. <AJANA_MESAJ> içinde tüm turların işini tek seferde yığma! Ajandan önce "
+        "4. <AKSAM_PLANI> içine proje sahibinin akşam telefonunda okuyacağı net, "
+        "heyecan verici ve maddeli bir başlangıç planı yaz (1. Vizyon & Tasarım, "
+        "2. Eklenecek Yaratıcı İmza Özellikler, 3. Mimari & Doğrulama Planı).\n"
+        "5. <AJANA_MESAJ> içinde tüm turların işini tek seferde yığma! Ajandan önce "
         "çalışma dizinini kontrol etmesini, ardından 1_VIZYON_VE_CEKIRDEK aşamasını "
         "(sağlam veri/durum mimarisi, özgün arayüz iskeleti, zengin gerçekçi örnek "
         "veriler ve çalışan çekirdek kullanıcı akışı) kurup ilk doğrulamayı yapmasını iste.\n"
-        "5. Yanıtını <DURUM>DEVAM</DURUM>, <ASAMA>1_VIZYON_VE_CEKIRDEK</ASAMA>, "
-        "<HEDEF_TUR>, <DEGERLENDIRME>, <GUNCEL_HAFIZA> ve <AJANA_MESAJ> etiketleriyle üret."
+        "6. Yanıtını <DURUM>DEVAM</DURUM>, <ASAMA>1_VIZYON_VE_CEKIRDEK</ASAMA>, "
+        "<HEDEF_TUR>, <AKSAM_PLANI>, <DEGERLENDIRME>, <GUNCEL_HAFIZA> ve "
+        "<AJANA_MESAJ> etiketleriyle üret."
     )
 
 
@@ -422,7 +449,7 @@ def _strip_internal_blocks(text: str) -> str:
             flags=re.IGNORECASE | re.DOTALL,
         )
     cleaned = re.sub(
-        r"</?(?:DURUM|ASAMA|HEDEF_TUR|DEGERLENDIRME|GUNCEL_HAFIZA|AJANA_MESAJ)\s*>",
+        r"</?(?:DURUM|ASAMA|HEDEF_TUR|AKSAM_PLANI|DEGERLENDIRME|GUNCEL_HAFIZA|AJANA_MESAJ)\s*>",
         "",
         cleaned,
         flags=re.IGNORECASE,
@@ -456,6 +483,7 @@ def parse_max_decision(raw_response: str, *, fallback_memory: str = "") -> MaxDe
         "5_KABUL" if status == "TAMAMLANDI" else "2_YARATICI_DERINLIK"
     )
     planned_turns = _parse_planned_turns(_extract_tag(text, "HEDEF_TUR"))
+    evening_plan = _extract_tag(text, "AKSAM_PLANI")
     evaluation = _extract_tag(text, "DEGERLENDIRME")
     updated_memory = _extract_tag(text, "GUNCEL_HAFIZA") or fallback_memory
     message_to_agent = _extract_tag(text, "AJANA_MESAJ")
@@ -478,6 +506,7 @@ def parse_max_decision(raw_response: str, *, fallback_memory: str = "") -> MaxDe
         message_to_agent=message_to_agent.strip(),
         raw_response=text,
         planned_turns=planned_turns,
+        evening_plan=evening_plan,
     )
 
 

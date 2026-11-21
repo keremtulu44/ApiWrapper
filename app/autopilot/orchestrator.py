@@ -34,6 +34,7 @@ from app.autopilot.events_parser import AgentMessage, format_sandbox_evidence
 from app.autopilot.max_bridge import MaxBridge, MaxBridgeError
 from app.autopilot.prompts import (
     AGENT_FOLLOWUP_NO_ASK_GUARDRAIL,
+    AGENT_MORNING_HANDOFF_PROMPT,
     AGENT_OPERATING_GUARDRAILS,
     MAX_SYSTEM_PROMPT,
     MaxDecision,
@@ -87,6 +88,47 @@ def seconds_until_window_opens(
     return max(0.0, (target - local).total_seconds())
 
 
+def seconds_until_morning_hour(
+    now: datetime,
+    *,
+    night_start_hour: int = 22,
+    morning_hour: int = 7,
+) -> float:
+    """Gece penceresi içindeysek sabah `morning_hour:00` TR'ye kalan saniye; gündüzse 0."""
+    if not is_in_night_window(now, start_hour=night_start_hour, end_hour=morning_hour):
+        return 0.0
+    local = now.astimezone(TR_TZ)
+    target = local.replace(hour=morning_hour, minute=0, second=0, microsecond=0)
+    if target <= local:
+        target += timedelta(days=1)
+    return max(0.0, (target - local).total_seconds())
+
+
+def split_notification_chunks(
+    text: str,
+    *,
+    limit: int = 3500,
+    max_chars: int = 10500,
+) -> list[str]:
+    """Telegram'ın 4096 karakter sınırına takılmaması için uzun raporları böler."""
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return []
+    if len(cleaned) > max_chars:
+        cleaned = cleaned[: max_chars - 24].rstrip() + "\n\n… (rapor kısaltıldı)"
+    chunks: list[str] = []
+    rem = cleaned
+    while len(rem) > limit:
+        cut = rem.rfind("\n", 0, limit + 1)
+        if cut < limit // 2:
+            cut = limit
+        chunks.append(rem[:cut].rstrip())
+        rem = rem[cut:].lstrip()
+    if rem:
+        chunks.append(rem)
+    return chunks
+
+
 class SameAccountError(ValueError):
     """Agent cURL'ü ile `max` cURL'ü aynı Google hesabına ait olduğunda fırlatılır."""
 
@@ -116,6 +158,7 @@ class AutopilotConfig:
     state_file: Path | None = None
     run_id: str = field(default_factory=lambda: f"auto_{random_suffix(12)}")
     append_guardrails_on_first_turn: bool = True
+    enable_handoff_report: bool = True
 
     @property
     def effective_min_turns(self) -> int:
@@ -178,6 +221,8 @@ class AutopilotRunState:
     respect_night_window: bool = False
     current_phase: str = "1_VIZYON_VE_CEKIRDEK"
     memory_summary: str = ""
+    evening_plan: str = ""
+    handoff_report: str = ""
     started_at: str = field(default_factory=_utc_iso)
     updated_at: str = field(default_factory=_utc_iso)
     stop_reason: str = ""
@@ -216,6 +261,8 @@ class AutopilotRunState:
             respect_night_window=bool(data.get("respect_night_window", False)),
             current_phase=str(data.get("current_phase") or "1_VIZYON_VE_CEKIRDEK"),
             memory_summary=str(data.get("memory_summary") or ""),
+            evening_plan=str(data.get("evening_plan") or ""),
+            handoff_report=str(data.get("handoff_report") or ""),
             started_at=str(data.get("started_at") or _utc_iso()),
             updated_at=str(data.get("updated_at") or _utc_iso()),
             stop_reason=str(data.get("stop_reason") or ""),
@@ -243,6 +290,7 @@ class AutopilotOrchestrator:
         now_fn: Callable[[], datetime] | None = None,
         sleep_fn: Callable[[float], Awaitable[None]] | None = None,
         execution_semaphore: asyncio.Semaphore | None = None,
+        morning_dispatcher: Callable[[str, str, float], None] | None = None,
     ) -> None:
         config.validate()
         self.config = config
@@ -254,6 +302,7 @@ class AutopilotOrchestrator:
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self._sleep_fn = sleep_fn
         self._execution_semaphore = execution_semaphore
+        self._morning_dispatcher = morning_dispatcher
         self._stop_requested = False
         self._wake_event = asyncio.Event()
 
@@ -384,7 +433,73 @@ class AutopilotOrchestrator:
 
     async def _notify_telegram(self, text: str) -> None:
         if self.alerter is not None and self.alerter.enabled:
-            await self.alerter.send(text, label="autopilot")
+            for chunk in split_notification_chunks(text):
+                await self.alerter.send(chunk, label="autopilot")
+
+    async def _collect_and_dispatch_morning_report(self, *, headline: str) -> None:
+        """Geliştirme bitince Agent'tan teslim raporunu alır ve (geceyse 07:00'de) iletir."""
+        should_ask_agent = (
+            self.config.enable_handoff_report
+            and len(self.state.turns) >= 1
+            and not self._stop_requested
+            and (self.state.status == "completed" or self.config.respect_night_window)
+        )
+        if should_ask_agent and not self.state.handoff_report.strip():
+            try:
+                await self._sleep_gap()
+                self._emit_progress("Sabah teslim özeti Agent'tan alınıyor...")
+                summary_reply = await self.agent.send_and_wait(
+                    AGENT_MORNING_HANDOFF_PROMPT,
+                    on_delta=self.on_agent_delta,
+                )
+                if summary_reply.text.strip():
+                    self.state.handoff_report = summary_reply.text.strip()
+                    self._persist_state()
+            except Exception as exc:
+                logger.warning(
+                    "autopilot_handoff_report_failed",
+                    run_id=self.state.run_id,
+                    error_type=type(exc).__name__,
+                )
+
+        body_section = (
+            self.state.handoff_report.strip()
+            or self.state.memory_summary.strip()
+            or _summarize_one_line(self.state.stop_reason, 400)
+        )
+        report_text = "\n".join(
+            [
+                headline,
+                *self._project_header_lines(),
+                f"Tamamlanan Tur: {len(self.state.turns)}",
+                "",
+                "📋 Agent Teslim Özeti (Neler Yapıldı & Sonraki Adımlar):",
+                body_section,
+            ]
+        )
+
+        delay = (
+            seconds_until_morning_hour(
+                self._now_fn(),
+                night_start_hour=self.config.night_start_hour,
+                morning_hour=self.config.night_end_hour,
+            )
+            if self.config.respect_night_window
+            else 0.0
+        )
+        if (
+            delay > 0
+            and self._morning_dispatcher is not None
+            and self.alerter is not None
+            and self.alerter.enabled
+        ):
+            self._emit_progress(
+                f"✅ Proje tamamlandı; sabah teslim raporu hazırlandı "
+                f"(saat {self.config.night_end_hour:02d}:00 TR'de Telegram'a iletilecek)."
+            )
+            self._morning_dispatcher(self.state.run_id, report_text, delay)
+        else:
+            await self._notify_telegram(report_text)
 
     async def _sleep_gap(self) -> None:
         if self._stop_requested:
@@ -655,23 +770,8 @@ class AutopilotOrchestrator:
             await self.agent.connect(wait_if_busy=True)
             self._emit_progress(f"Agent sohbetine bağlandı (chat_id={self.state.chat_id}).")
 
-            budget_desc = (
-                f"Otomatik (Üst tavan: {self.config.max_turns})"
-                if self.config.auto_turns
-                else str(self.config.max_turns)
-            )
-            await self._notify_telegram(
-                "\n".join(
-                    [
-                        "🚀 ApiWrapper Autopilot başladı",
-                        *self._project_header_lines(),
-                        f"Tur Planı: {budget_desc}",
-                    ]
-                )
-            )
-
             # Devam (resume) modunda önceki turun son ajan cevabından karar üreterek başla;
-            # sıfırdan başlıyorsak 1. tur kickoff talimatını üret.
+            # sıfırdan başlıyorsak 1. tur kickoff talimatını üret ve Akşam Planını gönder.
             next_decision: MaxDecision | None = None
             start_turn = len(self.state.turns) + 1
 
@@ -682,9 +782,37 @@ class AutopilotOrchestrator:
                 return self.state
 
             if start_turn == 1:
-                self._emit_progress("Tur 1: Max başlangıç mimarisini ve ilk talimatı hazırlıyor...")
+                self._emit_progress("Tur 1: Max akşam proje planını ve ilk talimatı hazırlıyor...")
                 next_decision = await self._ask_max_for_kickoff()
+                self.state.evening_plan = (
+                    next_decision.evening_plan.strip()
+                    or next_decision.updated_memory.strip()
+                    or next_decision.evaluation.strip()
+                )
+                self._persist_state()
+                target_desc = (
+                    f"~{self.state.planned_turns} tur (Otomatik · Tavan: {self.config.max_turns})"
+                    if self.state.planned_turns
+                    else str(self.config.max_turns)
+                )
+                plan_lines = [
+                    "🌆 Akşam Proje Planı Hazır — Geliştirme Başlıyor",
+                    *self._project_header_lines(),
+                    f"Hedeflenen Kapsam: {target_desc}",
+                ]
+                if self.state.evening_plan:
+                    plan_lines.extend(["", "📋 Max'ın Çıkardığı Plan:", self.state.evening_plan])
+                await self._notify_telegram("\n".join(plan_lines))
             else:
+                await self._notify_telegram(
+                    "\n".join(
+                        [
+                            "🔄 ApiWrapper Autopilot kaldığı yerden devam ediyor",
+                            *self._project_header_lines(),
+                            f"Başlangıç Turu: {start_turn}/{self.config.max_turns}",
+                        ]
+                    )
+                )
                 prev = self.state.turns[-1]
                 synthetic_msg = AgentMessage(
                     id=prev.agent_message_id,
@@ -731,15 +859,8 @@ class AutopilotOrchestrator:
                     self._emit_progress(
                         f"✅ Proje tamamlandı (Tur {turn - 1} sonunda kabul edildi)."
                     )
-                    await self._notify_telegram(
-                        "\n".join(
-                            [
-                                "✅ ApiWrapper Autopilot tamamlandı",
-                                *self._project_header_lines(),
-                                f"Toplam Tur: {len(self.state.turns)}",
-                                f"Özet: {_summarize_one_line(self.state.stop_reason, 240)}",
-                            ]
-                        )
+                    await self._collect_and_dispatch_morning_report(
+                        headline="🌅 Sabah Teslim Raporu — Proje Tamamlandı"
                     )
                     return self.state
 
@@ -859,15 +980,8 @@ class AutopilotOrchestrator:
                         next_decision.evaluation or "Max projeyi kabul etti ve tamamladı."
                     )
                     self._emit_progress(f"✅ Proje Tur {turn} sonunda tamamlandı ve kabul edildi!")
-                    await self._notify_telegram(
-                        "\n".join(
-                            [
-                                "✅ ApiWrapper Autopilot tamamlandı",
-                                *self._project_header_lines(),
-                                f"Toplam Tur: {turn}",
-                                f"Özet: {_summarize_one_line(self.state.stop_reason, 240)}",
-                            ]
-                        )
+                    await self._collect_and_dispatch_morning_report(
+                        headline="🌅 Sabah Teslim Raporu — Proje Tamamlandı"
                     )
                     return self.state
 
@@ -897,13 +1011,10 @@ class AutopilotOrchestrator:
                 else f"Azami tur sınırına ({self.config.max_turns}) ulaşıldı."
             )
             self._emit_progress(f"⏹️ Azami tur sınırına ({self.config.max_turns}) ulaşıldı.")
-            await self._notify_telegram(
-                "\n".join(
-                    [
-                        f"⏹️ ApiWrapper Autopilot tur sınırına ulaştı ({self.config.max_turns} tur)",
-                        *self._project_header_lines(),
-                        f"Son değerlendirme: {_summarize_one_line(self.state.stop_reason, 240)}",
-                    ]
+            await self._collect_and_dispatch_morning_report(
+                headline=(
+                    "🌅 Sabah Teslim Raporu — Tur Sınırına Ulaşıldı "
+                    f"({self.config.max_turns} tur)"
                 )
             )
             return self.state
