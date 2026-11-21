@@ -153,8 +153,9 @@ class AutopilotConfig:
     respect_night_window: bool = False
     night_start_hour: int = 22
     night_end_hour: int = 7
-    gap_min_seconds: float = 5.0
-    gap_max_seconds: float = 10.0
+    gap_min_seconds: float = 15.0
+    gap_max_seconds: float = 30.0
+    max_cooldown_schedule: tuple[float, ...] = (310.0, 600.0, 900.0)
     state_file: Path | None = None
     run_id: str = field(default_factory=lambda: f"auto_{random_suffix(12)}")
     append_guardrails_on_first_turn: bool = True
@@ -501,6 +502,17 @@ class AutopilotOrchestrator:
         else:
             await self._notify_telegram(report_text)
 
+    async def _sleep_interruptible(self, total_seconds: float) -> bool:
+        """`/durdur` geldiğinde kesilebilen bekleme (`True`=bitti, `False`=durduruldu)."""
+        remaining = max(0.0, float(total_seconds))
+        while remaining > 0:
+            if self._stop_requested:
+                return False
+            step = min(1.0, remaining)
+            await asyncio.sleep(step)
+            remaining -= step
+        return not self._stop_requested
+
     async def _sleep_gap(self) -> None:
         if self._stop_requested:
             return
@@ -510,7 +522,7 @@ class AutopilotOrchestrator:
             return
         delay = lo if hi <= lo else random.uniform(lo, hi)
         if delay > 0:
-            await asyncio.sleep(delay)
+            await self._sleep_interruptible(delay)
 
     def _build_digests(self) -> list[TurnDigest]:
         out: list[TurnDigest] = []
@@ -542,44 +554,75 @@ class AutopilotOrchestrator:
         return lines
 
     @staticmethod
-    def _is_non_retryable_max_error(exc: Exception) -> bool:
+    def _is_fatal_max_error(exc: Exception) -> bool:
+        """Beklemekle düzelmeyecek kalıcı kimlik/sürüm/yapılandırma hatalarını ayırır.
+
+        Not: `429` (`prompt failed` / hız sınırı / kota), `/v1/ask 'problem'` ve
+        `recaptcha_rejected` üretim ölçümlerinde bekleyince kendiliğinden geçtiği
+        için kalıcı ölüm sayılmaz; kademeli soğuma ile beklenir.
+        """
         lowered = str(exc).lower()
-        return any(
+        if any(
             marker in lowered
             for marker in (
                 "401",
-                "403",
                 "409",
-                "429",
-                "auth",
-                "quota",
-                "limit",
-                "recaptcha",
-                "captcha",
+                "400",
+                "404",
+                "unauthorized",
+                "invalid_api_key",
+                "authentication",
                 "refresh_required",
+                "model_not_found",
+                "invalid_request",
             )
-        )
+        ):
+            return True
+        return "403" in lowered and "recaptcha" not in lowered and "captcha" not in lowered
 
     async def _complete_max_safe(self, *, system_prompt: str, user_prompt: str) -> str:
-        """Geçici ağ/akış kesintilerinde `max` çağrısını en fazla 1 kez tekrar dener."""
-        try:
-            return await self.max_bridge.complete(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
-        except MaxBridgeError as exc:
-            if self._stop_requested or self._is_non_retryable_max_error(exc):
-                raise
-            logger.warning(
-                "autopilot_max_transient_retry",
-                run_id=self.state.run_id,
-                reason=str(exc),
-            )
-            await asyncio.sleep(5.0)
-            return await self.max_bridge.complete(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-            )
+        """`max` hız sınırı (`429` / `/v1/ask problem` / geçici yoğunluk) verdiğinde
+        güm güm istek atıp hesabı zorlamak yerine 5+ dk kademeli dinlenip devam eder.
+        """
+        schedule = tuple(self.config.max_cooldown_schedule)
+        attempt = 0
+        while True:
+            try:
+                return await self.max_bridge.complete(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                )
+            except MaxBridgeError as exc:
+                if (
+                    self._stop_requested
+                    or self._is_fatal_max_error(exc)
+                    or attempt >= len(schedule)
+                ):
+                    raise
+                wait_sec = max(0.0, float(schedule[attempt]))
+                attempt += 1
+                mins, secs = divmod(int(round(wait_sec)), 60)
+                human_wait = (
+                    f"{mins} dk {secs} sn"
+                    if mins and secs
+                    else (f"{mins} dk" if mins else f"{wait_sec:.0f} sn")
+                )
+                logger.warning(
+                    "autopilot_max_cooldown_wait",
+                    run_id=self.state.run_id,
+                    attempt=attempt,
+                    max_retries=len(schedule),
+                    wait_seconds=wait_sec,
+                    reason=str(exc),
+                )
+                self._emit_progress(
+                    f"⏳ Max geçici hız sınırı / yoğunluk bildirdi; hesabı zorlamamak için "
+                    f"{human_wait} dinlenip kaldığı yerden devam edilecek "
+                    f"(deneme {attempt}/{len(schedule)})..."
+                )
+                completed_sleep = await self._sleep_interruptible(wait_sec)
+                if not completed_sleep:
+                    raise MaxBridgeError("Dinlenme sırasında durdurma istendi.") from exc
 
     async def _ask_max_for_kickoff(self) -> MaxDecision:
         user_prompt = build_kickoff_user_prompt(

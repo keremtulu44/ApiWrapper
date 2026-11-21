@@ -43,10 +43,10 @@ def test_defaults_match_what_was_agreed_with_the_operator():
     assert settings.ask_request_timeout_seconds == 180.0
     assert settings.ask_max_queue_wait_seconds == 600.0
     assert settings.ask_problem_hold_seconds == 300.0
-    # Tek sıra + rastgele 5–10 sn.
+    # Tek sıra + rastgele 15–30 sn.
     assert settings.request_queue_enabled is True
-    assert settings.request_gap_min_seconds == 5.0
-    assert settings.request_gap_max_seconds == 10.0
+    assert settings.request_gap_min_seconds == 15.0
+    assert settings.request_gap_max_seconds == 30.0
     assert settings.request_queue_max_waiting == 20
     assert settings.upstream_keepalive_skip_when_active is True
 

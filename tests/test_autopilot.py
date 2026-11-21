@@ -1433,3 +1433,67 @@ async def test_external_http_max_bridge_via_real_ask_endpoint() -> None:
     assert "<DURUM>DEVAM</DURUM>" in reply
     assert "Merhaba" in reply
 
+
+@pytest.mark.asyncio
+async def test_autopilot_waits_patiently_on_max_429_and_ask_problem_without_hammering() -> None:
+    """`max` 429 (`prompt failed`) veya `/v1/ask 'problem'` döndürdüğünde koşu
+    çökmemeli; soğuma takvimini (`max_cooldown_schedule`, varsayılan 310s/600s/900s)
+    bekleyip kaldığı yerden devam etmelidir. 401/409 ise anında durmalıdır.
+    """
+    from app.autopilot.max_bridge import MaxBridgeError
+
+    default_cfg = AutopilotConfig(project_idea="Test")
+    assert (default_cfg.gap_min_seconds, default_cfg.gap_max_seconds) == (15.0, 30.0)
+    assert default_cfg.max_cooldown_schedule == (310.0, 600.0, 900.0)
+
+    assert AutopilotOrchestrator._is_fatal_max_error(MaxBridgeError("HTTP 401 unauthorized"))
+    assert AutopilotOrchestrator._is_fatal_max_error(MaxBridgeError("HTTP 409 refresh_required"))
+    assert not AutopilotOrchestrator._is_fatal_max_error(
+        MaxBridgeError("HTTP 429: prompt failed")
+    )
+    assert not AutopilotOrchestrator._is_fatal_max_error(
+        MaxBridgeError("Dış max /v1/ask 'problem' bildirdi (reason=unknown).")
+    )
+
+    calls = 0
+
+    class FlakyMaxBridge(MaxBridge):
+        async def startup(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
+            return None
+
+        def account_identity(self) -> str:
+            return "max-sub"
+
+        async def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise MaxBridgeError("HTTP 429: prompt failed")
+            if calls == 2:
+                raise MaxBridgeError("Dış max /v1/ask 'problem' bildirdi (reason=unknown).")
+            return "<DURUM>TAMAMLANDI</DURUM>\n<ASAMA>5_KABUL</ASAMA>\n<AJANA_MESAJ></AJANA_MESAJ>"
+
+    agent_curl = _build_windows_cmd_input_curl(sub="agent-sub")
+    progress_notes: list[str] = []
+    orch = AutopilotOrchestrator(
+        config=AutopilotConfig(
+            project_idea="Soğuma testi",
+            max_turns=1,
+            gap_min_seconds=0.0,
+            gap_max_seconds=0.0,
+            max_cooldown_schedule=(0.01, 0.01, 0.01),
+            enable_handoff_report=False,
+        ),
+        agent=AgentSessionClient.from_curl(agent_curl),
+        max_bridge=FlakyMaxBridge(),
+        on_progress=lambda _st, note: progress_notes.append(note),
+    )
+    result = await orch._complete_max_safe(system_prompt="S", user_prompt="U")
+    assert "TAMAMLANDI" in result
+    assert calls == 3
+    assert sum("dinlenip kaldığı yerden" in n for n in progress_notes) == 2
+
+

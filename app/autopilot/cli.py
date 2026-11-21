@@ -325,14 +325,14 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument(
             "--gap-min",
             type=float,
-            default=5.0,
-            help="İstekler arası asgari bekleme (sn)",
+            default=15.0,
+            help="İstekler arası asgari bekleme (sn, varsayılan: 15)",
         )
         target.add_argument(
             "--gap-max",
             type=float,
-            default=10.0,
-            help="İstekler arası azami bekleme (sn)",
+            default=30.0,
+            help="İstekler arası azami bekleme (sn, varsayılan: 30)",
         )
         target.add_argument(
             "--agent-timeout",

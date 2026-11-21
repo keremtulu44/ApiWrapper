@@ -152,7 +152,7 @@ def test_production_defaults_match_the_requested_five_to_ten_seconds():
     production = Settings(_env_file=None, target_domain="example.test")
     queue = RequestQueue.from_settings(production)
     assert queue.enabled is True
-    assert (queue.min_gap, queue.max_gap) == (5.0, 10.0)
+    assert (queue.min_gap, queue.max_gap) == (15.0, 30.0)
     assert queue.max_waiting == 20
     assert queue.max_hold == 1800.0
 
