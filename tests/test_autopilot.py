@@ -39,6 +39,7 @@ from app.autopilot.prompts import (
     AGENT_MORNING_HANDOFF_PROMPT,
     AGENT_OPERATING_GUARDRAILS,
     MAX_SYSTEM_PROMPT,
+    build_kickoff_user_prompt,
     build_turn_user_prompt,
     compute_min_turns_before_completion,
     parse_max_decision,
@@ -510,6 +511,56 @@ def test_max_system_prompt_enforces_human_persona_and_busy_rule() -> None:
     assert "yapay zekayım" in lowered
     assert "sandbox" in lowered
     assert "asla" in lowered
+    assert "web'de" in lowered
+    assert "web_search" in lowered
+    assert "api'ye" in lowered
+
+    kickoff = build_kickoff_user_prompt(
+        project_idea="Canlı hava durumu ve döviz takip paneli",
+        max_turns=8,
+        auto_turns=True,
+    ).lower()
+    assert "web_search" in kickoff
+    assert "api'ye" in kickoff
+
+
+def test_events_parser_formats_web_search_and_fetch_page_evidence() -> None:
+    state = parse_chat_state(
+        {
+            "id": "chat-web-1",
+            "lastEventId": "10",
+            "messages": [
+                {
+                    "id": "m1",
+                    "role": "assistant",
+                    "pending": False,
+                    "parts": [
+                        {
+                            "type": "tool-web_search",
+                            "toolCallId": "tc1",
+                            "state": "output-available",
+                            "input": {"query": "open-meteo api forecast docs", "depth": "2"},
+                            "output": {"status": "completed"},
+                        },
+                        {
+                            "type": "tool-fetch_page",
+                            "toolCallId": "tc2",
+                            "state": "output-available",
+                            "input": {"url": "https://open-meteo.com/en/docs"},
+                            "output": {"status": "completed"},
+                        },
+                    ],
+                }
+            ],
+        }
+    )
+    msg = state.last_assistant_message
+    assert msg is not None
+    evidence = format_sandbox_evidence(msg)
+    assert "web_search" in evidence
+    assert "open-meteo api forecast docs" in evidence
+    assert "fetch_page" in evidence
+    assert "https://open-meteo.com/en/docs" in evidence
 
 
 def test_parse_max_decision_structured_and_fallback() -> None:

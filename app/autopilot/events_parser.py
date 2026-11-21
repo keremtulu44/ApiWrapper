@@ -213,6 +213,14 @@ def _summarize_tool_part(part: dict[str, Any]) -> ToolExecutionEvidence:
         raw_log = str(out.get("log") or out.get("output") or "")
         if raw_log.strip():
             summary_parts.append(f"log_sonu={_truncate_head_tail(raw_log, 220)}")
+    elif tool_name == "web_search":
+        query = _truncate(str(inp.get("query") or ""), 160)
+        summary_parts.append(f"query={query!r}" if query else "query=(boş)")
+        if inp.get("depth") is not None:
+            summary_parts.append(f"depth={inp.get('depth')}")
+    elif tool_name == "fetch_page":
+        url = _truncate(str(inp.get("url") or ""), 180)
+        summary_parts.append(f"url=`{url}`" if url else "url=(boş)")
     elif tool_name == "ask_user":
         raw_qs = inp.get("questions")
         q_texts: list[str] = []
@@ -336,13 +344,15 @@ def format_sandbox_evidence(message: AgentMessage) -> str:
     reads = [t for t in message.tools if t.tool_name == "read_file"]
     bashes = [t for t in message.tools if t.tool_name == "bash"]
     procs = [t for t in message.tools if t.tool_name in {"start_process", "get_process_output"}]
+    web_ops = [t for t in message.tools if t.tool_name in {"web_search", "fetch_page"}]
     errors = [t for t in message.tools if t.is_error]
     blockers = [t for t in message.tools if t.is_interactive_blocker]
 
+    web_part = f", web/doküman={len(web_ops)}" if web_ops else ""
     lines: list[str] = [
         f"Toplam araç çağrısı: {len(message.tools)} "
         f"(dosya yazma/düzenleme={len(writes)}, okuma={len(reads)}, "
-        f"bash={len(bashes)}, süreç/sunucu={len(procs)}, hatalı={len(errors)})"
+        f"bash={len(bashes)}, süreç/sunucu={len(procs)}{web_part}, hatalı={len(errors)})"
     ]
     if message.duration_seconds is not None:
         lines.append(f"Tur çalışma süresi: {message.duration_seconds:.1f} sn")
@@ -357,6 +367,12 @@ def format_sandbox_evidence(message: AgentMessage) -> str:
             f"[{details}]! Bir sonraki mesajda net kararını doğrudan söyle ve pencere "
             "açmadan uygulamasını emret."
         )
+
+    if web_ops:
+        lines.append("Web araması ve sayfa/API dokümanı okumaları:")
+        for item in web_ops[-6:]:
+            flag = "❌" if item.is_error else "🌐"
+            lines.append(f"  {flag} {item.tool_name}: {item.summary}")
 
     if writes:
         written_paths: list[str] = []
