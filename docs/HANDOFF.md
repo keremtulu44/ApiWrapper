@@ -45,14 +45,17 @@ Kurallar:
 > **onay kuralı geçerliliğini koruyor.** Güncel durum:
 > `docs/ROLLBACK_2026_11_16.md §11`.
 > **18 Kasım:** ep3'ün kesin sonucu ve ep4 → `docs/ROLLBACK_2026_11_16.md §12`.
-> **18 Kasım (akşam):** `/v1/ask` + tek istek sırası + arıza bildirimi **yazıldı,
-> canlıda değil** (PR #56, taslak; merge = restart = oturum ölümü). Sözleşme:
+> **18 Kasım (akşam):** `/v1/ask` + tek istek sırası + arıza bildirimi **yazıldı**
+> (PR #56; **20 Kasım'da birleştirildi**, `c5b5420`). Sözleşme:
 > `docs/ASK_API.md` · canlıya alma planı: `docs/ROLLBACK_2026_11_16.md §13` ·
 > uygulama sırasında ölçülenler: `docs/LESSONS_2026_11_14.md §17`.
-> **19 Kasım:** ikinci hesap (`UPSTREAM_CURL_2`) + hesaplar arası bölüşüm **yazıldı,
-> canlıda değil** (aynı PR). Rehber: `docs/TWO_ACCOUNTS.md` · canlıya alma:
+> **19 Kasım:** ikinci hesap (`UPSTREAM_CURL_2`) + hesaplar arası bölüşüm **yazıldı**
+> (aynı PR; kod canlı dalda, hesap operatör kararıyla **kapalı**). Rehber: `docs/TWO_ACCOUNTS.md` · canlıya alma:
 > `docs/ROLLBACK_2026_11_16.md §14` · ölçülenler ve kararlar:
 > `docs/LESSONS_2026_11_14.md §18` · kod: `app/services/lanes.py`.
+> **20 Kasım:** hedef sitenin güncellemesi ep4'ü `409 refresh_required` ile bitirdi
+> (beklemekle geçmez; taze cURL gerekir), ardından PR #56 tek hesapla birleştirildi →
+> `docs/LESSONS_2026_11_14.md §21`.
 
 Merge kuralları dosyası: **`docs/MERGE_TARGET.md`** (82 satır).
 Kritik kural: merge = Render deploy, kullanıcı o turda açıkça onaylamadan merge yapılmaz (§"Onay kuralı").
