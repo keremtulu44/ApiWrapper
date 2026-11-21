@@ -54,106 +54,47 @@ AGENT_MORNING_HANDOFF_PROMPT = (
 )
 
 MAX_SYSTEM_PROMPT = (
-    "Sen vizyoner bir Ürün Kurucusu (Product Owner) ve Baş Yazılım Mimarısın. "
-    "Karşında tam yetkili bir geliştirme ortamına (dosya yazma, terminal/bash "
-    "çalıştırma, arka plan sunucusu başlatma, uçtan uca test koşma, **web'de canlı "
-    "arama yapma, web sayfalarını/dokümanları okuma ve internetteki neredeyse çoğu "
-    "API'ye gerçek HTTP isteği atma**) sahip bir Kodlama Ajanı var ve bu projeyi "
-    "onunla birlikte adım adım inşa ediyorsun.\n\n"
-    "KESİN KİMLİK VE ÜSLUP KURALLARI:\n"
-    "1. Karşındaki kodlama ajanıyla tamamen doğal, net, zevkli ve kararlı bir "
-    "insan proje sahibi gibi konuş (Türkçe).\n"
-    '2. ASLA "Ben bir yapay zekayım", "dil modeliyim", "sandbox\'um yok", '
-    '"kod çalıştıramam" gibi ifadeler KULLANMA.\n'
-    "3. Şu an bilgisayar başında değilsin / ortamın müsait değil. Kodlama ajanı "
-    "senden bir komutu çalıştırmanı, kendi bilgisayarında denemeni veya bir şey "
-    'kurmanı isterse doğal biçimde: "Şu an müsait değilim / kendi ortamımda '
-    "deneyemem, tüm çalışma ortamı sende; doğrudan kendi ortamında çalıştırıp "
-    'test et ve çıktısını bana raporla" de.\n'
-    "4. Karşındaki ajan **web'de arama yapabilir (`web_search`, `fetch_page`) ve "
-    "internetteki neredeyse çoğu dış API'ye doğrudan istek atabilir**! Yalnızca "
-    "kullanıcının vermediği ücretli/özel gizli API anahtarlarını zorunlu tutma "
-    "(kullanıcı anahtar/uç verdiyse doğrudan kullandır; vermediyse anahtarsız "
-    "açık API'leri veya isteğe bağlı anahtar girişiyle birlikte çalışan gerçek "
-    "açık veri/önbellek katmanını tercih et). Görsel/ses seçim penceresi açan "
-    "araçları (`offer_options`, `add_voice`) kullandırma.\n"
-    "5. Ajana soru/seçim penceresi (ask_user, offer_options vb.) açtırma. Eğer "
-    "[SANDBOX GERÇEK EYLEM KANITI] içinde ajanın seçim penceresi açtığını görürsen "
-    "<AJANA_MESAJ> içinde net kararını anında bildir ve pencere açmadan doğrudan "
-    "uygulamasını söyle.\n\n"
-    "YARATICILIK, ÜRÜN RUHU VE ERKEN BİTİRİP KAÇMAMA İLKELERİ (ÇOK KRİTİK):\n"
-    '1. SIRADAN ŞABLON YASAĞI: Kullanıcı fikri "Şu projeyi hazırla: ..." gibi çok '
-    "kısa yazılmış olsa bile asla ruhsuz, basmakalıp bir CRUD tablosuna veya "
-    "klişe mor gradyanlı yapay şablonlara razı olma! Ürüne gerçek bir kullanım "
-    "senaryosu, karakterli ve rafine bir görsel dil, gerçekçi Türkçe örnek veriler "
-    '("Test 1 / Lorem ipsum" değil, alanın doğasına uygun zengin içerik) ve '
-    'kullanıcıya "bunu gerçekten çok iyi düşünmüşler" dedirtecek 2-3 yaratıcı '
-    "İMZA ÖZELLİK (canlı dış API verisiyle beslenen analizler, etkileşimli "
-    "simülasyon/hesaplama, akıllı filtre ve komut akışı, görsel karşılaştırma, "
-    "klavye kısayolları, dışa/içe aktarma, geçmiş/geri alma, kalıcı veri katmanı "
-    "vb.) kazandır.\n"
-    "2. WEB ARAMA VE CANLI DIŞ API GÜCÜNÜ KULLAN: Ajanın internetsiz kapalı bir "
-    "kutuda olduğunu SANMA! Ajan web'de güncel arama yapabilir, resmi dokümanları "
-    "okuyabilir ve neredeyse çoğu dış API'ye hem terminalden hem de kurduğu "
-    "uygulamanın sunucu katmanından gerçek HTTP istekleri atabilir. Projenin "
-    "doğasına canlı veri, güncel bilgi veya harici servis entegrasyonu değer "
-    "katıyorsa (hava durumu, döviz/kripto/finans, harita/coğrafi konum, deprem ve "
-    "bilimsel açık veriler, Wikipedia/GitHub/RSS/açık kültür API'leri vb.) ya da "
-    "güncel bir kütüphane/API şemasından emin olunması gerekiyorsa, ajana web'de "
-    "arama yapıp gerçek uç noktayı doğrulamasını, uydurma URL yazmamasını, "
-    "çağrıyı kendi ortamında bizzat test etmesini ve hız sınırı/geçici ağ "
-    "hatalarına karşı önbellek (cache) + zarif yedekleme kurmasını söyle.\n"
-    "3. ÇOK ERKEN BİTİRİP KAÇMA: İlk çalışır iskelet derlendi veya birkaç temel "
-    'test geçti diye 1.-2. turda hemen "harika olmuş, bitti" deyip kaçmak '
-    "KESİNLİKLE YASAKTIR! Sana ayrılan tur bütçesini ürünü gerçekten olgunlaştırmak "
-    "için akıllıca kullan; ancak aynı şeyi papağan gibi tekrarlatma, her turda "
-    "ürüne somut yeni bir katman eklet.\n"
-    '4. LAF KALABALIĞINA KANMA: Ajan metinde "her şeyi kusursuz kurdum" diyebilir. '
-    "Metnin uzunluğu kalite değildir! [SANDBOX GERÇEK EYLEM KANITI] bölümündeki "
-    "gerçek dosya işlemlerine, web aramalarına, bash komutlarının baş/son "
-    "çıktılarına (exit_code=0) ve arka plan sunucu kayıtlarına bak. Tıklayınca "
-    "çalışmayan sahte buton, sabit uydurma rakam veya içi boş sekme bırakılmasına "
-    "izin verme.\n\n"
-    "5 AŞAMALI ÜRÜN YOL HARİTASI (PROJEYİ BU SIRA İLE DERİNLEŞTİR):\n"
-    "- 1_VIZYON_VE_CEKIRDEK: Özgün ürün kurgusu, karakterli arayüz mimarisi, "
-    "gerçek veri/kalıcılık katmanı, zengin başlangıç verisi ve uçtan uca çalışan "
-    "çekirdek akış (tüm projeyi ilk tura yığıp yüzeysel bırakma!).\n"
-    "- 2_YARATICI_DERINLIK: Ürünü sıradanlıktan çıkaran yaratıcı imza özellikler, "
-    "derin etkileşimli iş akışları, gerçek hesaplama/durum geçişleri ve sıfır "
-    "sahte/boş kontrol.\n"
-    "- 3_DENEYIM_VE_CILA: UX ustalığı, mikro-etkileşimler, boş/yükleniyor/hata "
-    "ekranları, uç durum doğrulamaları, klavye ve mobil/masaüstü ergonomisi.\n"
-    "- 4_DOGRULAMA_VE_SUNUCU: Gerçek kullanıcı senaryolarını sınayan otomatik "
-    "uçtan uca testler (exit_code=0), bulunan ince hataların onarımı VE canlı "
-    "önizleme sunucusunun start_process ile 0.0.0.0 üzerinde (önizleme proxy "
-    "uyarısı vermeden, tarayıcıda localhost sabitlemeden) çalışır bırakılıp HTTP "
-    "ile doğrulanması.\n"
-    "- 5_KABUL: Yalnızca olgunluk kapısı aşıldığında ve 1..4 aşamalarının tamamı "
-    "sandbox kanıtıyla doğrulandığında <DURUM>TAMAMLANDI</DURUM> ver.\n\n"
-    "ÇIKTI BİÇİMİ (HER TURDA BU ETİKETLERİ VER, DIŞINA METİN YAZMA):\n"
+    "Sen vizyoner bir Ürün Kurucusu ve Baş Yazılım Mimarısın. Karşında tam yetkili "
+    "sandbox ortamına (dosya yazma, bash, arka plan sunucusu, uçtan uca test), "
+    "**web'de canlı arama/doküman okumaya (`web_search`, `fetch_page`) ve neredeyse "
+    "çoğu dış API'ye gerçek HTTP isteği atma** yeteneğine sahip bir Kodlama Ajanı var.\n\n"
+    "KİMLİK VE İLETİŞİM KURALLARI:\n"
+    "1. Doğal, zevkli ve kararlı bir insan proje sahibi gibi Türkçe konuş; ASLA "
+    '"yapay zekayım", "dil modeliyim", "sandbox\'um yok" gibi ifadeler kullanma.\n'
+    "2. Ajan senden kendi bilgisayarında bir şey denemeni/kurmanı isterse: "
+    '"Şu an müsait değilim, doğrudan kendi ortamında çalıştırıp test ederek sonucu '
+    'paylaş" de.\n'
+    "3. Ajan web'de arama yapabilir (`web_search`, `fetch_page`) ve dış API'lere "
+    "istek atabilir! Projeye canlı veri veya güncel doküman değer katıyorsa ajana "
+    "gerçek uç noktayı web aramasıyla doğrulat, uydurma URL yazdırma, çağrıyı test "
+    "ettir ve önbellek/yedekleme kurdur (yalnız verilmeyen ücretli gizli API "
+    "anahtarlarını zorunlu tutma).\n"
+    "4. Ajana soru/seçenek penceresi (`ask_user`, `offer_options`, `add_voice`) "
+    "açtırma; açtıysa net kararını verip penceresiz uygulat.\n\n"
+    "ÜRÜN KALİTESİ VE 5 AŞAMALI YOL HARİTASI:\n"
+    "- Sıradan CRUD/klişe şablona razı olma; karakterli arayüz, gerçekçi Türkçe "
+    "içerik ve 2-3 yaratıcı İMZA ÖZELLİK (canlı API analizi, etkileşimli hesaplama, "
+    "akıllı akış, karşılaştırma, dışa/içe aktarma, kalıcı veri vb.) kazandır.\n"
+    "- İlk iskelette erken bitirip kaçma; her turda somut yeni katman eklet. Laf "
+    "kalabalığına değil `[SANDBOX GERÇEK EYLEM KANITI]` kaydına (`exit_code=0`, "
+    "gerçek test ve sunucu çıktısı) bak; çalışmayan sahte buton bırakma.\n"
+    "- Aşamalar: `1_VIZYON_VE_CEKIRDEK` (mimari, tasarım dili, çekirdek akış) -> "
+    "`2_YARATICI_DERINLIK` (imza özellikler, gerçek dış API/veri iş mantığı) -> "
+    "`3_DENEYIM_VE_CILA` (UX, hata/boş/yüklenme durumları, mobil/klavye) -> "
+    "`4_DOGRULAMA_VE_SUNUCU` (uçtan uca testler + `start_process` ile `0.0.0.0` "
+    "canlı sunucu, tarayıcıda localhost sabitlemeden HTTP doğrulaması) -> "
+    "`5_KABUL` (yalnız olgunluk kapısı ve 1..4 kanıtla tamamlandığında).\n\n"
+    "ÇIKTI BİÇİMİ (YALNIZ BU ETİKETLERİ VER, İÇ NOTLARI KISA TUT):\n"
     "<DURUM>DEVAM veya TAMAMLANDI veya TAKILDI</DURUM>\n"
-    "<ASAMA>1_VIZYON_VE_CEKIRDEK veya 2_YARATICI_DERINLIK veya 3_DENEYIM_VE_CILA "
-    "veya 4_DOGRULAMA_VE_SUNUCU veya 5_KABUL</ASAMA>\n"
-    "<HEDEF_TUR>(Yalnız 1. turda zorunlu; projenin gerçek kapsamına göre ideal "
-    "toplam tur tahmini: odaklı küçük araç=4-5, orta kapsamlı zengin uygulama=6-8, "
-    "çok modüllü kapsamlı sistem=9-12)</HEDEF_TUR>\n"
-    "<AKSAM_PLANI>\n"
-    "(Yalnız 1. turda zorunlu; proje sahibine kodlama başlamadan önce gönderilecek "
-    "net, maddeli akşam başlangıç özeti: ürün vizyonu, planlanan yaratıcı imza "
-    "özellikler, seçilen mimari ve aşamalar.)\n"
-    "</AKSAM_PLANI>\n"
-    "<DEGERLENDIRME>\n"
-    "Ajanın bu turda yaptığı işin gerçek kalitesi, laf kalabalığı mı yoksa somut "
-    "çalışan ilerleme mi olduğu ve yol haritasında neden bu adımı seçtiğinin analizi.\n"
-    "</DEGERLENDIRME>\n"
+    "<ASAMA>1_VIZYON_VE_CEKIRDEK | 2_YARATICI_DERINLIK | 3_DENEYIM_VE_CILA | "
+    "4_DOGRULAMA_VE_SUNUCU | 5_KABUL</ASAMA>\n"
+    "<DEGERLENDIRME>(En fazla 2-3 kısa cümle: kanıt kontrolü ve adım gerekçesi)</DEGERLENDIRME>\n"
     "<GUNCEL_HAFIZA>\n"
-    "(ÖNEMLİ: Senin sohbet geçmişin yok; bir sonraki turda YALNIZCA buraya yazdığın "
-    "hafızayı okuyacaksın! Seçilen ürün vizyonunu, çok turlu YOL HARİTASI planını, "
-    "tamamlanıp doğrulanan maddeleri ve sıradaki somut hedefleri düzenli tut.)\n"
+    "(Geçmişin yok; sonraki turda yalnız bunu okuyacaksın. En fazla 10 kısa "
+    "maddeyle: vizyon, bitenler ve kalan yol haritası.)\n"
     "</GUNCEL_HAFIZA>\n"
     "<AJANA_MESAJ>\n"
-    "(Doğrudan kodlama ajanına gönderilecek doğal, yaratıcı yön veren, net ve "
-    "odaklı Türkçe mesaj. DURUM=TAMAMLANDI ise boş bırakabilirsin.)\n"
+    "(Ajana gidecek doğal, net Türkçe talimat. TAMAMLANDI ise boş bırak.)\n"
     "</AJANA_MESAJ>"
 )
 
@@ -218,6 +159,18 @@ class MaxDecision:
     evening_plan: str = ""
 
 
+def _clip_head_tail(text: str, max_chars: int, *, head_ratio: float = 0.4) -> str:
+    """Metin sınırı aşarsa başını ve sonunu koruyarak ortasını kırpar."""
+    cleaned = (text or "").strip()
+    if len(cleaned) <= max_chars:
+        return cleaned
+    marker = "\n\n…[kısaltıldı]…\n\n"
+    usable = max(80, max_chars - len(marker))
+    head = max(40, int(usable * head_ratio))
+    tail = max(40, usable - head)
+    return cleaned[:head].rstrip() + marker + cleaned[-tail:].lstrip()
+
+
 def build_kickoff_user_prompt(
     *,
     project_idea: str,
@@ -232,44 +185,30 @@ def build_kickoff_user_prompt(
     effective_min = max(1, min(max_turns, effective_min))
     if auto_turns:
         budget_header = (
-            f"Tur: 1 · Tur Planlaması: OTOMATİK (Projenin kapsamına göre ideal tur "
-            f"sayısını <HEDEF_TUR> etiketinde sen belirle; üst güvenlik tavanı: {max_turns})"
+            f"Tur: 1 · Tur Planlaması: OTOMATİK (İdeal tur sayısını <HEDEF_TUR> içinde "
+            f"sen belirle; tavan: {max_turns})"
         )
     else:
-        budget_header = (
-            f"Tur: 1 / Azami {max_turns} · Asgari Olgunluk Hedefi: En az {effective_min} tur "
-            "(Proje Başlangıcı — İlk Mimari ve Vizyon Talimatı)"
-        )
+        budget_header = f"Tur: 1/{max_turns} · Asgari Olgunluk: {effective_min} tur"
+
     return (
-        f"[PROJE FİKRİ VE ANA HEDEF]\n{project_idea.strip()}\n\n"
-        f"[TUR VE YOL HARİTASI BÜTÇESİ]\n{budget_header}\n\n"
+        f"[PROJE FİKRİ]\n{project_idea.strip()}\n\n"
+        f"[BÜTÇE]\n{budget_header}\n\n"
         "[MEVCUT DURUM]\n"
-        "Kodlama ajanıyla sohbet yeni açıldı ve geliştirme ortamı (sandbox) hazır bekliyor. "
-        "Ajan dosya/terminal/sunucu araçlarının yanı sıra web'de arama yapabilir "
-        "(`web_search`, `fetch_page`) ve internetteki neredeyse çoğu API'ye gerçek "
-        "HTTP istekleri atabilir. Henüz proje tarif edilmedi.\n\n"
-        "[GÖREVİN]\n"
-        "1. Kullanıcı fikri kısa veya genel yazılmış olsa bile bunu sıradan bir ders "
-        "ödevi / boş CRUD şablonu olmaktan çıkar! Ürüne özgün bir karakter, rafine bir "
-        "görsel tasarım dili, gerçekçi Türkçe başlangıç verileri ve sonraki turlarda "
-        "işlenecek yaratıcı imza özellikler kurgula.\n"
-        "2. Projenin gerçek büyüklüğünü tart ve <HEDEF_TUR> içine ideal tur sayısını yaz "
-        "(odaklı kompakt araçlar için 4-5, orta kapsamlı zengin uygulamalar için 6-8, "
-        f"çok modüllü geniş sistemler için 9-{max(9, min(12, max_turns))}).\n"
-        "3. <GUNCEL_HAFIZA> içine bu projeyi aşama aşama olgunlaştıracak net bir "
-        "YOL HARİTASI yaz (Aşama 1: Çekirdek & Tasarım Temeli -> Aşama 2: Yaratıcı İmza "
-        "Özellikler -> Aşama 3: UX Derinliği & Uç Durum Cilası -> Aşama 4: Uçtan Uca "
-        "Otomatik Doğrulama & 0.0.0.0 Canlı Sunucu).\n"
-        "4. <AKSAM_PLANI> içine proje sahibinin akşam telefonunda okuyacağı net, "
-        "heyecan verici ve maddeli bir başlangıç planı yaz (1. Vizyon & Tasarım, "
-        "2. Eklenecek Yaratıcı İmza Özellikler, 3. Mimari & Doğrulama Planı).\n"
-        "5. <AJANA_MESAJ> içinde tüm turların işini tek seferde yığma! Ajandan önce "
-        "çalışma dizinini kontrol etmesini, ardından 1_VIZYON_VE_CEKIRDEK aşamasını "
-        "(sağlam veri/durum mimarisi, özgün arayüz iskeleti, zengin gerçekçi örnek "
-        "veriler ve çalışan çekirdek kullanıcı akışı) kurup ilk doğrulamayı yapmasını iste.\n"
-        "6. Yanıtını <DURUM>DEVAM</DURUM>, <ASAMA>1_VIZYON_VE_CEKIRDEK</ASAMA>, "
-        "<HEDEF_TUR>, <AKSAM_PLANI>, <DEGERLENDIRME>, <GUNCEL_HAFIZA> ve "
-        "<AJANA_MESAJ> etiketleriyle üret."
+        "Sandbox hazır; ajan dosya/bash/sunucu araçlarının yanında web'de arama "
+        "(`web_search`, `fetch_page`) yapabilir ve neredeyse çoğu dış API'ye HTTP "
+        "isteği atabilir. Proje henüz tarif edilmedi.\n\n"
+        "[1. TUR GÖREVİN]\n"
+        "1. Fikri sıradan CRUD olmaktan çıkar; karakterli arayüz, gerçekçi Türkçe veri "
+        "ve 2-3 yaratıcı imza özellik kurgula.\n"
+        "2. <HEDEF_TUR> içine kapsamına göre ideal toplam tur sayısını yaz "
+        f"(küçük araç=4-5, orta uygulama=6-8, geniş sistem=9-{max(9, min(12, max_turns))}).\n"
+        "3. <AKSAM_PLANI> içine proje sahibine gönderilecek kısa, maddeli akşam "
+        "başlangıç planını yaz (Vizyon, İmza Özellikler, Mimari; en fazla 6-8 satır).\n"
+        "4. <GUNCEL_HAFIZA> içine kısa maddelerle 4 aşamalı yol haritasını yaz.\n"
+        "5. <AJANA_MESAJ> içinde tüm projeyi tek tura yığmadan yalnız `1_VIZYON_VE_CEKIRDEK` "
+        "aşamasını (dizin kontrolü, veri/API temeli, özgün arayüz iskeleti ve çalışan "
+        "çekirdek akış) kurup doğrulamasını iste."
     )
 
 
@@ -291,7 +230,7 @@ def build_turn_user_prompt(
     has_interactive_blocker: bool = False,
     early_exit_rejection_note: str = "",
 ) -> str:
-    """Ara ve son turlarda durumsuz `max`'a verilen tam bağlam paketi."""
+    """Ara ve son turlarda durumsuz `max`'a verilen dengeli bağlam paketi."""
     done_turns = completed_turns if completed_turns is not None else max(1, turn - 1)
     remaining = max(0, max_turns - done_turns)
     effective_min = (
@@ -301,76 +240,63 @@ def build_turn_user_prompt(
     early_lock_active = done_turns < effective_min and remaining > 0
 
     plan_hint = (
-        f"Planlanan Hedef: ~{planned_turns} tur · Üst Güvenlik Tavanı: {max_turns}"
+        f"Hedef: ~{planned_turns} · Tavan: {max_turns}"
         if planned_turns and planned_turns > 0
         else f"Azami: {max_turns}"
     )
     budget_lines: list[str] = [
-        f"Tamamlanan Ajan Turu: {done_turns} ({plan_hint}, "
-        f"kalan tavan hakkı: {remaining}) · "
-        f"Asgari Olgunluk Kapısı: {effective_min} tur · Önceki Aşama: {current_phase}"
+        f"Tamamlanan Tur: {done_turns} ({plan_hint}, kalan: {remaining}) · "
+        f"Olgunluk Kapısı: {effective_min} · Önceki Aşama: {current_phase}"
     ]
     if remaining == 0:
         budget_lines.append(
-            "🏁 SON KABUL DEĞERLENDİRMESİ (Kalan ajan turu: 0): Tüm ajan turları "
-            "kullanıldı. Eğer uygulama uçtan uca çalışır ve doğrulanmış durumdaysa "
-            "<DURUM>TAMAMLANDI</DURUM> ve <ASAMA>5_KABUL</ASAMA> ver; kritik bir "
-            "eksik kaldıysa <DEGERLENDIRME> içinde dürüstçe özetle."
+            "🏁 SON DEĞERLENDİRME (Kalan tur: 0): Ürün çalışır ve doğrulandıysa "
+            "<DURUM>TAMAMLANDI</DURUM> ve <ASAMA>5_KABUL</ASAMA> ver."
         )
     elif early_lock_active:
         budget_lines.append(
             f"🔒 ERKEN BİTİRME KİLİDİ AKTİF ({done_turns}/{effective_min} olgunluk "
-            "turu): Bu turda <DURUM>TAMAMLANDI</DURUM> VEREMEZSİN! İlk çalışır "
-            "iskelette projeyi erken bitirip kaçmak yasaktır. Hafıza defterindeki "
-            "yol haritana bakarak ürünü sıradanlıktan çıkaracak yaratıcı imza "
-            "özellikleri (2_YARATICI_DERINLIK), UX/uç durum cilasını "
-            "(3_DENEYIM_VE_CILA) veya gerçek uçtan uca senaryo testi + 0.0.0.0 canlı "
-            "önizleme sunucusu doğrulamasını (4_DOGRULAMA_VE_SUNUCU) ilerlet."
+            "turu): Bu turda <DURUM>TAMAMLANDI</DURUM> VEREMEZSİN! Yol haritandaki "
+            "sıradaki aşamayı (imza özellikler, UX cilası veya uçtan uca test + "
+            "0.0.0.0 canlı sunucu) ilerlet."
         )
     elif remaining == 1:
         budget_lines.append(
-            "⚠️ SON AJAN TURU ÖNCESİ (Kalan ajan turu: 1): Eğer ürün henüz kabul "
-            "edilmediyse vereceğin mesaj ajanın SON uygulama turu olacak! Yeni "
-            "dağınık özellik açma; kırık kenarların kapatılmasını, uçtan uca "
-            "testlerin (exit_code=0) geçmesini ve canlı önizleme sunucusunun "
-            "(start_process, 0.0.0.0) çalışır bırakılıp doğrulanmasını tamamlat."
+            "⚠️ SON AJAN TURU ÖNCESİ (Kalan: 1): Yeni dağınık özellik açma; eksik "
+            "kenarları, testleri (exit_code=0) ve 0.0.0.0 canlı sunucu doğrulamasını tamamlat."
         )
 
-    history_lines: list[str] = []
-    for item in turn_digests[-8:]:
-        history_lines.append(
-            f"- Tur {item.turn} [{item.phase}]: {item.max_summary} "
-            f"(Ajan kanıtı: {item.agent_tools_summary})"
-        )
-    history_block = "\n".join(history_lines) if history_lines else "(Henüz önceki tur özeti yok)"
+    history_lines = [
+        f"- T{item.turn} [{item.phase}]: {item.max_summary} ({item.agent_tools_summary})"
+        for item in turn_digests[-6:]
+    ]
+    history_block = "\n".join(history_lines) if history_lines else "(Yok)"
 
-    agent_text = agent_reply_text.strip()
-    if len(agent_text) > 12000:
-        agent_text = (
-            agent_text[:6000]
-            + "\n\n...[orta kısım kısaltıldı]...\n\n"
-            + agent_text[-5500:]
-        )
+    clipped_memory = _clip_head_tail(memory_summary, 1600, head_ratio=0.45) or "(Boş)"
+    clipped_last_msg = _clip_head_tail(last_sent_to_agent, 900, head_ratio=0.45)
+    clipped_evidence = _clip_head_tail(sandbox_evidence, 2400, head_ratio=0.38)
+    clipped_agent_reply = (
+        _clip_head_tail(agent_reply_text, 2600, head_ratio=0.38)
+        or "(Ajan metin üretmedi)"
+    )
 
     sections = [
-        f"[PROJE FİKRİ VE ANA HEDEF]\n{project_idea.strip()}",
-        "[TUR, BÜTÇE VE OLGUNLUK KAPISI]\n" + "\n".join(budget_lines),
-        f"[PROJE HAFIZA DEFTERİ VE YOL HARİTASI (SENİN NOTLARIN)]\n"
-        f"{memory_summary.strip() or '(Boş)'}",
-        f"[KRONOLOJİK TUR İZİ (TEKRARI ÖNLEMEK İÇİN)]\n{history_block}",
-        f"[BİR ÖNCEKİ TURDA AJANA GÖNDERDİĞİN MESAJ]\n{last_sent_to_agent.strip()}",
-        f"[SANDBOX GERÇEK EYLEM KANITI (OBJEKTİF KAYIT)]\n{sandbox_evidence.strip()}",
-        f"[KODLAMA AJANININ SON YANITI (METİN)]\n{agent_text or '(Ajan metin üretmedi)'}",
+        f"[PROJE FİKRİ]\n{_clip_head_tail(project_idea, 700)}",
+        "[BÜTÇE VE OLGUNLUK]\n" + "\n".join(budget_lines),
+        f"[HAFIZA VE YOL HARİTASI]\n{clipped_memory}",
+        f"[SON TURLAR]\n{history_block}",
+        f"[SON TALİMATIN]\n{clipped_last_msg}",
+        f"[SANDBOX GERÇEK EYLEM KANITI]\n{clipped_evidence}",
+        f"[AJANIN SON YANITI (ÖZETLENMİŞ)]\n{clipped_agent_reply}",
     ]
     if has_interactive_blocker:
         sections.append(
             "[ETKİLEŞİM ENGELİ KURTARMA UYARISI]\n"
-            "Ajan bu turda ask_user / seçenek penceresi açarak senden onay bekledi! "
-            "<AJANA_MESAJ> içinde sorulan konudaki kesin tasarım/teknik kararını netçe "
-            "bildir ve bir daha onay penceresi açmadan doğrudan uygulamasını söyle."
+            "Ajan ask_user/seçenek penceresi açtı! <AJANA_MESAJ> içinde kesin "
+            "kararını bildir ve pencere açmadan doğrudan uygulamasını söyle."
         )
     if anti_loop_warning.strip():
-        sections.append(f"[DÖNGÜ KORUMA UYARISI]\n{anti_loop_warning.strip()}")
+        sections.append(f"[DÖNGÜ UYARISI]\n{anti_loop_warning.strip()}")
     if early_exit_rejection_note.strip():
         sections.append(
             f"[ERKEN BİTİRME REDDİ — ZORUNLU DERİNLEŞTİRME]\n"
@@ -379,31 +305,18 @@ def build_turn_user_prompt(
 
     if early_lock_active:
         decision_task = (
-            "[KARAR GÖREVİN]\n"
-            "Yukarıdaki Sandbox Kanıtını, ajanın yanıtını ve hafızadaki YOL HARİTANI "
-            "birlikte değerlendir:\n"
-            "1. Ajan gerçekten isteneni kodlayıp çalıştırarak doğruladı mı, yoksa sahte/yarım "
-            "bıraktığı noktalar veya yalnız metinde geçiştirdiği iddialar var mı?\n"
-            "2. Şu an erken bitirme kilidi aktif olduğu için <DURUM>DEVAM</DURUM> ver. "
-            "Zaten yapılmış bir işi tekrarlatma; ürünü çok daha yaratıcı, özgün, "
-            "etkileşim derinliği yüksek, UX/uç durum açısından sağlam ve canlı "
-            "önizlemesi (start_process 0.0.0.0) doğrulanmış hâle getirecek SIRADAKİ "
-            "en değerli aşamayı <AJANA_MESAJ> içine doğal ürün sahibi üslubuyla yaz.\n"
-            "3. <GUNCEL_HAFIZA> içinde tamamlananları işaretle ve kalan yol haritasını koru."
+            "[KARAR]\n"
+            "Sandbox Kanıtını ve yol haritanı kontrol et; erken bitirme kilidi aktif "
+            "olduğu için <DURUM>DEVAM</DURUM> ver, yapılan işi tekrarlatmadan sıradaki "
+            "en değerli aşamayı <AJANA_MESAJ> içine yaz ve <GUNCEL_HAFIZA>'yı kısa tut."
         )
     else:
         decision_task = (
-            "[KARAR GÖREVİN]\n"
-            "Yukarıdaki Sandbox Kanıtını ve ajanın yanıtını birlikte değerlendir:\n"
-            "1. Ajan gerçekten isteneni kodlayıp çalıştırarak doğruladı mı (exit_code=0), "
-            "yoksa yalnız metinde süslü bir özet mi geçti?\n"
-            "2. Yaratıcı imza özellikler, sıfır sahte buton, UX cilası, otomatik uçtan "
-            "uca testler VE canlı önizleme sunucusu (start_process ile 0.0.0.0 üzerinde "
-            "uyarısız çalışma + HTTP doğrulaması) eksiksiz tamamlandıysa "
-            "<DURUM>TAMAMLANDI</DURUM> ve <ASAMA>5_KABUL</ASAMA> ver.\n"
-            "3. Henüz eksik bir yaratıcı katman, kırık kenar veya yapılmamış canlı "
-            "sunucu/test doğrulaması varsa <DURUM>DEVAM</DURUM> ver, <GUNCEL_HAFIZA> "
-            "alanını güncelle ve <AJANA_MESAJ> içine somut bir sonraki adımı yaz."
+            "[KARAR]\n"
+            "İmza özellikler, sıfır sahte kontrol, uçtan uca testler (exit_code=0) ve "
+            "0.0.0.0 canlı sunucu HTTP doğrulaması kanıtla tamsa <DURUM>TAMAMLANDI</DURUM> "
+            "ve <ASAMA>5_KABUL</ASAMA> ver; eksik varsa <DURUM>DEVAM</DURUM> ile net "
+            "sonraki adımı <AJANA_MESAJ> içine yaz."
         )
     sections.append(decision_task)
     return "\n\n".join(sections)

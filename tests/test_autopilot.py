@@ -514,6 +514,7 @@ def test_max_system_prompt_enforces_human_persona_and_busy_rule() -> None:
     assert "web'de" in lowered
     assert "web_search" in lowered
     assert "api'ye" in lowered
+    assert len(MAX_SYSTEM_PROMPT) <= 3000
 
     kickoff = build_kickoff_user_prompt(
         project_idea="Canlı hava durumu ve döviz takip paneli",
@@ -522,6 +523,21 @@ def test_max_system_prompt_enforces_human_persona_and_busy_rule() -> None:
     ).lower()
     assert "web_search" in kickoff
     assert "api'ye" in kickoff
+
+    huge_turn = build_turn_user_prompt(
+        project_idea="Panel",
+        turn=4,
+        max_turns=8,
+        current_phase="2_YARATICI_DERINLIK",
+        memory_summary="Not " * 1000,
+        turn_digests=[],
+        last_sent_to_agent="Talimat " * 600,
+        agent_reply_text="BAŞLANGIÇ " + ("orta metin " * 3000) + " SONUÇ_ÖZETİ",
+        sandbox_evidence="Kanıt " * 1000,
+    )
+    assert "BAŞLANGIÇ" in huge_turn
+    assert "SONUÇ_ÖZETİ" in huge_turn
+    assert len(huge_turn) <= 9500
 
 
 def test_events_parser_formats_web_search_and_fetch_page_evidence() -> None:
