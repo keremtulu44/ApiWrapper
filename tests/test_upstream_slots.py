@@ -785,3 +785,200 @@ async def test_inline_agent_curl_paste_and_wrong_curl_type_guards() -> None:
         await bot.handle_message({"chat": {"id": 42}, "text": "/bitir"})
         assert "Agent cURL doğrulandı" in sent[-1]
 
+
+@pytest.mark.asyncio
+async def test_mobile_lemur_browser_android_devtools_curl_end_to_end_via_telegram() -> None:
+    """Android telefon + Güvenli Klasör Lemur Browser DevTools (`$'...'`, `'\\''`,
+    `sec-ch-ua-mobile: ?1`, NBSP/ZWSP) ve 4 parçalı Telegram bölünmesi uçtan uca testi.
+    """
+    mobile_ua = (
+        "Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/131.0.0.0 Mobile Safari/537.36"
+    )
+    # 1) Normal cihazdan alınan ve Render ortamına (`UPSTREAM_CURL`) konulan 1. hesap:
+    curl_slot1_env = _build_realistic_max_curl(
+        sub="android-normal-hesap-1", model_id="019c-max-mobile-1"
+    )
+
+    # 2) Güvenli Klasör Lemur Browser DevTools `Copy as cURL (bash)` çıktısı (`$'...'` +
+    #    kesme işareti `\'` + `\n` + Android pano `\u00a0` ve `\u200b` kusurları):
+    cookie_acc2 = _make_chunked_auth_cookie("lemur-guvenli-klasor-hesap-2")
+    recaptcha_2 = "03AFcWeA_" + ("M7pQ9xK_" * 1050)
+    max2_body = json.dumps(
+        {
+            "id": "019da600-7777-7000-8000-000000000001",
+            "mode": "direct",
+            "modelAId": "019c-max-mobile-1",
+            "userMessageId": "019da600-7777-7000-8000-000000000002",
+            "modelAMessageId": "019da600-7777-7000-8000-000000000003",
+            "messages": [
+                {
+                    "id": "019da600-7777-7000-8000-000000000002",
+                    "role": "user",
+                    "content": "Türkiye'nin verisi\n2. satır",
+                }
+            ],
+            "modality": "chat",
+            "recaptchaV3Token": recaptcha_2,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    ansi_c_max2_body = (
+        max2_body.replace("\\", "\\\\").replace("'", "\\'")
+    )
+    lemur_max2_curl = (
+        "\ufeff\u200bcurl 'https://target.example/nextjs-api/stream/create-evaluation' \\\n"
+        "\u00a0\u00a0-H 'accept: */*' \\\n"
+        "  -H 'accept-language: tr-TR,tr;q=0.9' \\\n"
+        "  -H 'content-type: text/plain;charset=UTF-8' \\\n"
+        f"  -b '{cookie_acc2}' \\\n"
+        "  -H 'sec-ch-ua: \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"' \\\n"
+        "  -H 'sec-ch-ua-mobile: ?1' \\\n"
+        "  -H 'sec-ch-ua-platform: \"Android\"' \\\n"
+        f"  -H 'user-agent: {mobile_ua}' \\\n"
+        "  -H 'x-arena-web-deployment: dpl_LemurMobile123' \\\n"
+        f"  --data-raw $'{ansi_c_max2_body}' \\\n"
+        "  --compressed"
+    )
+    assert len(lemur_max2_curl) > 12500
+
+    # 3) Güvenli Klasör Lemur Browser'dan akşam alınan Agent Mode `/input` cURL'ü:
+    agent_chat_id = "01a1fe70-441f-79b6-9651-f5bede5d2c69"
+    agent_body = json.dumps(
+        {
+            "kind": "message",
+            "payload": {
+                "message": {
+                    "parts": [{"type": "text", "text": "Atmosfer'in 2. turu\nhazır"}],
+                    "id": "019da5dd-8284-7404-a813-595e1a05d5a7",
+                    "role": "user",
+                    "metadata": {
+                        "lastUserMessageId": "019da5d9-f37d-71be-9d31-aa7711223344"
+                    },
+                },
+                "chatId": f"agent-runner:{agent_chat_id}",
+                "metadata": {
+                    "recaptchaV3Token": "03AFcWeA_" + ("L3mU8rB_" * 1050),
+                    "cx": "cx_lemur_android_val",
+                    "timezone": "Europe/Istanbul",
+                    "clientPlatform": "web",
+                    "submissionSource": "chat_input",
+                },
+            },
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    ansi_c_agent_body = agent_body.replace("\\", "\\\\").replace("'", "\\'")
+    lemur_agent_curl = (
+        f"\u200bcurl 'https://target.example/api/chat/{agent_chat_id}/input' \\\n"
+        "\u00a0\u00a0-H 'accept: */*' \\\n"
+        "  -H 'content-type: application/json' \\\n"
+        f"  -b '{cookie_acc2}' \\\n"
+        "  -H 'sec-ch-ua-mobile: ?1' \\\n"
+        "  -H 'sec-ch-ua-platform: \"Android\"' \\\n"
+        f"  -H 'user-agent: {mobile_ua}' \\\n"
+        "  -H 'x-arena-web-deployment: dpl_LemurMobile123' \\\n"
+        f"  --data-raw $'{ansi_c_agent_body}' \\\n"
+        "  --compressed"
+    )
+    assert len(lemur_agent_curl) > 12500
+
+    # 4) 1. hesabı da gerekirse Telegram'dan `'...\''...'` kaçışlı mobil cURL ile tazeleme:
+    cookie_acc1_fresh = _make_chunked_auth_cookie("android-normal-hesap-1")
+    bash_escaped_slot1 = (
+        curl_slot1_env.replace(
+            "Merhaba dünya / test mesajı",
+            r"Türkiye'\''den mobil yenileme",
+        ).replace(
+            _make_chunked_auth_cookie("android-normal-hesap-1"),
+            cookie_acc1_fresh,
+        )
+    )
+
+    parsed_agent = parse_agent_curl(
+        reassemble_agent_curl_chunks(_simulate_telegram_hard_4096_split(lemur_agent_curl))
+    )
+    assert parsed_agent.extra_headers.get("sec-ch-ua-mobile") == "?1"
+    assert parsed_agent.sec_ch_ua_platform_override == '"Android"'
+    assert parsed_agent.cx == "cx_lemur_android_val"
+    assert parsed_agent.warnings == []
+
+    settings = Settings(
+        _env_file=None,
+        api_keys=["sk-mobile"],
+        upstream_curl=curl_slot1_env,
+        upstream_keepalive_interval_seconds=0.0,
+        request_gap_min_seconds=0.0,
+        request_gap_max_seconds=0.0,
+    )
+    app = create_app(settings)
+    sent: list[str] = []
+
+    def tg_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["text"])
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    tg_settings = TelegramSettings(
+        _env_file=None,
+        telegram_bot_token="123456:TEST_TOKEN",
+        wrapper_base_url="http://wrapper.internal",
+        wrapper_api_key="sk-mobile",
+        telegram_allowed_chat_ids="77",
+    )
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(transport=httpx.MockTransport(tg_handler)) as tg_http,
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://wrapper.internal",
+            headers={"Authorization": "Bearer sk-mobile"},
+        ) as wrapper_http,
+    ):
+        bot = TelegramBot(tg_settings, tg_http, wrapper_http)
+
+        # Gündüz: Güvenli Klasör Lemur'dan `/upstream_curl2` + 4 parçalı yapıştırma + `/bitir`
+        await bot.handle_message({"chat": {"id": 77}, "text": "/upstream_curl2"})
+        chunks_max2 = _simulate_telegram_hard_4096_split(lemur_max2_curl)
+        assert len(chunks_max2) == 4
+        for piece in chunks_max2:
+            await bot.handle_message({"chat": {"id": 77}, "text": piece})
+        await bot.handle_message({"chat": {"id": 77}, "text": "/bitir"})
+        assert (
+            "Max 2. Hesap (/upstream_curl2) canlı olarak kaydedildi (4 parça birleştirildi)"
+            in sent[-1]
+        )
+        assert app.state.lanes.multi is True
+
+        # Akşam: Hesap 2 açıkken `/agent_curl` yapıştırılırsa çakışma kilidi yakalamalı
+        await bot.handle_message({"chat": {"id": 77}, "text": "/agent_curl"})
+        for piece in _simulate_telegram_hard_4096_split(lemur_agent_curl):
+            await bot.handle_message({"chat": {"id": 77}, "text": piece})
+        await bot.handle_message({"chat": {"id": 77}, "text": "/bitir"})
+        assert "Hesap Çakışması" in sent[-1]
+        assert "/upstream_curl2 kapat" in sent[-1]
+
+        # `/upstream_curl2 kapat` ile Max havuzunu kapat, sonra `/agent_curl` yapıştır
+        await bot.handle_message({"chat": {"id": 77}, "text": "/upstream_curl2 kapat"})
+        assert "kökten kapatıldı" in sent[-1]
+        assert app.state.lanes.multi is False
+
+        await bot.handle_message({"chat": {"id": 77}, "text": "/agent_curl"})
+        chunks_agent = _simulate_telegram_hard_4096_split(lemur_agent_curl)
+        assert len(chunks_agent) == 4
+        for piece in chunks_agent:
+            await bot.handle_message({"chat": {"id": 77}, "text": piece})
+        await bot.handle_message({"chat": {"id": 77}, "text": "/bitir"})
+        assert "Agent cURL doğrulandı (4 parça birleştirildi)" in sent[-1]
+        assert agent_chat_id in sent[-1]
+
+        # İstenirse 1. hesap da deploy gerekmeden `/upstream_curl` ile mobilden yenilenebilir
+        await bot.handle_message({"chat": {"id": 77}, "text": "/iptal"})
+        for piece in _simulate_telegram_hard_4096_split(f"/upstream_curl {bash_escaped_slot1}"):
+            await bot.handle_message({"chat": {"id": 77}, "text": piece})
+        await bot.handle_message({"chat": {"id": 77}, "text": "/bitir"})
+        assert "Max 1. Hesap (/upstream_curl) canlı olarak kaydedildi" in sent[-1]
+
+

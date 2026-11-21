@@ -51,8 +51,18 @@ _MARKDOWN_LINK_RE = re.compile(r"\[(?P<label>https?://[^\]\s]+)\]\((?P<href>http
 
 
 def _clean_pasted_artifacts(raw: str) -> str:
-    """Sohbet/Markdown editörlerinden ve Windows UTF-8 BOM'dan gelen kusurları düzeltir."""
-    text = raw.lstrip("\ufeff")
+    """Mobil pano (Android/Lemur/Gboard), BOM ve Markdown kusurlarını düzeltir."""
+    # Görünmez sıfır-genişlikli pano karakterlerini ve UTF-8 BOM'u temizle
+    text = (
+        raw.replace("\ufeff", "")
+        .replace("\u200b", "")
+        .replace("\u2060", "")
+        .replace("\u200e", "")
+        .replace("\u200f", "")
+    )
+    # Mobil klavye/panoların girintilerde ürettiği kırılmaz boşlukları (NBSP) normalleştir
+    if "\u00a0" in text:
+        text = text.replace("\u00a0", " ")
     text = _MARKDOWN_LINK_RE.sub(lambda m: m.group("label"), text)
     # Bazı zengin metin editörleri alt çizgiyi `\_` ve yıldızı `\*` olarak kaçırır;
     # yalnız cURL bayrak/URL/çerez bağlamında açık Markdown kaçışı varsa düzeltilir.
@@ -434,11 +444,15 @@ def _smart_join_two_curl_chunks(prev: str, curr: str) -> str:
         p_no_nl == "curl \\" or p_no_nl == "curl ^"
     ):
         return f"{p_no_nl}\n{c_no_nl}"
-    # 2) Önceki argüman kapanmış (`'` / `"` / `--compressed`) ve yeni bayrak başlıyorsa
+    # 2) Önceki argüman kapanmış (`'` / `"` / `--compressed`) ve yeni bayrak/URL başlıyorsa
     if c_trim.startswith("-") and (
         p_trim.endswith(("'", '"')) or p_trim.endswith("--compressed")
     ):
         return f"{p_no_nl}\n{c_no_nl}"
+    if p_trim.endswith("--compressed") and c_trim.startswith(
+        ("'", '"', "http://", "https://")
+    ):
+        return f"{p_no_nl} {c_no_nl}"
     # 3) Bayrak adı (`-H`, `-b`, `--data-raw`, `curl`) ile değeri tam boşluktan bölündüyse
     if _TRAILING_CURL_FLAG_RE.search(p_trim):
         return f"{p_trim} {c_trim}"
@@ -527,20 +541,40 @@ def _quote_for_upstream_curl_import(value: str) -> str:
 
 
 def normalize_windows_cmd_curl_for_upstream(raw: str) -> str:
-    """Windows `Copy as cURL (cmd)` (`^"`, `^{`, `^}`) çıktısını `curl_import` biçimine çevirir.
+    """Windows CMD (`^"`), Android/Chromium ANSI-C (`$'...'`) ve `'\\''` kaçışlarını çözer.
 
-    Bash biçimindeki cURL'lere hiç dokunmaz; yalnızca `is_windows_cmd_curl(raw)`
-    doğru olduğunda Windows kaçış katmanlarını kayıpsız çözüp standart bayraklara
-    dönüştürür.
+    Standart Bash cURL'lerine hiç dokunmaz; yalnızca `app.upstream.curl_import`
+    modülünün doğrudan çözemediği CMD `^"`, Bash `$'...'` / `'...\\''...'` veya
+    mobil pano görünmez karakterleri bulunduğunda kayıpsız standart biçime dönüştürür.
     """
-    if not raw or not is_windows_cmd_curl(raw):
+    if not raw:
         return raw
-    parsed = parse_raw_agent_curl(raw)
+    cleaned = _clean_pasted_artifacts(raw)
+    needs_rewrite = (
+        is_windows_cmd_curl(cleaned)
+        or "$'" in cleaned
+        or r"'\''" in cleaned
+    )
+    if not needs_rewrite:
+        # Standart Bash biçimindeyse ama `curl_import.parse_curl` gövdeyi okuyamadıysa
+        # yine de tam ayrıştırıcıyla kurtarmayı dene:
+        try:
+            quick = parse_curl(cleaned)
+            quick_body = str(quick.get("body") or "").strip()
+            if quick_body and not load_body(quick_body):
+                needs_rewrite = True
+        except Exception:
+            needs_rewrite = True
+
+    if not needs_rewrite:
+        return cleaned
+
+    parsed = parse_raw_agent_curl(cleaned)
     url = str(parsed.get("url") or "").strip()
     headers: dict[str, str] = parsed.get("headers") or {}
     body = str(parsed.get("body") or "")
     if not url:
-        return raw
+        return cleaned
 
     parts = [f"curl {_quote_for_upstream_curl_import(url)}"]
     for name, val in headers.items():
@@ -778,6 +812,10 @@ def parse_agent_curl(
         val = headers.get(name, "").strip()
         if val:
             extra_headers[name] = val
+    # Android/mobil tarayıcıdan (ör. Lemur Browser) alınan cURL'lerde `sec-ch-ua-mobile: ?1`
+    # başlığını koru ki User-Agent + `cf_clearance` parmak iziyle çelişmesin:
+    if headers.get("sec-ch-ua-mobile", "").strip() == "?1":
+        extra_headers["sec-ch-ua-mobile"] = "?1"
 
     last_event_id = headers.get("last-event-id", "").strip()
 

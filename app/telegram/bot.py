@@ -379,6 +379,14 @@ class TelegramBot:
         is_real_command = (command in _KNOWN_BOT_COMMANDS) and (
             command in _LONG_ARG_COMMANDS or len(text) <= 160
         )
+        if (
+            is_real_command
+            and sess.mode == "collecting_curl"
+            and command not in {"/upstream_curl", "/upstream_curl2", "/agent_curl", "/curl"}
+            and any(ch in text for ch in ("'", '"', "{", "}", ";", "="))
+        ):
+            # Bölünmüş son cURL parçasının tesadüfen `/...` ile başlaması durumu
+            is_real_command = False
 
         if is_real_command:
             if command in {"/start", "/help"}:
