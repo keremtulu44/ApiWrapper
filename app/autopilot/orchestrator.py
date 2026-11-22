@@ -48,6 +48,7 @@ from app.autopilot.prompts import (
 )
 from app.core.logging import get_logger
 from app.services.alerting import TelegramAlerter
+from app.upstream.client import error_excerpt
 from app.utils.ids import random_suffix
 
 logger = get_logger(__name__)
@@ -887,6 +888,13 @@ class AutopilotOrchestrator:
 
         try:
             return await self._run_inside_slot()
+        except asyncio.CancelledError:
+            if self.state.status not in {"completed", "max_turns_reached", "failed"}:
+                self.state.status = "stopped"
+                if not self.state.stop_reason:
+                    self.state.stop_reason = "Kullanıcı tarafından zorla durduruldu."
+                self._persist_state()
+            raise
         finally:
             if acquired_slot and self._execution_semaphore is not None:
                 self._execution_semaphore.release()
@@ -1160,25 +1168,38 @@ class AutopilotOrchestrator:
             )
             return self.state
 
+        except asyncio.CancelledError:
+            if self.state.status not in {"completed", "max_turns_reached", "failed"}:
+                self.state.status = "stopped"
+                if not self.state.stop_reason:
+                    self.state.stop_reason = "Kullanıcı tarafından zorla durduruldu."
+                self._persist_state()
+            raise
         except Exception as exc:
+            safe_detail = error_excerpt(str(exc), limit=240)
             self.state.status = "failed"
-            self.state.error_detail = f"{type(exc).__name__}: {exc}"
+            self.state.error_detail = (
+                f"{type(exc).__name__}: {safe_detail}"
+                if safe_detail
+                else type(exc).__name__
+            )
+            if not self.state.stop_reason:
+                self.state.stop_reason = self.state.error_detail
             self._persist_state()
             logger.error(
                 "autopilot_run_failed",
                 run_id=self.state.run_id,
                 error_type=type(exc).__name__,
             )
-            await self._notify_telegram(
-                "\n".join(
-                    [
-                        "🔴 ApiWrapper Autopilot hata ile durdu",
-                        *self._project_header_lines(),
-                        f"Tur: {self.state.current_turn}",
-                        f"Hata türü: {type(exc).__name__}",
-                    ]
-                )
-            )
+            alert_lines = [
+                "🔴 ApiWrapper Autopilot hata ile durdu",
+                *self._project_header_lines(),
+                f"Tur: {self.state.current_turn}",
+                f"Hata türü: {type(exc).__name__}",
+            ]
+            if safe_detail:
+                alert_lines.append(f"Detay: {safe_detail}")
+            await self._notify_telegram("\n".join(alert_lines))
             raise
         finally:
             await self.max_bridge.shutdown()

@@ -24,7 +24,13 @@ from typing import Any, Literal
 from urllib.parse import urlsplit
 
 from app.core.config import MAX_ACCOUNT_SLOTS, Settings
-from app.upstream.auth import decode_jwt_claims, resolve_bearer_token
+from app.upstream.auth import (
+    decode_jwt_claims,
+    is_token_expired,
+    parse_cookie_header,
+    resolve_bearer_token,
+    token_seconds_remaining,
+)
 from app.upstream.curl_import import (
     PASSTHROUGH_HEADERS,
     TELEMETRY_HOSTS,
@@ -64,10 +70,28 @@ def _clean_pasted_artifacts(raw: str) -> str:
     if "\u00a0" in text:
         text = text.replace("\u00a0", " ")
     text = _MARKDOWN_LINK_RE.sub(lambda m: m.group("label"), text)
-    # Bazı zengin metin editörleri alt çizgiyi `\_` ve yıldızı `\*` olarak kaçırır;
-    # yalnız cURL bayrak/URL/çerez bağlamında açık Markdown kaçışı varsa düzeltilir.
-    if r"\_" in text and ("arena\\_acq" in text or "cf\\_clearance" in text or "dpl\\_" in text):
+    # Bazı zengin metin editörleri / not uygulamaları alt çizgiyi `\_`, köşeli
+    # parantezi `\[` / `\]` ve `&` karakterini `&amp;` olarak kaçırır:
+    if r"\_" in text and any(
+        hint in text
+        for hint in (
+            r"arena\_",
+            r"cf\_clearance",
+            r"\_\_cf\_bm",
+            r"dpl\_",
+            r"chat\_input",
+            r"user\_country",
+        )
+    ):
         text = text.replace(r"\_", "_")
+    if (r"\[" in text or r"\]" in text) and any(
+        hint in text for hint in (r'":\[', r"\}\]", r'\]"', r'\[{"', r'\["')
+    ):
+        text = text.replace(r"\[", "[").replace(r"\]", "]")
+    if "&amp;" in text and any(
+        hint in text for hint in ("&amp;rum=", "&amp;id=", "&amp;expire=", "&amp;logs=")
+    ):
+        text = text.replace("&amp;", "&")
     return text
 
 
@@ -130,132 +154,206 @@ def _tokenize_curl(raw: str) -> list[str]:
         if idx >= length:
             break
 
-        # Bash ANSI-C tırnaklama: $'...'
-        if not cmd_mode and text[idx : idx + 2] == "$'":
-            idx += 2
-            buf: list[str] = []
-            while idx < length and text[idx] != "'":
-                if text[idx] == "\\" and idx + 1 < length:
-                    esc = text[idx + 1]
-                    mapping = {"n": "\n", "r": "\r", "t": "\t", "'": "'", "\\": "\\"}
-                    if esc in mapping:
-                        buf.append(mapping[esc])
-                        idx += 2
-                        continue
-                    if esc == "u" and idx + 6 <= length:
-                        try:
-                            buf.append(chr(int(text[idx + 2 : idx + 6], 16)))
-                            idx += 6
-                            continue
-                        except ValueError:
-                            pass
-                    if esc == "x" and idx + 4 <= length:
-                        try:
-                            buf.append(chr(int(text[idx + 2 : idx + 4], 16)))
-                            idx += 4
-                            continue
-                        except ValueError:
-                            pass
-                buf.append(text[idx])
+        if cmd_mode:
+            if text[idx] == '"':
                 idx += 1
-            if idx < length and text[idx] == "'":
-                idx += 1
-            tokens.append("".join(buf))
-            continue
-
-        if text[idx] == "'" and not cmd_mode:
-            idx += 1
-            start = idx
-            while idx < length and text[idx] != "'":
-                idx += 1
-            part = text[start:idx]
-            if idx < length and text[idx] == "'":
-                idx += 1
-            # Bash `'...\''...'` bitişik kaçış kalıbını destekle
-            while idx + 2 < length and text[idx : idx + 3] in (r"\''", r"\'"):
-                if text[idx : idx + 3] == r"\''":
-                    part += "'"
-                    idx += 3
-                    sub_start = idx
-                    while idx < length and text[idx] != "'":
-                        idx += 1
-                    part += text[sub_start:idx]
-                    if idx < length and text[idx] == "'":
-                        idx += 1
-                else:
-                    break
-            tokens.append(part)
-            continue
-
-        if text[idx] == '"':
-            idx += 1
-            buf = []
-            while idx < length:
-                ch = text[idx]
-                if ch == "\\" and idx + 1 < length:
-                    nxt = text[idx + 1]
-                    if cmd_mode:
+                buf: list[str] = []
+                while idx < length:
+                    ch = text[idx]
+                    if ch == "\\" and idx + 1 < length:
+                        nxt = text[idx + 1]
                         if nxt in ('"', "\\"):
                             buf.append(nxt)
                             idx += 2
                             continue
-                    else:
-                        if nxt in ('"', "\\", "$", "`"):
-                            buf.append(nxt)
-                            idx += 2
-                            continue
-                if ch == '"':
+                    if ch == '"':
+                        idx += 1
+                        break
+                    buf.append(ch)
                     idx += 1
-                    break
-                buf.append(ch)
+                tokens.append("".join(buf))
+                continue
+
+            start = idx
+            while idx < length and not text[idx].isspace():
                 idx += 1
-            tokens.append("".join(buf))
+            tokens.append(text[start:idx])
             continue
 
-        start = idx
+        # POSIX / Bash modu: boşluksuz bitişik tırnak segmentlerini
+        # (`'abc'\''def'`, `'abc'"'"'def'`, `'abc'$'\''def'`, `--cookie='...'`)
+        # gerçek kabukta olduğu gibi tek argümanda birleştir.
+        word_parts: list[str] = []
         while idx < length and not text[idx].isspace():
-            idx += 1
-        tokens.append(text[start:idx])
+            if text[idx : idx + 2] == "$'":
+                idx += 2
+                ansi_buf: list[str] = []
+                while idx < length and text[idx] != "'":
+                    if text[idx] == "\\" and idx + 1 < length:
+                        esc = text[idx + 1]
+                        mapping = {"n": "\n", "r": "\r", "t": "\t", "'": "'", "\\": "\\"}
+                        if esc in mapping:
+                            ansi_buf.append(mapping[esc])
+                            idx += 2
+                            continue
+                        if esc == "u" and idx + 6 <= length:
+                            try:
+                                ansi_buf.append(chr(int(text[idx + 2 : idx + 6], 16)))
+                                idx += 6
+                                continue
+                            except ValueError:
+                                pass
+                        if esc == "x" and idx + 4 <= length:
+                            try:
+                                ansi_buf.append(chr(int(text[idx + 2 : idx + 4], 16)))
+                                idx += 4
+                                continue
+                            except ValueError:
+                                pass
+                    ansi_buf.append(text[idx])
+                    idx += 1
+                if idx < length and text[idx] == "'":
+                    idx += 1
+                word_parts.append("".join(ansi_buf))
+                continue
+
+            if text[idx] == "'":
+                idx += 1
+                start = idx
+                while idx < length and text[idx] != "'":
+                    idx += 1
+                word_parts.append(text[start:idx])
+                if idx < length and text[idx] == "'":
+                    idx += 1
+                continue
+
+            if text[idx] == '"':
+                idx += 1
+                dq_buf: list[str] = []
+                while idx < length:
+                    ch = text[idx]
+                    if ch == "\\" and idx + 1 < length:
+                        nxt = text[idx + 1]
+                        if nxt in ('"', "\\", "$", "`"):
+                            dq_buf.append(nxt)
+                            idx += 2
+                            continue
+                    if ch == '"':
+                        idx += 1
+                        break
+                    dq_buf.append(ch)
+                    idx += 1
+                word_parts.append("".join(dq_buf))
+                continue
+
+            if text[idx] == "\\":
+                if idx + 1 < length:
+                    word_parts.append(text[idx + 1])
+                    idx += 2
+                else:
+                    word_parts.append("\\")
+                    idx += 1
+                continue
+
+            start = idx
+            while (
+                idx < length
+                and not text[idx].isspace()
+                and text[idx] not in ("'", '"', "\\")
+                and text[idx : idx + 2] != "$'"
+            ):
+                idx += 1
+            word_parts.append(text[start:idx])
+
+        tokens.append("".join(word_parts))
 
     return tokens
 
 
+def _append_cookie_fragment(cookie_parts: list[str], raw_val: str) -> None:
+    cleaned = raw_val.strip().strip(";").strip()
+    if cleaned and cleaned not in cookie_parts:
+        cookie_parts.append(cleaned)
+
+
 def parse_raw_agent_curl(raw: str) -> dict[str, Any]:
-    """Ham cURL metninden URL, HTTP metodu, başlıklar ve gövdeyi ayıklar."""
+    """Ham cURL metninden URL, HTTP metodu, başlıklar ve gövdeyi ayıklar.
+
+    HTTP/2 ve HTTP/3 DevTools çıktılarında birden fazla `-H 'cookie: ...'` veya
+    `-b` bayrağı gelebilir; önceki çerezleri ezmek yerine sırayla `; ` ile birleştirir.
+    """
     tokens = _tokenize_curl(raw)
     url = ""
     method = ""
     headers: dict[str, str] = {}
-    cookie = ""
+    cookie_parts: list[str] = []
     body = ""
 
+    def _record_header(raw_header: str) -> None:
+        if raw_header.startswith(":"):
+            # HTTP/2 sözde başlıkları (`:authority`, `:path`, `:method`, `:scheme`)
+            rest = raw_header[1:]
+            pseudo_name, pseudo_sep, pseudo_val = rest.partition(":")
+            if pseudo_sep and pseudo_name.strip().lower() == "method" and not method:
+                nonlocal_method[0] = pseudo_val.strip().upper()
+            return
+        name, sep, val = raw_header.partition(":")
+        if not sep:
+            return
+        lower_name = name.strip().lower()
+        if not lower_name:
+            return
+        if lower_name == "cookie":
+            _append_cookie_fragment(cookie_parts, val)
+        else:
+            headers[lower_name] = val.strip()
+
+    nonlocal_method = [""]
     idx = 0
     while idx < len(tokens):
         tok = tokens[idx]
-        if tok == "curl":
+        if tok in ("curl", "curl.exe"):
             idx += 1
             continue
         if tok in ("-H", "--header") and idx + 1 < len(tokens):
-            name, sep, val = tokens[idx + 1].partition(":")
-            if sep:
-                headers[name.strip().lower()] = val.strip()
+            _record_header(tokens[idx + 1])
             idx += 2
             continue
+        if tok.startswith("--header="):
+            _record_header(tok.split("=", 1)[1])
+            idx += 1
+            continue
         if tok in ("-b", "--cookie") and idx + 1 < len(tokens):
-            cookie = tokens[idx + 1].strip()
+            _append_cookie_fragment(cookie_parts, tokens[idx + 1])
             idx += 2
+            continue
+        if tok.startswith("--cookie="):
+            _append_cookie_fragment(cookie_parts, tok.split("=", 1)[1])
+            idx += 1
             continue
         if tok in ("--data-raw", "--data", "-d", "--data-binary") and idx + 1 < len(tokens):
             body = tokens[idx + 1]
             idx += 2
             continue
+        if tok.startswith(("--data-raw=", "--data=", "--data-binary=")):
+            body = tok.split("=", 1)[1]
+            idx += 1
+            continue
         if tok == "--url" and idx + 1 < len(tokens):
             url = tokens[idx + 1].strip().rstrip("^")
             idx += 2
             continue
+        if tok.startswith("--url="):
+            url = tok.split("=", 1)[1].strip().rstrip("^")
+            idx += 1
+            continue
         if tok in ("-X", "--request") and idx + 1 < len(tokens):
             method = tokens[idx + 1].strip().upper()
             idx += 2
+            continue
+        if tok.startswith("--request="):
+            method = tok.split("=", 1)[1].strip().upper()
+            idx += 1
             continue
         if tok.startswith(("http://", "https://")) and not url:
             url = tok.strip().rstrip("^")
@@ -263,8 +361,10 @@ def parse_raw_agent_curl(raw: str) -> dict[str, Any]:
             continue
         idx += 1
 
-    if cookie:
-        headers["cookie"] = cookie
+    if cookie_parts:
+        headers["cookie"] = "; ".join(cookie_parts)
+    if not method and nonlocal_method[0]:
+        method = nonlocal_method[0]
     if not method:
         method = "POST" if body else "GET"
 
@@ -444,11 +544,15 @@ def _smart_join_two_curl_chunks(prev: str, curr: str) -> str:
         p_no_nl == "curl \\" or p_no_nl == "curl ^"
     ):
         return f"{p_no_nl}\n{c_no_nl}"
-    # 2) Önceki argüman kapanmış (`'` / `"` / `--compressed`) ve yeni bayrak/URL başlıyorsa
+    # 2) Önceki argüman kapanmış (`'` / `"` / `--compressed`) ve yeni bayrak/devam başlıyorsa
     if c_trim.startswith("-") and (
         p_trim.endswith(("'", '"')) or p_trim.endswith("--compressed")
     ):
         return f"{p_no_nl}\n{c_no_nl}"
+    if c_trim.startswith(("\\", "^", "`")) and (
+        p_trim.endswith(("'", '"')) or p_trim.endswith("--compressed")
+    ):
+        return f"{p_no_nl} {c_no_nl}"
     if p_trim.endswith("--compressed") and c_trim.startswith(
         ("'", '"', "http://", "https://")
     ):
@@ -484,14 +588,124 @@ def _build_curl_join_candidates(chunks: list[str]) -> list[str]:
     # orijinal panodaki metni bayt-bayt (satır sonları dahil) korur.
     raw_concat = "".join(non_empty)
     direct = "".join(c.strip("\r\n") for c in non_empty)
+    trimmed_concat = "".join(c.strip(" \t\r\n") for c in non_empty)
     with_newlines = "\n".join(c.strip("\r\n") for c in non_empty)
     with_spaces = " ".join(c.strip() for c in non_empty)
 
     candidates: list[str] = []
-    for cand in (smart, raw_concat, direct, with_newlines, with_spaces):
+    for cand in (raw_concat, smart, direct, trimmed_concat, with_newlines, with_spaces):
         if cand and cand not in candidates:
             candidates.append(cand)
     return candidates
+
+
+_AUTH_CHUNK_NAME_RE = re.compile(r"^(?P<base>.*auth.*)\.(?P<idx>\d+)$", flags=re.IGNORECASE)
+_COOKIE_FLAG_COUNT_RE = re.compile(
+    r"(?:^|\s)(?:-b|--cookie)(?:=|\s)|(?:^|\s)(?:-H|--header)(?:=|\s+)(?:\$'|['\"\^])*cookie\s*:",
+    flags=re.IGNORECASE,
+)
+
+
+def inspect_agent_cookie_health(cookie: str, access_token: str = "") -> dict[str, Any]:
+    """Gizli değer (çerez/token içeriği) döndürmeden Agent oturum çerezi sağlığını denetler."""
+    cookies = parse_cookie_header(cookie)
+    names = list(cookies.keys())
+    lowered_names = [n.lower() for n in names]
+
+    auth_cookie_found = bool(access_token.strip()) or any(
+        any(hint in n for hint in ("auth", "session", "token", "jwt"))
+        and n not in {"csrftoken", "xsrf-token"}
+        for n in lowered_names
+    )
+
+    chunk_groups: dict[str, list[int]] = {}
+    for name in names:
+        m = _AUTH_CHUNK_NAME_RE.match(name)
+        if m:
+            chunk_groups.setdefault(m.group("base"), []).append(int(m.group("idx")))
+
+    auth_chunk_indices: list[int] = []
+    missing_chunk_indices: list[int] = []
+    incomplete_auth_chunks = False
+    for _base, indices in chunk_groups.items():
+        ordered = sorted(set(indices))
+        auth_chunk_indices = ordered
+        expected = list(range(ordered[-1] + 1))
+        if ordered != expected:
+            incomplete_auth_chunks = True
+            missing_chunk_indices = [i for i in expected if i not in ordered]
+
+    token = resolve_bearer_token(explicit_token=access_token, cookie_header=cookie)
+    claims = decode_jwt_claims(token) if token else {}
+    jwt_found = bool(claims)
+    # Birleştirilmiş Supabase oturum JSON'unda hem tam JSON bütünlüğünü hem de
+    # `refresh_token` varlığını (değerini değil!) doğrula; `.0` + `.1` parçalarından
+    # biri eksik ya da 4096 kesiminde bozulmuşsa base64/JSON çözümü başarısız olur:
+    from app.upstream.auth import _try_b64_decode, merge_chunked_cookies
+
+    merged_cookies = merge_chunked_cookies(cookies)
+    has_refresh_token = False
+    for cname, cval in merged_cookies.items():
+        if _AUTH_CHUNK_NAME_RE.match(cname):
+            # Ham `.0` / `.1` yarı parçalarını atla; yalnız birleştirilmiş tam tabanı denetle
+            continue
+        if "auth" in cname.lower() and cval.startswith("base64-"):
+            decoded = _try_b64_decode(cval[len("base64-") :])
+            if decoded is None:
+                incomplete_auth_chunks = True
+                continue
+            try:
+                sess_obj = json.loads(decoded)
+            except ValueError:
+                incomplete_auth_chunks = True
+                continue
+            if isinstance(sess_obj, dict) and bool(
+                str(sess_obj.get("refresh_token") or "").strip()
+            ):
+                has_refresh_token = True
+
+    rem_raw = token_seconds_remaining(token) if token else None
+    rem_sec = int(round(rem_raw)) if rem_raw is not None else None
+    expired = bool(token and is_token_expired(token, leeway=0.0))
+
+    problems: list[str] = []
+    if not auth_cookie_found:
+        problems.append(
+            f"cURL içinde oturum çerezi ('*auth*') görünmüyor (gelen {len(names)} çerez "
+            "yalnızca telemetri/Cloudflare olabilir; cURL eksik kopyalanmış veya giriş "
+            "yapılmamış olabilir)."
+        )
+    if incomplete_auth_chunks:
+        missing_txt = (
+            f", eksik parçalar: {missing_chunk_indices}"
+            if missing_chunk_indices
+            else ", devam parçası (.1) eksik veya bozuk"
+        )
+        problems.append(
+            f"Parçalı oturum çerezi eksik/bozuk kopyalanmış (görülen parçalar: "
+            f"{auth_chunk_indices}{missing_txt}). "
+            "Hedef buna HTTP 401 döner; cURL'ü yeniden eksiksiz kopyalayın."
+        )
+    if expired and rem_sec is not None:
+        mins_ago = max(1, abs(rem_sec) // 60)
+        problems.append(
+            f"Kopyalanan cURL içindeki erişim token'ının (JWT) süresi {mins_ago} dk önce "
+            "dolmuş görünüyor (tarayıcı Set-Cookie ile yeni çereze geçmiş olabilir). "
+            "Agent sohbetinde kısa bir mesaj daha gönderip SON '/input' isteğinin cURL'ünü "
+            "alın ve sekmeyi hemen kapatın."
+        )
+
+    return {
+        "cookie_count": len(names),
+        "auth_cookie_found": auth_cookie_found,
+        "auth_chunk_indices": auth_chunk_indices,
+        "incomplete_auth_chunks": incomplete_auth_chunks,
+        "jwt_found": jwt_found,
+        "has_refresh_token": has_refresh_token,
+        "token_expired": expired,
+        "token_remaining_seconds": rem_sec,
+        "problems": problems,
+    }
 
 
 def reassemble_agent_curl_chunks(
@@ -501,9 +715,10 @@ def reassemble_agent_curl_chunks(
 ) -> str:
     """Telegram gibi mesaj boyutu sınırlı kanallardan gelen çok parçalı Agent cURL'ünü birleştirir.
 
-    Önce sınır-duyarlı akıllı birleştirmeyi ve ham birleştirmeyi üretir, ardından
-    alternatiflerle birlikte `parse_agent_curl` üzerinden puanlayarak JSON gövdesi,
-    çerez ve `recaptchaV3Token` bütünlüğünü en iyi koruyan adayı döndürür.
+    Önce ham dilimlemeyi ve sınır-duyarlı akıllı birleştirmeyi üretir, ardından
+    alternatiflerle birlikte `parse_agent_curl` + `inspect_agent_cookie_health`
+    üzerinden puanlayarak JSON gövdesi, parçalı çerez (`.0` + `.1`), başlık sayısı
+    ve `recaptchaV3Token` bütünlüğünü en iyi koruyan adayı döndürür.
     """
     candidates = _build_curl_join_candidates(chunks)
     if not candidates:
@@ -512,19 +727,26 @@ def reassemble_agent_curl_chunks(
         return candidates[0]
 
     best_cand = candidates[0]
-    best_score: tuple[int, int, int, int, int, int] | None = None
+    best_score: tuple[int, int, int, int, int, int, int, int, int, int] | None = None
     for idx, cand in enumerate(candidates):
         try:
+            raw_parsed = parse_raw_agent_curl(cand)
             cfg = parse_agent_curl(cand, chat_id_override=chat_id_override)
         except ValueError:
-            score = (0, 0, 0, 0, 0, -idx)
+            score = (0, 0, 0, 0, 0, 0, 0, 0, 0, -idx)
         else:
+            health = inspect_agent_cookie_health(cfg.cookie, cfg.access_token)
+            header_count = len(raw_parsed.get("headers") or {})
             score = (
                 1,
+                int(not health["incomplete_auth_chunks"]),
+                int(health["has_refresh_token"]),
+                int(bool(cfg.account_identity())),
+                int(health["cookie_count"]),
                 -len(cfg.warnings),
                 int(bool(cfg.recaptcha_token)),
                 int(bool(cfg.last_user_message_id)),
-                int(bool(cfg.account_identity())),
+                header_count,
                 -idx,
             )
         if best_score is None or score > best_score:
@@ -541,19 +763,23 @@ def _quote_for_upstream_curl_import(value: str) -> str:
 
 
 def normalize_windows_cmd_curl_for_upstream(raw: str) -> str:
-    """Windows CMD (`^"`), Android/Chromium ANSI-C (`$'...'`) ve `'\\''` kaçışlarını çözer.
+    """Windows CMD (`^"`), Android/Chromium ANSI-C (`$'...'`), `'\\''`, tek satıra
+    düzleştirilmiş `\\ -H` (Render env kutusu) ve çoklu `-H 'cookie:'` bayraklarını çözer.
 
-    Standart Bash cURL'lerine hiç dokunmaz; yalnızca `app.upstream.curl_import`
-    modülünün doğrudan çözemediği CMD `^"`, Bash `$'...'` / `'...\\''...'` veya
-    mobil pano görünmez karakterleri bulunduğunda kayıpsız standart biçime dönüştürür.
+    Standart tek çerezli Bash cURL'lerine hiç dokunmaz; yalnızca `app.upstream.curl_import`
+    modülünün doğrudan çözemediği biçimler bulunduğunda kayıpsız standart biçime dönüştürür.
     """
     if not raw:
         return raw
     cleaned = _clean_pasted_artifacts(raw)
+    has_multi_cookie_flags = len(_COOKIE_FLAG_COUNT_RE.findall(cleaned)) > 1
+    has_flattened_continuations = bool(re.search(r"[ \t]\\[ \t]*(?=-)", cleaned))
     needs_rewrite = (
         is_windows_cmd_curl(cleaned)
         or "$'" in cleaned
         or r"'\''" in cleaned
+        or has_multi_cookie_flags
+        or has_flattened_continuations
     )
     if not needs_rewrite:
         # Standart Bash biçimindeyse ama `curl_import.parse_curl` gövdeyi okuyamadıysa
@@ -591,8 +817,8 @@ def reassemble_upstream_curl_chunks(chunks: list[str]) -> str:
     """Telegram'ın böldüğü çok parçalı `max` (`create-evaluation`) cURL'ünü kayıpsız birleştirir.
 
     Hem Bash (`Copy as cURL (bash)`) hem Windows CMD (`Copy as cURL (cmd)`) girdilerini
-    destekler. Her aday `parse_curl` + `build_settings` + JSON gövde ve JWT kimlik
-    kontrolünden geçirilerek en eksiksiz sonuç seçilir.
+    destekler. Her aday `parse_curl` + `build_settings` + parçalı çerez, JSON gövde ve
+    JWT kimlik kontrolünden geçirilerek en eksiksiz sonuç seçilir.
     """
     raw_candidates = _build_curl_join_candidates(chunks)
     if not raw_candidates:
@@ -602,13 +828,13 @@ def reassemble_upstream_curl_chunks(chunks: list[str]) -> str:
         return candidates[0]
 
     best_cand = candidates[0]
-    best_score: tuple[int, int, int, int, int, int] | None = None
+    best_score: tuple[int, int, int, int, int, int, int, int, int] | None = None
     for idx, cand in enumerate(candidates):
         try:
             parsed = parse_curl(cand)
             env, warnings, _model_id = build_settings(parsed)
         except Exception:
-            score = (0, 0, 0, 0, 0, -idx)
+            score = (0, 0, 0, 0, 0, 0, 0, 0, -idx)
         else:
             critical = any(w.startswith("KRİTİK") for w in warnings)
             has_url = bool(env.get("TARGET_DOMAIN") and env.get("UPSTREAM_STREAM_PATH"))
@@ -616,14 +842,18 @@ def reassemble_upstream_curl_chunks(chunks: list[str]) -> str:
             token = env.get("UPSTREAM_ACCESS_TOKEN", "")
             has_auth = bool(cookie or token)
             valid = int(has_url and has_auth and not critical)
+            health = inspect_agent_cookie_health(cookie, token)
             body_ok = int(bool(load_body(str(parsed.get("body") or ""))))
             has_captcha = int(bool(env.get("RECAPTCHA_STATIC_TOKEN")))
             has_sub = int(bool(extract_identity_subject(cookie, token)))
             score = (
                 valid,
+                int(not health["incomplete_auth_chunks"]),
+                int(health["has_refresh_token"]),
                 body_ok,
                 has_captcha,
                 has_sub,
+                int(health["cookie_count"]),
                 -len(warnings),
                 -idx,
             )
@@ -806,6 +1036,12 @@ def parse_agent_curl(
             "durum isteği kopyalanmış olabilir). Hedef captcha doğruluyorsa '/input' "
             "isteğinin cURL'ünü kullanın."
         )
+
+    cookie_health = inspect_agent_cookie_health(cookie, access_token)
+    if cookie_health["incomplete_auth_chunks"] or cookie_health["token_expired"]:
+        for problem in cookie_health["problems"]:
+            if problem not in warnings:
+                warnings.append(problem)
 
     extra_headers: dict[str, str] = {}
     for name in PASSTHROUGH_HEADERS:

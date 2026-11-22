@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal
 
 from app.autopilot.agent_client import AgentSessionClient
 from app.autopilot.max_bridge import (
@@ -28,6 +28,7 @@ from app.autopilot.orchestrator import (
 from app.core.logging import get_logger
 from app.services.alerting import TelegramAlerter
 from app.services.completion_service import CompletionService
+from app.upstream.client import error_excerpt
 
 logger = get_logger(__name__)
 
@@ -99,6 +100,11 @@ class AutopilotManager:
                     "current_phase": st.current_phase,
                     "last_note": item.last_note,
                     "stop_reason": st.stop_reason,
+                    "error_detail": (
+                        error_excerpt(st.error_detail, limit=200)
+                        if st.error_detail
+                        else ""
+                    ),
                     "started_at": st.started_at,
                     "updated_at": st.updated_at,
                     "turn_count": len(st.turns),
@@ -117,8 +123,8 @@ class AutopilotManager:
         respect_night_window: bool = False,
         night_start_hour: int = 22,
         night_end_hour: int = 7,
-        gap_min_seconds: float = 5.0,
-        gap_max_seconds: float = 10.0,
+        gap_min_seconds: float = 15.0,
+        gap_max_seconds: float = 30.0,
         agent_turn_timeout: float = 1500.0,
         max_mode: Literal["in_process", "external_http", "direct_curl"] = "in_process",
         in_process_service: CompletionService | None = None,
@@ -214,6 +220,12 @@ class AutopilotManager:
         async def _runner() -> AutopilotRunState:
             try:
                 return await orch.run()
+            except asyncio.CancelledError:
+                logger.info(
+                    "autopilot_background_run_cancelled",
+                    run_id=orch.state.run_id,
+                )
+                return orch.state
             except Exception as exc:
                 logger.warning(
                     "autopilot_background_run_stopped_with_error",
@@ -229,13 +241,155 @@ class AutopilotManager:
         self._order.append(orch.state.run_id)
         return orch.state
 
-    def stop_run(self, run_id: str) -> AutopilotRunState | None:
+    def stop_run(
+        self,
+        run_id: str,
+        *,
+        force: bool = False,
+    ) -> AutopilotRunState | None:
         item = self._runs.get(run_id)
         if item is None:
             return None
+        mtask = self._morning_tasks.pop(run_id, None)
+        if mtask is not None and not mtask.done():
+            mtask.cancel()
         item.orchestrator.request_stop()
-        item.last_note = "Durdurma isteği alındı; mevcut adım bitince duracak."
+        if force and not item.task.done():
+            st = item.orchestrator.state
+            if st.status not in {"completed", "max_turns_reached", "failed"}:
+                st.status = "stopped"
+                st.stop_reason = "Kullanıcı tarafından anında durduruldu."
+            item.last_note = "Anında durduruldu ve bağlantılar kapatılıyor."
+            item.task.cancel()
+        else:
+            item.last_note = "Durdurma isteği alındı; mevcut adım bitince duracak."
         return item.orchestrator.state
+
+    async def stop_all_runs(self, *, force: bool = True) -> dict[str, Any]:
+        """Aktif veya gece sırasındaki tüm otopilot koşularını durdurur."""
+        to_await: list[asyncio.Task[AutopilotRunState]] = []
+        stopped_ids: list[str] = []
+        for rid, item in list(self._runs.items()):
+            if item.task.done():
+                continue
+            stopped_ids.append(rid)
+            self.stop_run(rid, force=force)
+            if force:
+                to_await.append(item.task)
+        for task in to_await:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        return {
+            "stopped_count": len(stopped_ids),
+            "stopped_run_ids": stopped_ids,
+            "active_count": self.active_count(),
+        }
+
+    async def clear_runs(
+        self,
+        *,
+        include_active: bool = True,
+        run_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Otopilot işlemlerini güvenli biçimde durdurup bellek listesinden temizler.
+
+        1. ana Max hesabına (`slot_manager` / `upstream_curl`) kesinlikle dokunmaz;
+        yalnızca Otopilot Agent koşularını, bekleyen sabah raporu zamanlayıcılarını
+        ve geçici Agent çerez önbelleğini temizler.
+        """
+        target_rid = (run_id or "").strip()
+        tasks_to_await: list[asyncio.Task[Any]] = []
+        stopped_active = 0
+        cancelled_morning = 0
+        removed_ids: list[str] = []
+
+        if target_rid:
+            item = self._runs.get(target_rid)
+            if item is None:
+                return {
+                    "found": False,
+                    "stopped_active": 0,
+                    "cancelled_morning_reports": 0,
+                    "removed_runs": 0,
+                    "removed_run_ids": [],
+                    "remaining_runs": len(self._runs),
+                }
+            if not item.task.done():
+                if not include_active:
+                    raise ValueError(
+                        f"'{target_rid}' şu anda aktif; silmek için önce durdurun veya "
+                        "include_active=true kullanın."
+                    )
+                stopped_active += 1
+                self.stop_run(target_rid, force=True)
+                tasks_to_await.append(item.task)
+            mtask = self._morning_tasks.pop(target_rid, None)
+            if mtask is not None and not mtask.done():
+                cancelled_morning += 1
+                mtask.cancel()
+                tasks_to_await.append(mtask)
+            for task in tasks_to_await:
+                with contextlib.suppress(asyncio.CancelledError, Exception):
+                    await task
+            self._runs.pop(target_rid, None)
+            self._order = [r for r in self._order if r != target_rid]
+            removed_ids.append(target_rid)
+            return {
+                "found": True,
+                "stopped_active": stopped_active,
+                "cancelled_morning_reports": cancelled_morning,
+                "removed_runs": 1,
+                "removed_run_ids": removed_ids,
+                "remaining_runs": len(self._runs),
+            }
+
+        for rid, item in list(self._runs.items()):
+            is_live = not item.task.done()
+            if is_live and not include_active:
+                continue
+            if is_live:
+                stopped_active += 1
+                self.stop_run(rid, force=True)
+                tasks_to_await.append(item.task)
+            mtask = self._morning_tasks.pop(rid, None)
+            if mtask is not None and not mtask.done():
+                cancelled_morning += 1
+                mtask.cancel()
+                tasks_to_await.append(mtask)
+            removed_ids.append(rid)
+
+        if include_active:
+            for rid, mtask in list(self._morning_tasks.items()):
+                self._morning_tasks.pop(rid, None)
+                if not mtask.done():
+                    cancelled_morning += 1
+                    mtask.cancel()
+                    tasks_to_await.append(mtask)
+
+        for task in tasks_to_await:
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+
+        removed_set = set(removed_ids)
+        for rid in removed_ids:
+            self._runs.pop(rid, None)
+        self._order = [r for r in self._order if r not in removed_set]
+
+        logger.info(
+            "autopilot_runs_cleared",
+            stopped_active=stopped_active,
+            cancelled_morning=cancelled_morning,
+            removed_runs=len(removed_ids),
+            remaining_runs=len(self._runs),
+        )
+        return {
+            "found": True,
+            "stopped_active": stopped_active,
+            "cancelled_morning_reports": cancelled_morning,
+            "removed_runs": len(removed_ids),
+            "removed_run_ids": removed_ids,
+            "remaining_runs": len(self._runs),
+        }
 
     def start_now(self, run_id: str) -> AutopilotRunState | None:
         """Gece penceresini bekleyen bir koşuyu derhal uyandırır."""

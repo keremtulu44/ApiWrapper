@@ -331,4 +331,4 @@ Invoke-RestMethod -Method Post -Uri ($B + "/v1/admin/keys") `
   -ContentType "application/json" -Body (@{ label = "proje adı" } | ConvertTo-Json)
 ```
 Kullanım: `GET /v1/admin/keys` · İptal: `DELETE /v1/admin/keys/<key_id>` ·
-Rehber: [`CONSUMERS.md`](CONSUMERS.md)
+Rehber: [`CONSUMERS.md`](CONSUMERS.md) · Hız sınırı formülü: [`RATE_LIMIT_GUIDE.md`](RATE_LIMIT_GUIDE.md)
