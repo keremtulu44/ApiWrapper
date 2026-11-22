@@ -851,4 +851,148 @@ async def test_env_single_line_flattened_multi_cookie_and_telegram_document_past
         assert "JWT ~18 dk" in sent[-1]
 
 
+@pytest.mark.asyncio
+async def test_android_telegram_4096_eaten_base64_char_and_empty_base_cookie_repair() -> None:
+    """Android Telegram istemcisinin 4096. karakterde boşluksuz çerez dizisini
+    bölerken yuttuğu tek Base64 karakteri (`splitPos + 1` hatası) + mobil Lemur'un
+    `arena-auth-prod-v1=;` boş taban çerezi birlikte geldiğinde:
+    1) `reassemble_agent_curl_chunks` yutulan karakteri onarıp `.0` + `.1` JSON
+       oturumunu bayt-bayt geri kazanmalı;
+    2) Kriptografik token imzasından karakter yutulursa tahmin etmeyip `/bitir`
+       adımında kullanıcıyı anında uyarmalıdır.
+    """
+    import base64
+    import time
+
+    from app.autopilot.curl_parse import (
+        inspect_agent_cookie_health,
+        parse_agent_curl,
+        reassemble_agent_curl_chunks,
+    )
+    from app.upstream.auth import merge_chunked_cookies, parse_cookie_header
+
+    exp = int(time.time()) + 1080
+    user_id = "dbc8283c-f984-44d3-a8e3-5952110fc15e"
+    jwt_hdr = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').decode().rstrip("=")
+    jwt_pay = (
+        base64.urlsafe_b64encode(
+            json.dumps({"sub": user_id, "email": "mob@test.example", "exp": exp}).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    tok = f"{jwt_hdr}.{jwt_pay}.valid_hmac_sig_0123456789abcdef"
+
+    sess_obj = {
+        "access_token": tok,
+        "token_type": "bearer",
+        "expires_in": 1200,
+        "expires_at": exp,
+        "refresh_token": "rt_lemur_secfolder_99",
+        "user": {
+            "id": user_id,
+            "aud": "authenticated",
+            "role": "authenticated",
+            "email": "mob@test.example",
+            "app_metadata": {
+                "id": "01a07248-a9bc-7d61-9a37-1502d2155a2b",
+                "provider": "google",
+                "providers": ["google"],
+            },
+            "user_metadata": {
+                "avatar_url": "https://lh3.googleusercontent.com/a/DummyAvatar=s96-c",
+                "email": "mob@test.example",
+                "full_name": "Kerem",
+                "id": "01a07248-a9bc-7d61-9a37-1502d2155a2b",
+                "name": "Kerem",
+                "picture": "https://lh3.googleusercontent.com/a/DummyAvatar=s96-c",
+                "provider_id": "118410222990318624927",
+                "sub": "118410222990318624927",
+            },
+            "identities": [
+                {
+                    "id": "118410222990318624927",
+                    "user_id": user_id,
+                    "identity_data": {
+                        "avatar_url": "https://lh3.googleusercontent.com/a/DummyAvatar=s96-c",
+                        "email": "mob@test.example",
+                        "full_name": "Kerem",
+                        "name": "Kerem",
+                        "picture": "https://lh3.googleusercontent.com/a/DummyAvatar=s96-c",
+                        "provider_id": "118410222990318624927",
+                        "sub": "118410222990318624927",
+                    },
+                    "provider": "google",
+                    "email": "mob@test.example",
+                }
+            ],
+        },
+        "provider_token": "ya29.dummy_oauth_provider_token_xyz",
+    }
+    raw_json = json.dumps(sess_obj, separators=(",", ":")).encode("utf-8")
+    b64_payload = base64.urlsafe_b64encode(raw_json).decode().rstrip("=")
+    b64_full = "base64-" + b64_payload
+    cookie_mid = (len(b64_full) * 2) // 3
+    part0 = b64_full[:cookie_mid]
+    part1 = b64_full[cookie_mid:]
+
+    # Lemur Browser gibi boş `arena-auth-prod-v1=;` + `.0` + `.1` içeren tam mobil cURL
+    full_curl = (
+        "curl --url 'https://live.example/api/chat/01a2036b-d590-7b1c-a371-41a7cef2b9ae/input' \\\n"
+        "  -H 'accept: */*' \\\n"
+        "  -H 'content-type: application/json' \\\n"
+        "  -b 'user_country_code=TR; cf_clearance=" + ("C" * 320) + "; "
+        "arena-auth-prod-v1-code-verifier=; arena-auth-prod-v1=; "
+        f"arena-auth-prod-v1.0={part0}; arena-auth-prod-v1.1={part1}' \\\n"
+        "  -H 'sec-ch-ua-mobile: ?1' \\\n"
+        "  -H 'sec-fetch-site: same-origin' \\\n"
+        "  -H 'user-agent: Mozilla/5.0 (Linux; Android 10; K) Chrome/154.0.0.0 Mobile' \\\n"
+        "  --data-raw '{\"kind\":\"message\",\"payload\":{\"metadata\":"
+        "{\"enabledConnectors\":[\"vercel\"],\"recaptchaV3Token\":\"rc_tok\"}}}'"
+    )
+
+    # `providers` dizisi hizasından 1 Base64 karakterini Android Telegram gibi yutarak böl!
+    prov_byte_idx = raw_json.index(b'"providers":[') + len(b'"providers":[')
+    prov_b64_idx = (prov_byte_idx * 4) // 3
+    assert prov_b64_idx < len(part0) - len("base64-")
+    split_1 = (
+        full_curl.index("arena-auth-prod-v1.0=base64-")
+        + len("arena-auth-prod-v1.0=base64-")
+        + prov_b64_idx
+    )
+
+    split_2 = full_curl.index("\n  -H 'user-agent:")
+    tg_chunk_1 = full_curl[:split_1]
+    tg_chunk_2 = full_curl[split_1 + 1 : split_2]  # `split_1` indeksindeki `'I'` yutuldu!
+    tg_chunk_3 = full_curl[split_2 + 1 :]          # `\n` sınırından bölündü
+
+    # Onarımsız ham birleşimde boş `arena-auth-prod-v1=;` olsa bile bozuk JSON yakalanmalı:
+    broken_cfg = parse_agent_curl(tg_chunk_1 + tg_chunk_2 + "\n" + tg_chunk_3)
+    broken_health = inspect_agent_cookie_health(broken_cfg.cookie, broken_cfg.access_token)
+    assert broken_health["incomplete_auth_chunks"] is True
+
+    # `reassemble_agent_curl_chunks` yutulan `'I'` karakterini onarıp birebir kurtarmalı:
+    repaired_curl = reassemble_agent_curl_chunks([tg_chunk_1, tg_chunk_2, tg_chunk_3])
+    repaired_cfg = parse_agent_curl(repaired_curl)
+    repaired_health = inspect_agent_cookie_health(repaired_cfg.cookie, repaired_cfg.access_token)
+    assert repaired_health["incomplete_auth_chunks"] is False
+    assert repaired_health["has_refresh_token"] is True
+    merged = merge_chunked_cookies(parse_cookie_header(repaired_cfg.cookie))
+    assert merged["arena-auth-prod-v1"] == b64_full
+
+    # Kriptografik `refresh_token` içinden 1 karakter yutulursa belirsiz tahmin yapmamalı,
+    # `/bitir` adımında kullanıcıyı anında uyarmalı:
+    rt_byte_idx = raw_json.index(b"rt_lemur_") + 4
+    rt_b64_idx = (rt_byte_idx * 4) // 3
+    rt_curl_pos = full_curl.index("arena-auth-prod-v1.0=base64-") + len(
+        "arena-auth-prod-v1.0=base64-"
+    ) + rt_b64_idx
+    ambig_chunks = [full_curl[:rt_curl_pos], full_curl[rt_curl_pos + 1 :]]
+    ambig_joined = reassemble_agent_curl_chunks(ambig_chunks)
+    ambig_cfg = parse_agent_curl(ambig_joined)
+    ambig_health = inspect_agent_cookie_health(ambig_cfg.cookie, ambig_cfg.access_token)
+    assert ambig_health["incomplete_auth_chunks"] is True
+
+
+
 

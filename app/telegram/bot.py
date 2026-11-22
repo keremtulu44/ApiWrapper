@@ -909,6 +909,29 @@ class TelegramBot:
             await self.send_text(chat_id, "\n".join(diag_lines), disable_preview=True)
             return
 
+        if cookie_diag.get("incomplete_auth_chunks"):
+            sess.mode = "collecting_curl"
+            sess.curl_target = "agent"
+            sess.updated_at = time.monotonic()
+            problems = [str(p) for p in (cookie_diag.get("problems") or []) if p]
+            problem_txt = (
+                "\n• Tespit: " + " ".join(problems)
+                if problems
+                else ""
+            )
+            await self.send_text(
+                chat_id,
+                "❌ Agent oturum çerezi eksik veya Telegram mesaj bölmesinde bozulmuş!\n"
+                f"• Çerez: {cookie_diag.get('cookie_count', 0)} adet "
+                f"(görülen parçalar: {cookie_diag.get('auth_chunk_indices', [])})"
+                f"{problem_txt}\n\n"
+                "💡 Çözüm: Tüm parçaların eksiksiz gittiğinden emin olup tekrar "
+                "yapıştırın veya cURL metnini bir `.txt` dosyası olarak gönderip "
+                "/bitir yazın (İptal: /iptal).",
+                disable_preview=True,
+            )
+            return
+
         sess.mode = "awaiting_idea"
         sess.validated_curl = joined
         sess.validated_chat_id = str(data.get("chat_id") or "")

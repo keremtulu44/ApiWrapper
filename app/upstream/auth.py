@@ -156,7 +156,7 @@ def merge_chunked_cookies(cookies: dict[str, str]) -> dict[str, str]:
 
     merged = dict(cookies)
     for base, parts in chunks.items():
-        if base in merged:
+        if merged.get(base):
             continue
         merged[base] = "".join(parts[idx] for idx in sorted(parts))
     return merged
