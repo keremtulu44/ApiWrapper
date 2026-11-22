@@ -17,8 +17,6 @@ Desteklenen Agent Mode cURL kaynakları:
 
 from __future__ import annotations
 
-import base64
-import binascii
 import json
 import re
 from dataclasses import dataclass, field
@@ -29,7 +27,6 @@ from app.core.config import MAX_ACCOUNT_SLOTS, Settings
 from app.upstream.auth import (
     decode_jwt_claims,
     is_token_expired,
-    looks_like_jwt,
     parse_cookie_header,
     resolve_bearer_token,
     token_seconds_remaining,
@@ -529,410 +526,84 @@ _TRAILING_CURL_FLAG_RE = re.compile(
 _COOKIE_PAIR_START_RE = re.compile(r"^[A-Za-z0-9_.-]+=")
 
 
-def _smart_join_two_curl_chunks_ex(prev: str, curr: str) -> tuple[str, int | None]:
-    """İki cURL parçasını birleştirir ve kelime ortasından birleştiyse sınırı döndürür."""
+def _smart_join_two_curl_chunks(prev: str, curr: str) -> str:
+    """Telegram'ın ~4096 karakter sınırında böldüğü iki cURL parçasını kayıpsız birleştirir."""
     p_no_nl = prev.rstrip("\r\n")
     c_no_nl = curr.lstrip("\r\n")
     p_trim = p_no_nl.rstrip(" \t")
     c_trim = c_no_nl.lstrip(" \t")
 
     if not p_no_nl:
-        return c_no_nl, None
+        return c_no_nl
     if not c_no_nl:
-        return p_no_nl, None
+        return p_no_nl
 
     # 1) Satır sonu devamından (` \`, ` ^`, `` ` ``) bölündüyse yeni satırı geri koy
     #    (JSON gövdesi içindeki kaçışlardan ayırmak için önünde boşluk şartı aranır).
     if re.search(r"[ \t](?:\\|\^|`)$", p_no_nl) or (
         p_no_nl == "curl \\" or p_no_nl == "curl ^"
     ):
-        return f"{p_no_nl}\n{c_no_nl}", None
+        return f"{p_no_nl}\n{c_no_nl}"
     # 2) Önceki argüman kapanmış (`'` / `"` / `--compressed`) ve yeni bayrak/devam başlıyorsa
     if c_trim.startswith("-") and (
         p_trim.endswith(("'", '"')) or p_trim.endswith("--compressed")
     ):
-        return f"{p_no_nl}\n{c_no_nl}", None
+        return f"{p_no_nl}\n{c_no_nl}"
     if c_trim.startswith(("\\", "^", "`")) and (
         p_trim.endswith(("'", '"')) or p_trim.endswith("--compressed")
     ):
-        return f"{p_no_nl} {c_no_nl}", None
+        return f"{p_no_nl} {c_no_nl}"
     if p_trim.endswith("--compressed") and c_trim.startswith(
         ("'", '"', "http://", "https://")
     ):
-        return f"{p_no_nl} {c_no_nl}", None
+        return f"{p_no_nl} {c_no_nl}"
     # 3) Bayrak adı (`-H`, `-b`, `--data-raw`, `curl`) ile değeri tam boşluktan bölündüyse
     if _TRAILING_CURL_FLAG_RE.search(p_trim):
-        return f"{p_trim} {c_trim}", None
+        return f"{p_trim} {c_trim}"
     # 4) Authorization `Bearer <token>` tam boşluktan bölündüyse
     if re.search(r"(?:^|[\s:])bearer$", p_trim, flags=re.IGNORECASE) and re.match(
         r"^[A-Za-z0-9_.-]", c_trim
     ):
-        return f"{p_trim} {c_trim}", None
+        return f"{p_trim} {c_trim}"
     # 5) Cookie başlığı `; ` noktasından bölünüp aradaki boşluk Telegram tarafından yutulduysa
     if p_no_nl.endswith(";") and _COOKIE_PAIR_START_RE.match(c_no_nl):
-        return f"{p_no_nl} {c_no_nl}", None
+        return f"{p_no_nl} {c_no_nl}"
     # 6) Uzun çerez, JWT veya JSON gövdesinin tam ortasından (4096. karakterden) bölündüyse
-    mid_idx = (
-        len(p_no_nl)
-        if (not p_no_nl[-1].isspace() and not c_no_nl[0].isspace())
-        else None
-    )
-    return f"{p_no_nl}{c_no_nl}", mid_idx
-
-
-def _smart_join_two_curl_chunks(prev: str, curr: str) -> str:
-    """Telegram'ın ~4096 karakter sınırında böldüğü iki cURL parçasını kayıpsız birleştirir."""
-    return _smart_join_two_curl_chunks_ex(prev, curr)[0]
-
-
-_AUTH_CHUNK_NAME_RE = re.compile(r"^(?P<base>.*auth.*)\.(?P<idx>\d+)$", flags=re.IGNORECASE)
-_RAW_AUTH_COOKIE_SPAN_RE = re.compile(
-    r"(?<![A-Za-z0-9_.-])(?P<name>[A-Za-z0-9_.-]*auth[A-Za-z0-9_.-]*)=(?P<val>[^;\s'\"]*)",
-    flags=re.IGNORECASE,
-)
-_COOKIE_FLAG_COUNT_RE = re.compile(
-    r"(?:^|\s)(?:-b|--cookie)(?:=|\s)|(?:^|\s)(?:-H|--header)(?:=|\s+)(?:\$'|['\"\^])*cookie\s*:",
-    flags=re.IGNORECASE,
-)
-_B64URL_REPAIR_ALPHABET = (
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_+/"
-)
-
-
-def _normalize_chunks_artifacts(chunks: list[str]) -> list[str]:
-    """Çok parçalı yapıştırmada zengin-metin/Markdown kaçışlarını parça genelinde çözer."""
-    combined = "".join(chunks)
-    fix_underscore = r"\_" in combined and any(
-        hint in combined
-        for hint in (
-            r"arena\_",
-            r"cf\_clearance",
-            r"\_\_cf\_bm",
-            r"dpl\_",
-            r"chat\_input",
-            r"user\_country",
-        )
-    )
-    fix_brackets = (r"\[" in combined or r"\]" in combined) and any(
-        hint in combined for hint in (r'":\[', r"\}\]", r'\]"', r'\[{"', r'\["')
-    )
-    fix_amp = "&amp;" in combined and any(
-        hint in combined for hint in ("&amp;rum=", "&amp;id=", "&amp;expire=", "&amp;logs=")
-    )
-    out: list[str] = []
-    for ch in chunks:
-        txt = (
-            ch.replace("\ufeff", "")
-            .replace("\u200b", "")
-            .replace("\u2060", "")
-            .replace("\u200e", "")
-            .replace("\u200f", "")
-            .replace("\u00a0", " ")
-        )
-        txt = _MARKDOWN_LINK_RE.sub(lambda m: m.group("label"), txt)
-        if fix_underscore:
-            txt = txt.replace(r"\_", "_")
-        if fix_brackets:
-            txt = txt.replace(r"\[", "[").replace(r"\]", "]")
-        if fix_amp:
-            txt = txt.replace("&amp;", "&")
-        out.append(txt)
-    return out
-
-
-def _strict_decode_supabase_b64_session(b64_body: str) -> dict[str, Any] | None:
-    """`base64-` gövdesini sıkı UTF-8 + JSON + JWT/refresh bütünlüğüyle çözer."""
-    cand = b64_body.strip()
-    if len(cand) < 16:
-        return None
-    padded = cand + "=" * (-len(cand) % 4)
-    try:
-        raw = base64.b64decode(padded, altchars=b"-_", validate=False)
-        if any(b < 0x20 or b == 0x7F for b in raw):
-            return None
-        decoded = raw.decode("utf-8")
-        obj = json.loads(decoded)
-    except (ValueError, binascii.Error, UnicodeDecodeError):
-        return None
-    if not isinstance(obj, dict):
-        return None
-    at = str(obj.get("access_token") or "").strip()
-    if not at or not looks_like_jwt(at):
-        return None
-    claims = decode_jwt_claims(at)
-    if not claims:
-        return None
-    user_obj = obj.get("user")
-    if (
-        isinstance(user_obj, dict)
-        and user_obj.get("id")
-        and claims.get("sub")
-        and str(claims["sub"]) != str(user_obj["id"])
-    ):
-        return None
-    if obj.get("expires_at") and claims.get("exp"):
-        try:
-            if int(claims["exp"]) != int(obj["expires_at"]):
-                return None
-        except (TypeError, ValueError):
-            return None
-    return obj
-
-
-def _supabase_session_consistency_score(sess: dict[str, Any]) -> int:
-    """Supabase oturum JSON'undaki tekrarlanan alanların iç tutarlılık puanını hesaplar."""
-    raw_user = sess.get("user")
-    user: dict[str, Any] = raw_user if isinstance(raw_user, dict) else {}
-    raw_um = user.get("user_metadata")
-    um: dict[str, Any] = raw_um if isinstance(raw_um, dict) else {}
-    raw_am = user.get("app_metadata")
-    am: dict[str, Any] = raw_am if isinstance(raw_am, dict) else {}
-    raw_ids = user.get("identities")
-    ids: list[Any] = raw_ids if isinstance(raw_ids, list) else []
-    id0: dict[str, Any] = ids[0] if ids and isinstance(ids[0], dict) else {}
-    raw_idd = id0.get("identity_data")
-    idd: dict[str, Any] = raw_idd if isinstance(raw_idd, dict) else {}
-    pts = 0
-    if user.get("email") and user.get("email") == um.get("email") == idd.get("email"):
-        pts += 4
-    if (
-        um.get("avatar_url")
-        and um.get("avatar_url") == idd.get("avatar_url") == um.get("picture")
-    ):
-        pts += 4
-    if um.get("full_name") and um.get("full_name") == idd.get("full_name"):
-        pts += 3
-    if um.get("name") and um.get("name") == idd.get("name"):
-        pts += 3
-    if (
-        um.get("sub")
-        and um.get("sub") == idd.get("sub") == um.get("provider_id") == id0.get("id")
-    ):
-        pts += 4
-    if am.get("id") and am.get("id") == um.get("id"):
-        pts += 3
-    if user.get("id") and user.get("id") == id0.get("user_id"):
-        pts += 3
-    providers_list = am.get("providers")
-    if (
-        am.get("provider")
-        and isinstance(providers_list, list)
-        and am.get("provider") in providers_list
-    ):
-        pts += 4
-    return pts
-
-
-def _valid_utf8_printable_b64_prefix(b64_prefix: str) -> bool:
-    aligned_len = (len(b64_prefix) // 4) * 4
-    if aligned_len <= 0:
-        return True
-    try:
-        raw = base64.b64decode(b64_prefix[:aligned_len], altchars=b"-_", validate=False)
-    except (ValueError, binascii.Error):
-        return False
-    if any(b < 0x20 or b == 0x7F for b in raw):
-        return False
-    # Sonda kesilmiş olabilecek en fazla 3 baytlık çok-baytlı UTF-8 kuyruğunu tolere et
-    for trim in range(4):
-        try:
-            (raw[:-trim] if trim else raw).decode("utf-8")
-            return True
-        except UnicodeDecodeError:
-            continue
-    return False
-
-
-def _try_repair_eaten_b64_char(curl_text: str, mid_boundaries: list[int]) -> str | None:
-    """Android Telegram istemcisinin ~4096 karakter bölmesinde boşluksuz çerez dizisi
-    içinde yuttuğu tek Base64 karakterini (`splitPos + 1` hatası) matematiksel JSON +
-    JWT/oturum tutarlılığıyla onarır. Kriptografik token belirsizliği varsa tahmin etmez.
-    """
-    if not mid_boundaries:
-        return None
-
-    chunked_spans: dict[str, dict[int, tuple[int, int, str]]] = {}
-    single_spans: dict[str, tuple[int, int, str]] = {}
-    for m in _RAW_AUTH_COOKIE_SPAN_RE.finditer(curl_text):
-        cname = m.group("name")
-        cval = m.group("val")
-        v_start, v_end = m.start("val"), m.end("val")
-        cm = _AUTH_CHUNK_NAME_RE.match(cname)
-        if cm:
-            base = cm.group("base").lower()
-            idx = int(cm.group("idx"))
-            chunked_spans.setdefault(base, {})[idx] = (v_start, v_end, cval)
-        elif cval and cname.lower() not in single_spans:
-            single_spans[cname.lower()] = (v_start, v_end, cval)
-
-    groups: list[list[tuple[int, int, str]]] = []
-    for _base, idx_map in chunked_spans.items():
-        ordered = sorted(idx_map)
-        if ordered == list(range(len(ordered))):
-            groups.append([idx_map[i] for i in ordered])
-    for s_name, span_item in single_spans.items():
-        if s_name not in chunked_spans:
-            groups.append([span_item])
-
-    insertions: list[tuple[int, str]] = []
-    for spans in groups:
-        s0_start, s0_end, s0_val = spans[0]
-        prefix_fix: tuple[int, str] | None = None
-        if not s0_val.startswith("base64-"):
-            # Sınır tam `"base64-"` ön ekinin içine düştüyse kontrol et
-            for b_pos in mid_boundaries:
-                if s0_start <= b_pos <= min(s0_end, s0_start + 7):
-                    rel = b_pos - s0_start
-                    for pch in "base64-":
-                        cand0 = s0_val[:rel] + pch + s0_val[rel:]
-                        if cand0.startswith("base64-"):
-                            s0_val = cand0
-                            prefix_fix = (b_pos, pch)
-                            break
-                if prefix_fix is not None:
-                    break
-        if not s0_val.startswith("base64-"):
-            continue
-
-        if prefix_fix is not None:
-            raw_b64 = s0_val[7:] + "".join(sp[2] for sp in spans[1:])
-            if _strict_decode_supabase_b64_session(raw_b64) is not None:
-                insertions.append(prefix_fix)
-            continue
-
-        b64_segments: list[tuple[int, int, str]] = [(s0_start + 7, s0_end, s0_val[7:])]
-        for sp_start, sp_end, sp_val in spans[1:]:
-            b64_segments.append((sp_start, sp_end, sp_val))
-
-        raw_b64 = "".join(seg[2] for seg in b64_segments)
-        if _strict_decode_supabase_b64_session(raw_b64) is not None:
-            continue
-
-        hits: list[tuple[int, int]] = []
-        running = 0
-        for seg_start, seg_end, seg_txt in b64_segments:
-            for b_pos in mid_boundaries:
-                if seg_start <= b_pos <= seg_end:
-                    rel_pos = running + (b_pos - seg_start)
-                    if (b_pos, rel_pos) not in hits:
-                        hits.append((b_pos, rel_pos))
-            running += len(seg_txt)
-        hits.sort(key=lambda x: x[1])
-
-        if len(hits) == 1:
-            b_pos, rel_pos = hits[0]
-            passing: list[tuple[int, str, str, str]] = []
-            for ch in _B64URL_REPAIR_ALPHABET:
-                cand_b64 = raw_b64[:rel_pos] + ch + raw_b64[rel_pos:]
-                sess = _strict_decode_supabase_b64_session(cand_b64)
-                if sess is not None:
-                    passing.append(
-                        (
-                            _supabase_session_consistency_score(sess),
-                            ch,
-                            str(sess.get("access_token") or ""),
-                            str(sess.get("refresh_token") or ""),
-                        )
-                    )
-            token_pairs = {(at, rt) for (_sc, _ch, at, rt) in passing}
-            if passing and len(token_pairs) == 1:
-                passing.sort(key=lambda item: item[0], reverse=True)
-                insertions.append((b_pos, passing[0][1]))
-        elif len(hits) == 2:
-            (b_pos1, rel1), (b_pos2, rel2) = hits
-            valid_ch1 = [
-                ch1
-                for ch1 in _B64URL_REPAIR_ALPHABET
-                if _valid_utf8_printable_b64_prefix(
-                    raw_b64[:rel1] + ch1 + raw_b64[rel1:rel2]
-                )
-            ]
-            passing2: list[tuple[int, str, str, str, str]] = []
-            for ch1 in valid_ch1:
-                mid_seg = raw_b64[:rel1] + ch1 + raw_b64[rel1:rel2]
-                for ch2 in _B64URL_REPAIR_ALPHABET:
-                    cand_b64 = mid_seg + ch2 + raw_b64[rel2:]
-                    sess = _strict_decode_supabase_b64_session(cand_b64)
-                    if sess is not None:
-                        passing2.append(
-                            (
-                                _supabase_session_consistency_score(sess),
-                                ch1,
-                                ch2,
-                                str(sess.get("access_token") or ""),
-                                str(sess.get("refresh_token") or ""),
-                            )
-                        )
-            token_pairs2 = {(at, rt) for (_sc, _c1, _c2, at, rt) in passing2}
-            if passing2 and len(token_pairs2) == 1:
-                passing2.sort(key=lambda item: item[0], reverse=True)
-                insertions.append((b_pos1, passing2[0][1]))
-                insertions.append((b_pos2, passing2[0][2]))
-
-    if not insertions:
-        return None
-
-    repaired = curl_text
-    for pos, ch in sorted(insertions, key=lambda x: x[0], reverse=True):
-        repaired = repaired[:pos] + ch + repaired[pos:]
-    return repaired
+    return f"{p_no_nl}{c_no_nl}"
 
 
 def _build_curl_join_candidates(chunks: list[str]) -> list[str]:
-    """Ham dilimleme, sınır-duyarlı birleştirme, Telegram 4096 karakter-yutma onarımı
-    ve satır/boşluk adaylarını sırayla üretir.
-    """
+    """Ham dilimleme, sınır-duyarlı birleştirme ve satır/boşluk adaylarını sırayla üretir."""
     non_empty = [chunk for chunk in chunks if chunk and chunk.strip("\r\n")]
     if not non_empty:
         return []
     if len(non_empty) == 1:
         return [non_empty[0]]
 
-    norm_chunks = _normalize_chunks_artifacts(non_empty)
-
-    smart = norm_chunks[0]
-    smart_boundaries: list[int] = []
-    for nxt in norm_chunks[1:]:
-        smart, b_idx = _smart_join_two_curl_chunks_ex(smart, nxt)
-        if b_idx is not None:
-            smart_boundaries.append(b_idx)
+    smart = non_empty[0]
+    for nxt in non_empty[1:]:
+        smart = _smart_join_two_curl_chunks(smart, nxt)
 
     # Telegram istemcisi tam 4096. karakterden ham dilimleme yaptıysa `raw_concat`
     # orijinal panodaki metni bayt-bayt (satır sonları dahil) korur.
-    raw_concat = "".join(norm_chunks)
-    raw_boundaries: list[int] = []
-    running_len = len(norm_chunks[0])
-    for idx in range(1, len(norm_chunks)):
-        if not norm_chunks[idx - 1][-1].isspace() and not norm_chunks[idx][0].isspace():
-            raw_boundaries.append(running_len)
-        running_len += len(norm_chunks[idx])
-
-    repaired_smart = _try_repair_eaten_b64_char(smart, smart_boundaries)
-    repaired_raw = (
-        _try_repair_eaten_b64_char(raw_concat, raw_boundaries)
-        if raw_concat != smart
-        else None
-    )
-
-    direct = "".join(c.strip("\r\n") for c in norm_chunks)
-    trimmed_concat = "".join(c.strip(" \t\r\n") for c in norm_chunks)
-    with_newlines = "\n".join(c.strip("\r\n") for c in norm_chunks)
-    with_spaces = " ".join(c.strip() for c in norm_chunks)
+    raw_concat = "".join(non_empty)
+    direct = "".join(c.strip("\r\n") for c in non_empty)
+    trimmed_concat = "".join(c.strip(" \t\r\n") for c in non_empty)
+    with_newlines = "\n".join(c.strip("\r\n") for c in non_empty)
+    with_spaces = " ".join(c.strip() for c in non_empty)
 
     candidates: list[str] = []
-    for cand in (
-        raw_concat,
-        smart,
-        repaired_smart,
-        repaired_raw,
-        direct,
-        trimmed_concat,
-        with_newlines,
-        with_spaces,
-    ):
+    for cand in (raw_concat, smart, direct, trimmed_concat, with_newlines, with_spaces):
         if cand and cand not in candidates:
             candidates.append(cand)
     return candidates
+
+
+_AUTH_CHUNK_NAME_RE = re.compile(r"^(?P<base>.*auth.*)\.(?P<idx>\d+)$", flags=re.IGNORECASE)
+_COOKIE_FLAG_COUNT_RE = re.compile(
+    r"(?:^|\s)(?:-b|--cookie)(?:=|\s)|(?:^|\s)(?:-H|--header)(?:=|\s+)(?:\$'|['\"\^])*cookie\s*:",
+    flags=re.IGNORECASE,
+)
 
 
 def inspect_agent_cookie_health(cookie: str, access_token: str = "") -> dict[str, Any]:
@@ -944,8 +615,7 @@ def inspect_agent_cookie_health(cookie: str, access_token: str = "") -> dict[str
     auth_cookie_found = bool(access_token.strip()) or any(
         any(hint in n for hint in ("auth", "session", "token", "jwt"))
         and n not in {"csrftoken", "xsrf-token"}
-        and bool(cookies.get(orig_n, "").strip())
-        for orig_n, n in zip(names, lowered_names, strict=False)
+        for n in lowered_names
     )
 
     chunk_groups: dict[str, list[int]] = {}
@@ -970,8 +640,8 @@ def inspect_agent_cookie_health(cookie: str, access_token: str = "") -> dict[str
     jwt_found = bool(claims)
     # Birleştirilmiş Supabase oturum JSON'unda hem tam JSON bütünlüğünü hem de
     # `refresh_token` varlığını (değerini değil!) doğrula; `.0` + `.1` parçalarından
-    # biri eksik ya da 4096 kesiminde bozulmuşsa sıkı base64/UTF-8/JSON çözümü reddeder:
-    from app.upstream.auth import merge_chunked_cookies
+    # biri eksik ya da 4096 kesiminde bozulmuşsa base64/JSON çözümü başarısız olur:
+    from app.upstream.auth import _try_b64_decode, merge_chunked_cookies
 
     merged_cookies = merge_chunked_cookies(cookies)
     has_refresh_token = False
@@ -980,11 +650,18 @@ def inspect_agent_cookie_health(cookie: str, access_token: str = "") -> dict[str
             # Ham `.0` / `.1` yarı parçalarını atla; yalnız birleştirilmiş tam tabanı denetle
             continue
         if "auth" in cname.lower() and cval.startswith("base64-"):
-            sess_obj = _strict_decode_supabase_b64_session(cval[len("base64-") :])
-            if sess_obj is None:
+            decoded = _try_b64_decode(cval[len("base64-") :])
+            if decoded is None:
                 incomplete_auth_chunks = True
                 continue
-            if str(sess_obj.get("refresh_token") or "").strip():
+            try:
+                sess_obj = json.loads(decoded)
+            except ValueError:
+                incomplete_auth_chunks = True
+                continue
+            if isinstance(sess_obj, dict) and bool(
+                str(sess_obj.get("refresh_token") or "").strip()
+            ):
                 has_refresh_token = True
 
     rem_raw = token_seconds_remaining(token) if token else None
