@@ -881,8 +881,8 @@ async def test_one_hour_agent_timeout_and_telegram_devam_resume_flow() -> None:
             '-b "a=1"'
         ),
     )
-    assert req_start.agent_turn_timeout == 3600.0
-    assert req_resume.agent_turn_timeout == 3600.0
+    assert req_start.agent_turn_timeout == 5400.0
+    assert req_resume.agent_turn_timeout == 5400.0
 
     # Deploy sonrası mevcut Agent sohbetinden devam istemi kontrolü:
     kickoff_with_existing = build_kickoff_user_prompt(
@@ -1131,7 +1131,7 @@ async def test_one_hour_agent_timeout_and_telegram_devam_resume_flow() -> None:
         assert len(resume_calls) == 1
         assert resume_calls[0]["respect_night_window"] is False
         assert "kaldığı yerden sürdürülüyor" in sent_tg[-1]
-        assert "60 dk" in sent_tg[-1]
+        assert "90 dk" in sent_tg[-1]
 
 
 
