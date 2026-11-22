@@ -207,8 +207,10 @@ def build_kickoff_user_prompt(
     max_turns: int,
     min_turns: int | None = None,
     auto_turns: bool = False,
+    existing_agent_reply: str = "",
+    existing_sandbox_evidence: str = "",
 ) -> str:
-    """1. turda (henüz ajana proje anlatılmamışken) `max`'a verilen başlangıç paketi."""
+    """1. turda `max`'a verilen başlangıç (veya mevcut Agent sohbetinden devam) paketi."""
     effective_min = (
         min_turns if min_turns is not None else compute_min_turns_before_completion(max_turns)
     )
@@ -221,13 +223,43 @@ def build_kickoff_user_prompt(
     else:
         budget_header = f"Tur: 1/{max_turns} · Asgari Olgunluk: {effective_min} tur"
 
+    safe_idea = _clip_head_tail(project_idea.strip(), 2400)
+    if existing_sandbox_evidence.strip():
+        clipped_ev = _clip_head_tail(existing_sandbox_evidence, 900, head_ratio=0.5)
+        clipped_rep = (
+            extract_agent_final_summary(existing_agent_reply, 1500)
+            or "(Ajan metin özeti yok; sandbox kanıtına bak)"
+        )
+        state_block = (
+            "[MEVCUT DURUM — BU AGENT SOHBETİNDE ÖNCEDEN YAPILAN ÇALIŞMA VAR]\n"
+            "DİKKAT: Bağlanılan bu Agent sandbox oturumunda proje üzerinde önceden "
+            "ilerleme kaydedilmiş! Yapılmış kısımları sıfırdan tekrarlatma; aşağıdaki "
+            "mevcut ilerlemeyi temel alarak kalan aşamaları planla ve doğrudan sıradaki "
+            "eksik aşamayı <AJANA_MESAJ> içine yaz.\n\n"
+            f"[SANDBOX MEVCUT EYLEM KANITI]\n{clipped_ev}\n\n"
+            f"[AJANIN SON TESLİM ÖZETİ]\n{clipped_rep}"
+        )
+        step5_line = (
+            "5. <AJANA_MESAJ> içinde önceden yapılmış işleri tekrarlatmadan, mevcut "
+            "dosyaları kontrol ettirip doğrudan sıradaki aşamayı kurup doğrulamasını iste."
+        )
+    else:
+        state_block = (
+            "[MEVCUT DURUM]\n"
+            "Sandbox hazır; ajan dosya/terminal/sunucu araçlarının yanında web'de arama "
+            "(web_search, fetch_page) yapabilir ve neredeyse çoğu dış API'ye HTTP "
+            "isteği atabilir. Proje henüz tarif edilmedi."
+        )
+        step5_line = (
+            "5. <AJANA_MESAJ> içinde tüm projeyi tek tura yığmadan yalnız 1_VIZYON_VE_CEKIRDEK "
+            "aşamasını (dizin kontrolü, veri/API temeli, özgün arayüz iskeleti ve çalışan "
+            "çekirdek akış) kurup doğrulamasını iste."
+        )
+
     return (
-        f"[PROJE FİKRİ]\n{project_idea.strip()}\n\n"
+        f"[PROJE FİKRİ]\n{safe_idea}\n\n"
         f"[BÜTÇE]\n{budget_header}\n\n"
-        "[MEVCUT DURUM]\n"
-        "Sandbox hazır; ajan dosya/terminal/sunucu araçlarının yanında web'de arama "
-        "(web_search, fetch_page) yapabilir ve neredeyse çoğu dış API'ye HTTP "
-        "isteği atabilir. Proje henüz tarif edilmedi.\n\n"
+        f"{state_block}\n\n"
         "[1. TUR GÖREVİN]\n"
         "1. Fikri sıradan CRUD olmaktan çıkar; karakterli arayüz, gerçekçi Türkçe veri "
         "ve 2-3 yaratıcı imza özellik kurgula.\n"
@@ -236,9 +268,7 @@ def build_kickoff_user_prompt(
         "3. <AKSAM_PLANI> içine proje sahibine gönderilecek kısa, maddeli akşam "
         "başlangıç planını yaz (Vizyon, İmza Özellikler, Mimari; en fazla 6-8 satır).\n"
         "4. <GUNCEL_HAFIZA> içine kısa maddelerle 4 aşamalı yol haritasını yaz.\n"
-        "5. <AJANA_MESAJ> içinde tüm projeyi tek tura yığmadan yalnız 1_VIZYON_VE_CEKIRDEK "
-        "aşamasını (dizin kontrolü, veri/API temeli, özgün arayüz iskeleti ve çalışan "
-        "çekirdek akış) kurup doğrulamasını iste."
+        f"{step5_line}"
     )
 
 

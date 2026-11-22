@@ -851,4 +851,288 @@ async def test_env_single_line_flattened_multi_cookie_and_telegram_document_past
         assert "JWT ~18 dk" in sent[-1]
 
 
+@pytest.mark.asyncio
+async def test_one_hour_agent_timeout_and_telegram_devam_resume_flow() -> None:
+    """1) Varsayılan Agent tur zaman aşımı 3600 sn (1 saat) olmalı;
+       2) Yarıda kesilen 1. tur bulutta bittiğinde `resume` aynı turu tekrarlamadan
+          2. turdan devam etmeli ve mevcut sohbet ilerlemesini okumalı;
+       3) Telegram `/devam simdi` taze cURL ile ilgili koşuyu sürdürmelidir.
+    """
+    from app.api.v1.autopilot import ResumeAutopilotRequest, StartAutopilotRequest
+    from app.autopilot.agent_client import AgentSessionClient
+    from app.autopilot.max_bridge import MaxBridge
+    from app.autopilot.orchestrator import (
+        AutopilotConfig,
+        AutopilotOrchestrator,
+        AutopilotRunState,
+    )
+    from app.autopilot.prompts import build_kickoff_user_prompt
+
+    req_start = StartAutopilotRequest(
+        project_idea="Mobil komuta merkezi",
+        agent_curl=(
+            'curl "https://live.example/api/chat/019d8420-fa0b-76a8-8b2f-268c897d22a9/input" '
+            '-b "a=1"'
+        ),
+    )
+    req_resume = ResumeAutopilotRequest(
+        agent_curl=(
+            'curl "https://live.example/api/chat/019d8420-fa0b-76a8-8b2f-268c897d22a9/input" '
+            '-b "a=1"'
+        ),
+    )
+    assert req_start.agent_turn_timeout == 3600.0
+    assert req_resume.agent_turn_timeout == 3600.0
+
+    # Deploy sonrası mevcut Agent sohbetinden devam istemi kontrolü:
+    kickoff_with_existing = build_kickoff_user_prompt(
+        project_idea="Mobil komuta merkezi",
+        max_turns=8,
+        auto_turns=True,
+        existing_agent_reply="Arayüz ve /api/proxy kuruldu.",
+        existing_sandbox_evidence="Sandbox özeti: toplam 12 işlem (dosya yazma=8)",
+    )
+    assert "ÖNCEDEN YAPILAN ÇALIŞMA VAR" in kickoff_with_existing
+    assert "toplam 12 işlem" in kickoff_with_existing
+
+    # Bulutta tamamlanmış 1. turun resume sırasında otomatik kurtarılması:
+    chat_id = "019d8420-fa0b-76a8-8b2f-268c897d22a9"
+    turn2_sent_inputs: list[str] = []
+
+    def agent_mock_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == f"/api/chat/{chat_id}":
+            if not turn2_sent_inputs:
+                return httpx.Response(
+                    200,
+                    json={
+                        "id": chat_id,
+                        "triggerAddress": f"agent-runner:{chat_id}",
+                        "lastEventId": "10",
+                        "messages": [
+                            {
+                                "id": "u-1",
+                                "role": "user",
+                                "parts": [{"type": "text", "text": "t1"}],
+                            },
+                            {
+                                "id": "a-1",
+                                "role": "assistant",
+                                "metadata": {"pending": False},
+                                "parts": [
+                                    {"type": "tool-write_file", "input": {"path": "src/App.tsx"}},
+                                    {"type": "text", "text": "1. tur bulutta tamamlandı."},
+                                ],
+                            },
+                        ],
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "id": chat_id,
+                    "triggerAddress": f"agent-runner:{chat_id}",
+                    "lastEventId": "20",
+                    "messages": [
+                        {"id": "u-1", "role": "user", "parts": [{"type": "text", "text": "t1"}]},
+                        {
+                            "id": "a-1",
+                            "role": "assistant",
+                            "metadata": {"pending": False},
+                            "parts": [],
+                        },
+                        {"id": "u-2", "role": "user", "parts": [{"type": "text", "text": "t2"}]},
+                        {
+                            "id": "a-2",
+                            "role": "assistant",
+                            "metadata": {"pending": False},
+                            "parts": [
+                                {
+                                    "type": "tool-bash",
+                                    "input": {"command": "pytest"},
+                                    "output": {"exit_code": 0},
+                                },
+                                {"type": "text", "text": "2. tur ve Vercel deploy bitti."},
+                            ],
+                        },
+                    ],
+                },
+            )
+        if path == f"/api/chat/{chat_id}/input":
+            payload = json.loads(request.content.decode())
+            msg_txt = payload["payload"]["message"]["parts"][0]["text"]
+            turn2_sent_inputs.append(msg_txt)
+            return httpx.Response(200, json={"ok": True, "seq": 11})
+        if path == f"/api/chat/{chat_id}/events":
+            sse = (
+                'event: batch\n'
+                'data: {"records":[{"seq_num":20,"headers":[["trigger-control","turn-complete"]],'
+                '"body":"{}"}]}\n\n'
+            )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                content=sse.encode(),
+            )
+        return httpx.Response(404)
+
+    class _DummyMaxBridge(MaxBridge):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def account_identities(self) -> set[str]:
+            return {"max-acc-1"}
+
+        async def complete(self, *, system_prompt: str, user_prompt: str) -> str:
+            self.calls.append(user_prompt)
+            if len(self.calls) == 1:
+                return (
+                    "<DURUM>DEVAM</DURUM>\n"
+                    "<ASAMA>4_DOGRULAMA_VE_SUNUCU</ASAMA>\n"
+                    "<DEGERLENDIRME>1. tur bulutta bitmiş, doğrulamaya geçiliyor.</DEGERLENDIRME>\n"
+                    "<GUNCEL_HAFIZA>Arayüz hazır, Vercel deploy yapılacak.</GUNCEL_HAFIZA>\n"
+                    "<AJANA_MESAJ>Testleri çalıştır ve Vercel deploy tamamla.</AJANA_MESAJ>"
+                )
+            return (
+                "<DURUM>TAMAMLANDI</DURUM>\n"
+                "<ASAMA>5_KABUL</ASAMA>\n"
+                "<DEGERLENDIRME>Proje tamamlandı.</DEGERLENDIRME>\n"
+                "<GUNCEL_HAFIZA>Canlıda.</GUNCEL_HAFIZA>\n"
+                "<AJANA_MESAJ></AJANA_MESAJ>"
+            )
+
+    prev_state = AutopilotRunState(
+        run_id="auto_resume1",
+        chat_id=chat_id,
+        project_idea="Mobil komuta merkezi",
+        target_domain="live.example",
+        status="failed",
+        current_turn=1,
+        max_turns=2,
+        pending_turn=1,
+        pending_instruction="İlk çekirdek yapıyı kur.",
+        pending_evaluation="Kickoff planı",
+    )
+
+    agent_client = AgentSessionClient.from_curl(
+        f'curl "https://live.example/api/chat/{chat_id}/input" -b "a=1"',
+        turn_timeout=3600.0,
+        transport=httpx.MockTransport(agent_mock_handler),
+    )
+    bridge = _DummyMaxBridge()
+    orch = AutopilotOrchestrator(
+        config=AutopilotConfig(
+            project_idea="Mobil komuta merkezi",
+            max_turns=2,
+            min_turns_before_complete=2,
+            gap_min_seconds=0.0,
+            gap_max_seconds=0.0,
+            enable_handoff_report=False,
+            run_id="auto_resume1",
+        ),
+        agent=agent_client,
+        max_bridge=bridge,
+        resume_state=prev_state,
+    )
+    final_state = await orch.run()
+    assert final_state.status == "completed"
+    # 1. tur tekrar gönderilmedi; buluttaki a-1 kurtarılıp doğrudan 2. tur gönderildi!
+    assert len(turn2_sent_inputs) == 1
+    assert "Vercel deploy tamamla" in turn2_sent_inputs[0]
+    assert len(final_state.turns) == 2
+    assert final_state.turns[0].agent_message_id == "a-1"
+
+    # Telegram `/devam simdi` akışı:
+    sent_tg: list[str] = []
+    resume_calls: list[dict[str, Any]] = []
+
+    def tg_handler(request: httpx.Request) -> httpx.Response:
+        sent_tg.append(json.loads(request.content.decode())["text"])
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    def wrap_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        if path == "/v1/autopilot/inspect-curl":
+            return httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "target_domain": "live.example",
+                    "chat_id": chat_id,
+                    "source_endpoint_kind": "input",
+                    "same_account_conflict": False,
+                    "conflict_slots": [],
+                    "cookie_diagnostics": {"cookie_count": 2, "auth_cookie_found": True},
+                    "warnings": [],
+                },
+            )
+        if path == "/v1/autopilot/runs":
+            return httpx.Response(
+                200,
+                json={
+                    "active_count": 0,
+                    "runs": [
+                        {
+                            "run_id": "auto_X7bzGssz4vD0",
+                            "chat_id": chat_id,
+                            "project_idea": "Mobil komuta merkezi",
+                            "status": "failed",
+                        }
+                    ],
+                },
+            )
+        if path == "/v1/autopilot/runs/auto_X7bzGssz4vD0/resume":
+            body = json.loads(request.content.decode())
+            resume_calls.append(body)
+            return httpx.Response(
+                200,
+                json={
+                    "resumed": True,
+                    "run_id": "auto_X7bzGssz4vD0",
+                    "chat_id": chat_id,
+                    "agent_url": f"https://live.example/agent/{chat_id}",
+                    "status": "running",
+                    "current_turn": 1,
+                    "turn_count": 1,
+                    "max_turns": 12,
+                    "respect_night_window": False,
+                },
+            )
+        return httpx.Response(404)
+
+    tg_settings = TelegramSettings(
+        telegram_bot_token="123:TEST",
+        wrapper_base_url="https://wrapper.test",
+        wrapper_api_key="sk-test",
+        telegram_allowed_chat_ids="42",
+    )
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(tg_handler)) as tg_http,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrap_handler),
+        ) as wrap_http,
+    ):
+        bot = TelegramBot(tg_settings, tg_http, wrap_http)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/devam"})
+        assert "taze bir `/input` cURL" in sent_tg[-1]
+
+        await bot.handle_message(
+            {
+                "chat": {"id": 42},
+                "text": (
+                    f'/agent_curl curl "https://live.example/api/chat/{chat_id}/input" '
+                    '-b "a=1"'
+                ),
+            }
+        )
+        await bot.handle_message({"chat": {"id": 42}, "text": "/bitir"})
+        await bot.handle_message({"chat": {"id": 42}, "text": "/devam simdi"})
+        assert len(resume_calls) == 1
+        assert resume_calls[0]["respect_night_window"] is False
+        assert "kaldığı yerden sürdürülüyor" in sent_tg[-1]
+        assert "60 dk" in sent_tg[-1]
+
+
+
 

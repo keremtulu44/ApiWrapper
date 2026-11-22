@@ -229,6 +229,9 @@ class AutopilotRunState:
     updated_at: str = field(default_factory=_utc_iso)
     stop_reason: str = ""
     error_detail: str = ""
+    pending_turn: int = 0
+    pending_instruction: str = ""
+    pending_evaluation: str = ""
     turns: list[AutopilotTurnRecord] = field(default_factory=list)
 
     @property
@@ -269,6 +272,9 @@ class AutopilotRunState:
             updated_at=str(data.get("updated_at") or _utc_iso()),
             stop_reason=str(data.get("stop_reason") or ""),
             error_detail=str(data.get("error_detail") or ""),
+            pending_turn=int(data.get("pending_turn") or 0),
+            pending_instruction=str(data.get("pending_instruction") or ""),
+            pending_evaluation=str(data.get("pending_evaluation") or ""),
             turns=turns,
         )
 
@@ -625,12 +631,28 @@ class AutopilotOrchestrator:
                 if not completed_sleep:
                     raise MaxBridgeError("Dinlenme sırasında durdurma istendi.") from exc
 
-    async def _ask_max_for_kickoff(self) -> MaxDecision:
+    async def _ask_max_for_kickoff(
+        self,
+        *,
+        existing_reply: AgentMessage | None = None,
+    ) -> MaxDecision:
+        existing_ev = (
+            format_sandbox_evidence(existing_reply)
+            if existing_reply is not None and existing_reply.tools
+            else ""
+        )
+        existing_txt = (
+            existing_reply.text
+            if existing_reply is not None and existing_ev
+            else ""
+        )
         user_prompt = build_kickoff_user_prompt(
             project_idea=self.state.project_idea,
             max_turns=self.config.max_turns,
             min_turns=self._current_min_turns(),
             auto_turns=self.config.auto_turns,
+            existing_agent_reply=existing_txt,
+            existing_sandbox_evidence=existing_ev,
         )
         raw = await self._complete_max_safe(
             system_prompt=MAX_SYSTEM_PROMPT,
@@ -911,6 +933,43 @@ class AutopilotOrchestrator:
             connected_state = await self.agent.connect(wait_if_busy=True)
             self._emit_progress(f"Agent sohbetine bağlandı (chat_id={self.state.chat_id}).")
 
+            # Eğer önceki koşuda Agent'a talimat gönderildikten sonra (ör. zaman aşımı
+            # veya durdurma ile) bağlantı koptuysa ve Agent bulutta o turu bitirdiyse,
+            # bitmiş yanıtı `turns` defterine kaydedip aynı turu tekrarlamadan ilerle:
+            live_head = connected_state.last_assistant_message
+            known_ids = {rec.agent_message_id for rec in self.state.turns if rec.agent_message_id}
+            if (
+                self.state.pending_turn > len(self.state.turns)
+                and self.state.pending_instruction.strip()
+                and live_head is not None
+                and not live_head.pending
+                and live_head.id not in known_ids
+            ):
+                rec_ev = format_sandbox_evidence(live_head)
+                rec_bash = sum(1 for t in live_head.tools if t.tool_name == "bash")
+                rec_err = sum(1 for t in live_head.tools if t.is_error)
+                self.state.turns.append(
+                    AutopilotTurnRecord(
+                        turn=self.state.pending_turn,
+                        phase=self.state.current_phase,
+                        max_status="DEVAM",
+                        max_evaluation=self.state.pending_evaluation,
+                        sent_to_agent=self.state.pending_instruction,
+                        agent_message_id=live_head.id,
+                        agent_reply_text=live_head.text,
+                        sandbox_evidence=rec_ev,
+                        tool_count=len(live_head.tools),
+                        bash_count=rec_bash,
+                        error_tool_count=rec_err,
+                        duration_seconds=live_head.duration_seconds or 0.0,
+                        completed_at=_utc_iso(),
+                    )
+                )
+                self.state.pending_turn = 0
+                self.state.pending_instruction = ""
+                self.state.pending_evaluation = ""
+                self._persist_state()
+
             # Devam (resume) modunda önceki turun son ajan cevabından karar üreterek başla;
             # sıfırdan başlıyorsak 1. tur kickoff talimatını üret ve Akşam Planını gönder.
             next_decision: MaxDecision | None = None
@@ -924,7 +983,9 @@ class AutopilotOrchestrator:
 
             if start_turn == 1:
                 self._emit_progress("Tur 1: Max akşam proje planını ve ilk talimatı hazırlıyor...")
-                next_decision = await self._ask_max_for_kickoff()
+                next_decision = await self._ask_max_for_kickoff(
+                    existing_reply=connected_state.last_assistant_message
+                )
                 self.state.evening_plan = (
                     next_decision.evening_plan.strip()
                     or next_decision.updated_memory.strip()
@@ -1046,6 +1107,11 @@ class AutopilotOrchestrator:
                 if self._stop_requested:
                     return await self._finish_stopped("Kullanıcı tarafından durduruldu.")
 
+                self.state.pending_turn = turn
+                self.state.pending_instruction = next_decision.message_to_agent.strip()
+                self.state.pending_evaluation = next_decision.evaluation
+                self._persist_state()
+
                 t0 = time.monotonic()
                 self._emit_progress(
                     f"Tur {turn}/{self.config.max_turns} [{self.state.current_phase}]: "
@@ -1077,6 +1143,10 @@ class AutopilotOrchestrator:
                     completed_at=_utc_iso(),
                 )
                 self.state.turns.append(record)
+                self.state.pending_turn = 0
+                self.state.pending_instruction = ""
+                self.state.pending_evaluation = ""
+                self._persist_state()
                 self._emit_progress(
                     f"Tur {turn} Agent yanıtı alındı ({elapsed:.1f} sn, "
                     f"{len(agent_reply.tools)} araç çağrısı)."
