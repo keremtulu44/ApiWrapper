@@ -350,30 +350,86 @@ class TelegramBot:
                     status_code=response.status_code,
                 )
 
+    async def _download_text_document(self, document: dict[str, Any]) -> str | None:
+        """Telegram'ın uzun yapıştırmaları `.txt` dosyasına çevirdiği durumları okur."""
+        file_id = document.get("file_id")
+        file_size = int(document.get("file_size") or 0)
+        file_name = str(document.get("file_name") or "").lower()
+        mime_type = str(document.get("mime_type") or "").lower()
+        if not isinstance(file_id, str) or not file_id.strip():
+            return None
+        if file_size > _MAX_CURL_BUFFER_CHARS:
+            return None
+        if (
+            file_name
+            and not file_name.endswith((".txt", ".curl", ".sh", ".cmd", ".bat"))
+            and not mime_type.startswith("text/")
+        ):
+            return None
+        try:
+            meta_resp = await self.telegram.get(
+                f"{self.telegram_api_url}/getFile",
+                params={"file_id": file_id.strip()},
+            )
+            if meta_resp.status_code != 200:
+                return None
+            result = meta_resp.json().get("result") or {}
+            file_path = str(result.get("file_path") or "").strip()
+            if not file_path:
+                return None
+            token = self.settings.telegram_bot_token.strip()
+            file_resp = await self.telegram.get(
+                f"https://api.telegram.org/file/bot{token}/{file_path}"
+            )
+            if file_resp.status_code != 200:
+                return None
+            return file_resp.content[:_MAX_CURL_BUFFER_CHARS].decode(
+                "utf-8-sig", errors="replace"
+            )
+        except (httpx.HTTPError, ValueError) as exc:
+            logger.warning(
+                "telegram_document_fetch_failed", error_type=type(exc).__name__
+            )
+            return None
+
     async def handle_message(self, message: dict[str, Any]) -> None:
         chat = message.get("chat")
-        raw_text = message.get("text")
-        if not isinstance(chat, dict) or not isinstance(raw_text, str):
+        if not isinstance(chat, dict):
             return
         chat_id = chat.get("id")
         if not isinstance(chat_id, int):
             return
-        text = raw_text.strip()
-        if not text:
+
+        raw_text = message.get("text")
+        document = message.get("document")
+        if not isinstance(raw_text, str) and not isinstance(document, dict):
             return
 
         allowed = self.settings.allowed_chat_ids
         if not allowed:
             # İlk açılışta kim olduğunu öğrenmek güvenli; wrapper kotası kapalı.
-            await self.send_text(
-                chat_id,
-                "Kurulum gerekli: bu sohbetin chat ID'si "
-                f"{chat_id}. Bunu TELEGRAM_ALLOWED_CHAT_IDS değişkenine ekleyip "
-                "botu yeniden başlatın. Allowlist boşken wrapper'a istek gönderilmez.",
-            )
+            if isinstance(raw_text, str) and raw_text.strip():
+                await self.send_text(
+                    chat_id,
+                    "Kurulum gerekli: bu sohbetin chat ID'si "
+                    f"{chat_id}. Bunu TELEGRAM_ALLOWED_CHAT_IDS değişkenine ekleyip "
+                    "botu yeniden başlatın. Allowlist boşken wrapper'a istek gönderilmez.",
+                )
             return
         if chat_id not in allowed:
             logger.warning("telegram_message_ignored", reason="chat_not_allowed")
+            return
+
+        if not isinstance(raw_text, str) and isinstance(document, dict):
+            doc_text = await self._download_text_document(document)
+            if not doc_text or not doc_text.strip():
+                return
+            caption = str(message.get("caption") or "").strip()
+            raw_text = f"{caption}\n{doc_text}" if caption else doc_text
+
+        assert isinstance(raw_text, str)
+        text = raw_text.strip()
+        if not text:
             return
 
         parts = text.split(maxsplit=1)
@@ -866,6 +922,24 @@ class TelegramBot:
                 "cURL sözdizimi geçerli olduğu için kaydedildi."
             )
         warn_block = ("\n⚠️ Not: " + " ".join(warnings)) if warnings else ""
+        rem_s = cookie_diag.get("token_remaining_seconds")
+        ttl_txt = (
+            f", JWT ~{max(1, int(rem_s) // 60)} dk"
+            if isinstance(rem_s, int) and rem_s > 0
+            else ""
+        )
+        chunk_indices = cookie_diag.get("auth_chunk_indices") or []
+        chunks_txt = (
+            f"parçalar: {chunk_indices}"
+            if chunk_indices
+            else ("auth: var" if cookie_diag.get("auth_cookie_found") else "auth: YOK")
+        )
+        cookie_line = (
+            f"\n• Çerez: {cookie_diag.get('cookie_count', 0)} adet "
+            f"({chunks_txt}{ttl_txt})"
+            if cookie_diag
+            else ""
+        )
         live_badge = ""
         if live_checked and live_ok is True:
             msg_cnt = data.get("live_message_count", 0)
@@ -874,16 +948,7 @@ class TelegramBot:
                 if data.get("cookie_rotated_on_probe")
                 else ""
             )
-            rem_s = cookie_diag.get("token_remaining_seconds")
-            ttl_txt = (
-                f" · JWT ~{max(1, int(rem_s) // 60)} dk"
-                if isinstance(rem_s, int) and rem_s > 0
-                else ""
-            )
-            live_badge = (
-                f"\n• Canlı Oturum: 🟢 200 OK ({msg_cnt} mesaj{rot_txt}{ttl_txt}"
-                " · 8 dk koruma aktif)"
-            )
+            live_badge = f"\n• Canlı Oturum: 🟢 200 OK ({msg_cnt} mesaj{rot_txt})"
         turn_label = (
             f"Otomatik (Max projeye göre belirler, güvenlik tavanı: {sess.max_turns})"
             if sess.auto_turns
@@ -899,6 +964,7 @@ class TelegramBot:
             f"✅ Agent cURL doğrulandı ({chunk_count} parça birleştirildi)!\n"
             f"• Agent Sohbet: {sess.validated_chat_id}\n"
             f"• Kaynak Türü: {data.get('source_endpoint_kind', 'unknown')}"
+            f"{cookie_line}"
             f"{live_badge}\n"
             f"• Tur Planı: {turn_label}\n"
             f"• Çalışma Zamanı: {schedule_label}"

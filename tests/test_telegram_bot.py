@@ -714,3 +714,141 @@ async def test_telegram_blocks_dead_agent_session_and_supports_temizle_commands(
         assert bot._session(42).mode == "idle"
 
 
+@pytest.mark.asyncio
+async def test_env_single_line_flattened_multi_cookie_and_telegram_document_paste() -> None:
+    """1) Render tek satırlık env kutusunda `\\n` silinmiş ve çoklu `-H 'cookie:'`
+          taşıyan `UPSTREAM_CURL` açılışta eksiksiz birleştirilmeli;
+       2) Telegram'da `'` ile `\\` arasından bölünen veya `.txt` dosyası olarak
+          gelen Agent cURL'ü kayıpsız okunmalıdır.
+    """
+    import base64
+    import time
+
+    from app.autopilot.curl_parse import parse_agent_curl, reassemble_agent_curl_chunks
+    from app.core.config import Settings
+    from app.main import create_app
+
+    exp = int(time.time()) + 1200
+    jwt_hdr = base64.urlsafe_b64encode(b'{"alg":"HS256","typ":"JWT"}').decode().rstrip("=")
+    jwt_pay = (
+        base64.urlsafe_b64encode(f'{{"sub":"u-mob-9","exp":{exp}}}'.encode())
+        .decode()
+        .rstrip("=")
+    )
+    tok = f"{jwt_hdr}.{jwt_pay}.sig"
+    sess_json = json.dumps(
+        {"access_token": tok, "refresh_token": "rt_valid_mobile_999", "user": {"id": "u-mob-9"}}
+    )
+    b64_full = "base64-" + base64.urlsafe_b64encode(sess_json.encode()).decode().rstrip("=")
+    mid = len(b64_full) // 2
+
+    # 1) Render Env tek satır kutusuna yapıştırılmış (`\n` -> boşluk olmuş) + 2 ayrı `-H 'cookie:'`
+    flattened_env_curl = (
+        "curl 'https://live.example/nextjs-api/stream/create-evaluation' \\   "
+        "-H 'accept: */*' \\   "
+        f"-H 'cookie: arena-auth-prod-v1.0={b64_full[:mid]}' \\   "
+        f"-H 'cookie: arena-auth-prod-v1.1={b64_full[mid:]}; cf_clearance=ok' \\   "
+        "--data-raw '{\"id\":\"019d8420-fa0b-76a8-8b2f-268c897d22a9\","
+        "\"mode\":\"direct\",\"modelAId\":\"m-1\",\"recaptchaV3Token\":\"rc-1\"}'"
+    )
+    app = create_app(
+        Settings(
+            _env_file=None,
+            api_keys=["sk-test"],
+            upstream_curl=flattened_env_curl,
+        )
+    )
+    loaded_cookie = app.state.settings.upstream_cookie
+    assert f"arena-auth-prod-v1.0={b64_full[:mid]}" in loaded_cookie
+    assert f"arena-auth-prod-v1.1={b64_full[mid:]}" in loaded_cookie
+    assert "cf_clearance=ok" in loaded_cookie
+
+    # 2) Telegram `'` ve `\` arasındaki boşluktan + base64 ortasından böldüğünde:
+    part1 = (
+        "curl 'https://live.example/api/chat/019d8420-fa0b-76a8-8b2f-268c897d22a9/input'"
+    )
+    part2 = (
+        f"\\ -H 'accept: */*' -H 'cookie: arena-auth-prod-v1.0={b64_full[:mid]}; "
+        f"arena-auth-prod-v1.1={b64_full[mid:mid + 12]}"
+    )
+    part3 = (
+        f"{b64_full[mid + 12:]}' "
+        "--data-raw '{\"kind\":\"message\","
+        "\"payload\":{\"metadata\":{\"recaptchaV3Token\":\"rc\"}}}'"
+    )
+    joined_agent = reassemble_agent_curl_chunks([part1, part2, part3])
+    parsed_agent = parse_agent_curl(joined_agent)
+    assert parsed_agent.account_identity() == "u-mob-9"
+    assert not parsed_agent.warnings
+
+    # 3) Telegram uzun yapıştırmayı `clipboard.txt` (`document`) olarak gönderirse:
+    sent: list[str] = []
+    inspected: list[str] = []
+    file_bytes = joined_agent.encode("utf-8")
+
+    def tg_doc_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path.endswith("/getFile"):
+            return httpx.Response(
+                200, json={"ok": True, "result": {"file_path": "documents/clipboard.txt"}}
+            )
+        if "/file/bot" in request.url.path:
+            return httpx.Response(200, content=file_bytes)
+        sent.append(json.loads(request.content.decode())["text"])
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    def wrap_doc_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        inspected.append(body["agent_curl"])
+        return httpx.Response(
+            200,
+            json={
+                "valid": True,
+                "target_domain": "live.example",
+                "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                "source_endpoint_kind": "input",
+                "same_account_conflict": False,
+                "conflict_slots": [],
+                "cookie_diagnostics": {
+                    "cookie_count": 2,
+                    "auth_cookie_found": True,
+                    "auth_chunk_indices": [0, 1],
+                    "token_remaining_seconds": 1080,
+                    "problems": [],
+                },
+                "warnings": [],
+            },
+        )
+
+    settings = TelegramSettings(
+        telegram_bot_token="123:TEST",
+        wrapper_base_url="https://wrapper.test",
+        wrapper_api_key="sk-test",
+        telegram_allowed_chat_ids="42",
+    )
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(tg_doc_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrap_doc_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(settings, telegram, wrapper)
+        await bot.handle_message(
+            {
+                "chat": {"id": 42},
+                "caption": "/agent_curl",
+                "document": {
+                    "file_id": "doc-1",
+                    "file_name": "clipboard.txt",
+                    "mime_type": "text/plain",
+                    "file_size": len(file_bytes),
+                },
+            }
+        )
+        await bot.handle_message({"chat": {"id": 42}, "text": "/bitir"})
+        assert len(inspected) == 1
+        assert "parçalar: [0, 1]" in sent[-1]
+        assert "JWT ~18 dk" in sent[-1]
+
+
+

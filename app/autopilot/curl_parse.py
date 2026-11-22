@@ -544,11 +544,15 @@ def _smart_join_two_curl_chunks(prev: str, curr: str) -> str:
         p_no_nl == "curl \\" or p_no_nl == "curl ^"
     ):
         return f"{p_no_nl}\n{c_no_nl}"
-    # 2) Önceki argüman kapanmış (`'` / `"` / `--compressed`) ve yeni bayrak/URL başlıyorsa
+    # 2) Önceki argüman kapanmış (`'` / `"` / `--compressed`) ve yeni bayrak/devam başlıyorsa
     if c_trim.startswith("-") and (
         p_trim.endswith(("'", '"')) or p_trim.endswith("--compressed")
     ):
         return f"{p_no_nl}\n{c_no_nl}"
+    if c_trim.startswith(("\\", "^", "`")) and (
+        p_trim.endswith(("'", '"')) or p_trim.endswith("--compressed")
+    ):
+        return f"{p_no_nl} {c_no_nl}"
     if p_trim.endswith("--compressed") and c_trim.startswith(
         ("'", '"', "http://", "https://")
     ):
@@ -584,17 +588,22 @@ def _build_curl_join_candidates(chunks: list[str]) -> list[str]:
     # orijinal panodaki metni bayt-bayt (satır sonları dahil) korur.
     raw_concat = "".join(non_empty)
     direct = "".join(c.strip("\r\n") for c in non_empty)
+    trimmed_concat = "".join(c.strip(" \t\r\n") for c in non_empty)
     with_newlines = "\n".join(c.strip("\r\n") for c in non_empty)
     with_spaces = " ".join(c.strip() for c in non_empty)
 
     candidates: list[str] = []
-    for cand in (smart, raw_concat, direct, with_newlines, with_spaces):
+    for cand in (raw_concat, smart, direct, trimmed_concat, with_newlines, with_spaces):
         if cand and cand not in candidates:
             candidates.append(cand)
     return candidates
 
 
 _AUTH_CHUNK_NAME_RE = re.compile(r"^(?P<base>.*auth.*)\.(?P<idx>\d+)$", flags=re.IGNORECASE)
+_COOKIE_FLAG_COUNT_RE = re.compile(
+    r"(?:^|\s)(?:-b|--cookie)(?:=|\s)|(?:^|\s)(?:-H|--header)(?:=|\s+)(?:\$'|['\"\^])*cookie\s*:",
+    flags=re.IGNORECASE,
+)
 
 
 def inspect_agent_cookie_health(cookie: str, access_token: str = "") -> dict[str, Any]:
@@ -629,37 +638,31 @@ def inspect_agent_cookie_health(cookie: str, access_token: str = "") -> dict[str
     token = resolve_bearer_token(explicit_token=access_token, cookie_header=cookie)
     claims = decode_jwt_claims(token) if token else {}
     jwt_found = bool(claims)
-    # Birleştirilmiş Supabase oturum JSON'unda `refresh_token` varlığını (değerini değil!)
-    # kontrol et; `refresh_token` varsa sayfa ısıtmasıyla `Set-Cookie` rotasyonu alınabilir.
+    # Birleştirilmiş Supabase oturum JSON'unda hem tam JSON bütünlüğünü hem de
+    # `refresh_token` varlığını (değerini değil!) doğrula; `.0` + `.1` parçalarından
+    # biri eksik ya da 4096 kesiminde bozulmuşsa base64/JSON çözümü başarısız olur:
     from app.upstream.auth import _try_b64_decode, merge_chunked_cookies
 
     merged_cookies = merge_chunked_cookies(cookies)
     has_refresh_token = False
     for cname, cval in merged_cookies.items():
+        if _AUTH_CHUNK_NAME_RE.match(cname):
+            # Ham `.0` / `.1` yarı parçalarını atla; yalnız birleştirilmiş tam tabanı denetle
+            continue
         if "auth" in cname.lower() and cval.startswith("base64-"):
             decoded = _try_b64_decode(cval[len("base64-") :])
-            if decoded and '"refresh_token"' in decoded:
-                try:
-                    sess_obj = json.loads(decoded)
-                    if isinstance(sess_obj, dict) and bool(
-                        str(sess_obj.get("refresh_token") or "").strip()
-                    ):
-                        has_refresh_token = True
-                except ValueError:
-                    pass
-
-    # Yalnızca parçalı `.0` gelip `.1` eksik kaldığında base64 JSON yarım kalır;
-    # `_salvage_truncated_b64` JWT'yi kurtarsa bile çerezin kendisi eksik parçalıdır:
-    for base, indices in chunk_groups.items():
-        if sorted(set(indices)) == [0]:
-            val0 = cookies.get(f"{base}.0", "")
-            # ~3000+ karakterlik tek `.0` parçası genelde 4 KB sınırında bölünmüş demektir
-            if (
-                len(val0) >= 2800
-                and val0.startswith("base64-")
-                and _try_b64_decode(val0[len("base64-") :]) is None
-            ):
+            if decoded is None:
                 incomplete_auth_chunks = True
+                continue
+            try:
+                sess_obj = json.loads(decoded)
+            except ValueError:
+                incomplete_auth_chunks = True
+                continue
+            if isinstance(sess_obj, dict) and bool(
+                str(sess_obj.get("refresh_token") or "").strip()
+            ):
+                has_refresh_token = True
 
     rem_raw = token_seconds_remaining(token) if token else None
     rem_sec = int(round(rem_raw)) if rem_raw is not None else None
@@ -676,10 +679,10 @@ def inspect_agent_cookie_health(cookie: str, access_token: str = "") -> dict[str
         missing_txt = (
             f", eksik parçalar: {missing_chunk_indices}"
             if missing_chunk_indices
-            else ", devam parçası (.1) eksik"
+            else ", devam parçası (.1) eksik veya bozuk"
         )
         problems.append(
-            f"Parçalı oturum çerezi eksik kopyalanmış (görülen parçalar: "
+            f"Parçalı oturum çerezi eksik/bozuk kopyalanmış (görülen parçalar: "
             f"{auth_chunk_indices}{missing_txt}). "
             "Hedef buna HTTP 401 döner; cURL'ü yeniden eksiksiz kopyalayın."
         )
@@ -712,9 +715,10 @@ def reassemble_agent_curl_chunks(
 ) -> str:
     """Telegram gibi mesaj boyutu sınırlı kanallardan gelen çok parçalı Agent cURL'ünü birleştirir.
 
-    Önce sınır-duyarlı akıllı birleştirmeyi ve ham birleştirmeyi üretir, ardından
-    alternatiflerle birlikte `parse_agent_curl` üzerinden puanlayarak JSON gövdesi,
-    çerez ve `recaptchaV3Token` bütünlüğünü en iyi koruyan adayı döndürür.
+    Önce ham dilimlemeyi ve sınır-duyarlı akıllı birleştirmeyi üretir, ardından
+    alternatiflerle birlikte `parse_agent_curl` + `inspect_agent_cookie_health`
+    üzerinden puanlayarak JSON gövdesi, parçalı çerez (`.0` + `.1`), başlık sayısı
+    ve `recaptchaV3Token` bütünlüğünü en iyi koruyan adayı döndürür.
     """
     candidates = _build_curl_join_candidates(chunks)
     if not candidates:
@@ -723,21 +727,26 @@ def reassemble_agent_curl_chunks(
         return candidates[0]
 
     best_cand = candidates[0]
-    best_score: tuple[int, int, int, int, int, int, int] | None = None
+    best_score: tuple[int, int, int, int, int, int, int, int, int, int] | None = None
     for idx, cand in enumerate(candidates):
         try:
+            raw_parsed = parse_raw_agent_curl(cand)
             cfg = parse_agent_curl(cand, chat_id_override=chat_id_override)
         except ValueError:
-            score = (0, 0, 0, 0, 0, 0, -idx)
+            score = (0, 0, 0, 0, 0, 0, 0, 0, 0, -idx)
         else:
             health = inspect_agent_cookie_health(cfg.cookie, cfg.access_token)
+            header_count = len(raw_parsed.get("headers") or {})
             score = (
                 1,
                 int(not health["incomplete_auth_chunks"]),
+                int(health["has_refresh_token"]),
                 int(bool(cfg.account_identity())),
+                int(health["cookie_count"]),
                 -len(cfg.warnings),
                 int(bool(cfg.recaptcha_token)),
                 int(bool(cfg.last_user_message_id)),
+                header_count,
                 -idx,
             )
         if best_score is None or score > best_score:
@@ -754,19 +763,23 @@ def _quote_for_upstream_curl_import(value: str) -> str:
 
 
 def normalize_windows_cmd_curl_for_upstream(raw: str) -> str:
-    """Windows CMD (`^"`), Android/Chromium ANSI-C (`$'...'`) ve `'\\''` kaçışlarını çözer.
+    """Windows CMD (`^"`), Android/Chromium ANSI-C (`$'...'`), `'\\''`, tek satıra
+    düzleştirilmiş `\\ -H` (Render env kutusu) ve çoklu `-H 'cookie:'` bayraklarını çözer.
 
-    Standart Bash cURL'lerine hiç dokunmaz; yalnızca `app.upstream.curl_import`
-    modülünün doğrudan çözemediği CMD `^"`, Bash `$'...'` / `'...\\''...'` veya
-    mobil pano görünmez karakterleri bulunduğunda kayıpsız standart biçime dönüştürür.
+    Standart tek çerezli Bash cURL'lerine hiç dokunmaz; yalnızca `app.upstream.curl_import`
+    modülünün doğrudan çözemediği biçimler bulunduğunda kayıpsız standart biçime dönüştürür.
     """
     if not raw:
         return raw
     cleaned = _clean_pasted_artifacts(raw)
+    has_multi_cookie_flags = len(_COOKIE_FLAG_COUNT_RE.findall(cleaned)) > 1
+    has_flattened_continuations = bool(re.search(r"[ \t]\\[ \t]*(?=-)", cleaned))
     needs_rewrite = (
         is_windows_cmd_curl(cleaned)
         or "$'" in cleaned
         or r"'\''" in cleaned
+        or has_multi_cookie_flags
+        or has_flattened_continuations
     )
     if not needs_rewrite:
         # Standart Bash biçimindeyse ama `curl_import.parse_curl` gövdeyi okuyamadıysa
@@ -804,8 +817,8 @@ def reassemble_upstream_curl_chunks(chunks: list[str]) -> str:
     """Telegram'ın böldüğü çok parçalı `max` (`create-evaluation`) cURL'ünü kayıpsız birleştirir.
 
     Hem Bash (`Copy as cURL (bash)`) hem Windows CMD (`Copy as cURL (cmd)`) girdilerini
-    destekler. Her aday `parse_curl` + `build_settings` + JSON gövde ve JWT kimlik
-    kontrolünden geçirilerek en eksiksiz sonuç seçilir.
+    destekler. Her aday `parse_curl` + `build_settings` + parçalı çerez, JSON gövde ve
+    JWT kimlik kontrolünden geçirilerek en eksiksiz sonuç seçilir.
     """
     raw_candidates = _build_curl_join_candidates(chunks)
     if not raw_candidates:
@@ -815,13 +828,13 @@ def reassemble_upstream_curl_chunks(chunks: list[str]) -> str:
         return candidates[0]
 
     best_cand = candidates[0]
-    best_score: tuple[int, int, int, int, int, int] | None = None
+    best_score: tuple[int, int, int, int, int, int, int, int, int] | None = None
     for idx, cand in enumerate(candidates):
         try:
             parsed = parse_curl(cand)
             env, warnings, _model_id = build_settings(parsed)
         except Exception:
-            score = (0, 0, 0, 0, 0, -idx)
+            score = (0, 0, 0, 0, 0, 0, 0, 0, -idx)
         else:
             critical = any(w.startswith("KRİTİK") for w in warnings)
             has_url = bool(env.get("TARGET_DOMAIN") and env.get("UPSTREAM_STREAM_PATH"))
@@ -829,14 +842,18 @@ def reassemble_upstream_curl_chunks(chunks: list[str]) -> str:
             token = env.get("UPSTREAM_ACCESS_TOKEN", "")
             has_auth = bool(cookie or token)
             valid = int(has_url and has_auth and not critical)
+            health = inspect_agent_cookie_health(cookie, token)
             body_ok = int(bool(load_body(str(parsed.get("body") or ""))))
             has_captcha = int(bool(env.get("RECAPTCHA_STATIC_TOKEN")))
             has_sub = int(bool(extract_identity_subject(cookie, token)))
             score = (
                 valid,
+                int(not health["incomplete_auth_chunks"]),
+                int(health["has_refresh_token"]),
                 body_ok,
                 has_captcha,
                 has_sub,
+                int(health["cookie_count"]),
                 -len(warnings),
                 -idx,
             )
