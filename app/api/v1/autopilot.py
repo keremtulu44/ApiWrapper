@@ -91,6 +91,13 @@ class StopAllAutopilotRunsRequest(BaseModel):
     force: bool = True
 
 
+class ResumeAutopilotRequest(BaseModel):
+    agent_curl: str = Field(..., min_length=20)
+    respect_night_window: bool | None = None
+    max_turns: int | None = Field(default=None, ge=1, le=25)
+    agent_turn_timeout: float = Field(default=3600.0, ge=60.0, le=7200.0)
+
+
 class StartAutopilotRequest(BaseModel):
     project_idea: str = Field(..., min_length=5, max_length=20000)
     agent_curl: str = Field(..., min_length=20)
@@ -102,7 +109,7 @@ class StartAutopilotRequest(BaseModel):
     night_end_hour: int = Field(default=7, ge=0, le=23)
     gap_min_seconds: float = Field(default=15.0, ge=0.0, le=120.0)
     gap_max_seconds: float = Field(default=30.0, ge=0.0, le=180.0)
-    agent_turn_timeout: float = Field(default=1500.0, ge=60.0, le=3600.0)
+    agent_turn_timeout: float = Field(default=3600.0, ge=60.0, le=7200.0)
     max_mode: Literal["in_process", "external_http", "direct_curl"] = "in_process"
     max_base_url: str = ""
     max_api_key: str = ""
@@ -343,6 +350,47 @@ async def start_autopilot_run_now(run_id: str, request: Request) -> dict[str, An
         "run_id": state.run_id,
         "status": state.status,
         "bypassed_night_window": True,
+    }
+
+
+@router.post("/autopilot/runs/{run_id}/resume")
+async def resume_autopilot_run(
+    run_id: str,
+    body: ResumeAutopilotRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """Yarıda kalmış bir otopilot koşusunu taze Agent cURL'üyle kaldığı yerden sürdürür."""
+    manager = _get_manager(request)
+    completion_service = getattr(request.app.state, "completion_service", None)
+    alerter = getattr(request.app.state, "alerter", None)
+    try:
+        state = manager.resume_run(
+            run_id,
+            agent_curl=body.agent_curl,
+            respect_night_window=body.respect_night_window,
+            max_turns=body.max_turns,
+            agent_turn_timeout=body.agent_turn_timeout,
+            in_process_service=completion_service,
+            alerter=alerter,
+        )
+    except SameAccountError as exc:
+        raise InvalidRequestError(str(exc), param="agent_curl") from exc
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc), param="agent_curl") from exc
+
+    if state is None:
+        raise ModelNotFoundError(f"Autopilot run '{run_id}' bulunamadı.", param="run_id")
+
+    return {
+        "resumed": True,
+        "run_id": state.run_id,
+        "chat_id": state.chat_id,
+        "agent_url": state.agent_url,
+        "status": state.status,
+        "current_turn": state.current_turn,
+        "turn_count": len(state.turns),
+        "max_turns": state.max_turns,
+        "respect_night_window": state.respect_night_window,
     }
 
 

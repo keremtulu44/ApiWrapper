@@ -125,7 +125,7 @@ class AutopilotManager:
         night_end_hour: int = 7,
         gap_min_seconds: float = 15.0,
         gap_max_seconds: float = 30.0,
-        agent_turn_timeout: float = 1500.0,
+        agent_turn_timeout: float = 3600.0,
         max_mode: Literal["in_process", "external_http", "direct_curl"] = "in_process",
         in_process_service: CompletionService | None = None,
         external_max_url: str = "",
@@ -239,6 +239,148 @@ class AutopilotManager:
         holder["item"] = managed
         self._runs[orch.state.run_id] = managed
         self._order.append(orch.state.run_id)
+        return orch.state
+
+    def resume_run(
+        self,
+        run_id: str,
+        *,
+        agent_curl: str,
+        respect_night_window: bool | None = None,
+        max_turns: int | None = None,
+        agent_turn_timeout: float = 3600.0,
+        in_process_service: CompletionService | None = None,
+        alerter: TelegramAlerter | None = None,
+    ) -> AutopilotRunState | None:
+        """Yarıda kalmış (`failed` / `stopped` / `max_turns_reached`) bir koşuyu
+        taze Agent cURL'üyle hafıza ve tur geçmişini koruyarak kaldığı yerden sürdürür.
+        """
+        existing = self._runs.get(run_id)
+        if existing is None:
+            return None
+        if not existing.task.done():
+            raise ValueError(
+                f"'{run_id}' zaten çalışıyor veya gece sırasında bekliyor."
+            )
+        prev_orch = existing.orchestrator
+        prev_state = prev_orch.state
+        if prev_state.status == "completed":
+            raise ValueError(f"'{run_id}' zaten tamamlanmış durumda.")
+        if self.active_count() >= self.max_concurrent_runs:
+            raise ValueError(
+                f"Aynı anda en fazla {self.max_concurrent_runs} otopilot koşusu "
+                "kuyrukta/aktif olabilir."
+            )
+
+        agent = AgentSessionClient.from_curl(
+            agent_curl,
+            turn_timeout=agent_turn_timeout,
+        )
+        if prev_state.chat_id and agent.config.chat_id != prev_state.chat_id:
+            raise ValueError(
+                f"Gönderilen cURL farklı bir Agent sohbetine ({agent.config.chat_id}) ait; "
+                f"'{run_id}' koşusunu sürdürmek için {prev_state.chat_id} sohbetinden "
+                "alınmış taze cURL kullanın."
+            )
+
+        if in_process_service is not None:
+            bridge: MaxBridge = InProcessMaxBridge(in_process_service)
+        else:
+            bridge = prev_orch.max_bridge
+
+        prev_cfg = prev_orch.config
+        eff_max_turns = max_turns if max_turns is not None else prev_cfg.max_turns
+        eff_night = (
+            respect_night_window
+            if respect_night_window is not None
+            else prev_cfg.respect_night_window
+        )
+        cfg = AutopilotConfig(
+            project_idea=prev_state.project_idea,
+            max_turns=eff_max_turns,
+            auto_turns=prev_cfg.auto_turns,
+            min_turns_before_complete=prev_cfg.min_turns_before_complete,
+            respect_night_window=eff_night,
+            night_start_hour=prev_cfg.night_start_hour,
+            night_end_hour=prev_cfg.night_end_hour,
+            gap_min_seconds=prev_cfg.gap_min_seconds,
+            gap_max_seconds=prev_cfg.gap_max_seconds,
+            run_id=prev_state.run_id,
+        )
+
+        prev_state.status = "starting"
+        prev_state.stop_reason = ""
+        prev_state.error_detail = ""
+        eff_alerter = alerter if alerter is not None else prev_orch.alerter
+
+        holder: dict[str, ManagedRun] = {}
+
+        def _on_progress(_state: AutopilotRunState, note: str) -> None:
+            managed_item = holder.get("item")
+            if managed_item is not None:
+                managed_item.last_note = note
+
+        def _schedule_morning(rid: str, report_text: str, delay_seconds: float) -> None:
+            if eff_alerter is None or not eff_alerter.enabled:
+                return
+            old_task = self._morning_tasks.pop(rid, None)
+            if old_task is not None and not old_task.done():
+                old_task.cancel()
+
+            async def _deliver() -> None:
+                try:
+                    await asyncio.sleep(delay_seconds)
+                    for chunk in split_notification_chunks(report_text):
+                        await eff_alerter.send(chunk, label="autopilot_morning")
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    logger.warning(
+                        "autopilot_morning_report_send_failed",
+                        run_id=rid,
+                        error_type=type(exc).__name__,
+                    )
+                finally:
+                    self._morning_tasks.pop(rid, None)
+
+            self._morning_tasks[rid] = asyncio.create_task(
+                _deliver(), name=f"autopilot-morning-{rid}"
+            )
+
+        orch = AutopilotOrchestrator(
+            config=cfg,
+            agent=agent,
+            max_bridge=bridge,
+            alerter=eff_alerter,
+            on_progress=_on_progress,
+            resume_state=prev_state,
+            execution_semaphore=self._night_semaphore,
+            morning_dispatcher=_schedule_morning,
+        )
+        orch._verify_separate_accounts()
+
+        async def _runner() -> AutopilotRunState:
+            try:
+                return await orch.run()
+            except asyncio.CancelledError:
+                logger.info("autopilot_background_run_cancelled", run_id=orch.state.run_id)
+                return orch.state
+            except Exception as exc:
+                logger.warning(
+                    "autopilot_background_run_stopped_with_error",
+                    run_id=orch.state.run_id,
+                    error_type=type(exc).__name__,
+                )
+                return orch.state
+
+        task = asyncio.create_task(_runner(), name=f"autopilot-{orch.state.run_id}")
+        managed = ManagedRun(
+            orchestrator=orch,
+            task=task,
+            last_note="Kaldığı yerden yeniden başlatıldı",
+        )
+        holder["item"] = managed
+        self._runs[prev_state.run_id] = managed
         return orch.state
 
     def stop_run(

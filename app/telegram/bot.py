@@ -51,6 +51,7 @@ _HELP = (
     "• /tur oto | /tur <1-25> — Otomatik tur (Max projeye göre seçer) veya sabit tavan\n"
     "• /gece — Yalnız 22:00–07:00 (TR) arasında çalıştır (varsayılan)\n"
     "• /simdi [run_id] — 22:00'yi beklemeden hemen çalıştır / sıradaki projeyi uyandır\n"
+    "• /devam [run_id] [simdi] — Taze cURL sonrası yarıda kalan projeyi kaldığı yerden sürdür\n"
     "• /projeler (veya /durum) — Çalışan, sırada bekleyen ve biten projeleri listele\n"
     "• /durum <run_id> — Seçilen projenin tur/hafıza detayını ve Agent linkini gör\n"
     "• /rapor [run_id] — Akşam planını ve Agent sabah teslim özetini gör\n"
@@ -85,6 +86,8 @@ _KNOWN_BOT_COMMANDS: frozenset[str] = frozenset(
         "/gece",
         "/simdi",
         "/hemen",
+        "/devam",
+        "/resume",
         "/proje",
         "/baslat",
         "/projeler",
@@ -494,6 +497,9 @@ class TelegramBot:
                 return
             if command in {"/simdi", "/hemen"}:
                 await self._handle_start_now(chat_id, sess, arg)
+                return
+            if command in {"/devam", "/resume"}:
+                await self._handle_resume_command(chat_id, sess, arg)
                 return
             if command in {"/proje", "/baslat"}:
                 if not arg:
@@ -969,7 +975,9 @@ class TelegramBot:
             f"• Tur Planı: {turn_label}\n"
             f"• Çalışma Zamanı: {schedule_label}"
             f"{warn_block}\n\n"
-            "✏️ Şimdi yaptırmak istediğiniz **proje fikrini** yazıp gönderin.",
+            "✏️ Şimdi yaptırmak istediğiniz **proje fikrini** yazıp gönderin\n"
+            "🔄 (Yarıda kalan aynı projeyi sürdürmek için fikir yazmadan "
+            "`/devam` veya hemen başlatmak için `/devam simdi` yazabilirsiniz).",
             disable_preview=True,
         )
 
@@ -1221,6 +1229,132 @@ class TelegramBot:
             chat_id,
             "⚡ Sıradaki proje için hemen başlatma modu açıldı (22:00 beklenmeyecek). "
             "Tekrar gece moduna dönmek için /gece yazabilirsiniz.",
+        )
+
+    async def _handle_resume_command(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+        arg: str,
+    ) -> None:
+        if not sess.validated_curl:
+            await self.send_text(
+                chat_id,
+                "🔄 Yarıda kalan bir projeyi sürdürmek için önce aynı Agent sohbetinden "
+                "taze bir `/input` cURL'ünü `.txt` dosyası olarak gönderip `/bitir` yazın;\n"
+                "ardından `/devam` (geceyi beklemeden hemen başlatmak için `/devam simdi`) yazın.",
+            )
+            return
+
+        tokens = [t.strip() for t in arg.split() if t.strip()]
+        now_keywords = {"simdi", "şimdi", "hemen", "now"}
+        force_now = any(t.lower() in now_keywords for t in tokens)
+        explicit_ids = [t for t in tokens if t.lower() not in now_keywords]
+        target_id = explicit_ids[0] if explicit_ids else ""
+
+        if not target_id:
+            try:
+                list_resp = await self.wrapper.get("/v1/autopilot/runs")
+            except httpx.HTTPError:
+                await self.send_text(chat_id, "Wrapper /v1/autopilot/runs ucuna ulaşılamadı.")
+                return
+            if list_resp.status_code != 200:
+                await self.send_text(chat_id, _autopilot_error_message(list_resp))
+                return
+
+            runs = [
+                r for r in (list_resp.json().get("runs") or []) if isinstance(r, dict)
+            ]
+            resumable = [
+                r
+                for r in runs
+                if str(r.get("status") or "") in {"failed", "stopped", "max_turns_reached"}
+            ]
+            same_chat = [
+                r
+                for r in resumable
+                if sess.validated_chat_id
+                and str(r.get("chat_id") or "") == sess.validated_chat_id
+            ]
+            if same_chat:
+                target_id = str(same_chat[0].get("run_id") or "")
+            elif len(resumable) == 1:
+                target_id = str(resumable[0].get("run_id") or "")
+            elif len(resumable) > 1:
+                choices = "\n".join(
+                    f"• `/devam {r.get('run_id')}` ({r.get('project_idea', '')[:45]})"
+                    for r in resumable[:5]
+                )
+                await self.send_text(
+                    chat_id,
+                    "Birden fazla durmuş proje var; hangisini sürdüreceğinizi seçin:\n"
+                    f"{choices}",
+                )
+                return
+            else:
+                if force_now:
+                    sess.respect_night_window = False
+                await self.send_text(
+                    chat_id,
+                    "ℹ️ Sunucu belleğinde yarım kalmış eski koşu kaydı bulunmuyor "
+                    "(sunucu yeni deploy edilmiş olabilir); ancak taze Agent cURL'ünüz hazır!\n\n"
+                    "Şimdi proje fikrini tek mesaj olarak gönderin — sistem Agent sohbetindeki "
+                    "mevcut ilerlemeyi otomatik okuyup sıfırdan başlamadan kaldığı yerden "
+                    "devam edecektir"
+                    + (
+                        " (⚡ hemen başlatma aktif)."
+                        if not sess.respect_night_window
+                        else " (hemen başlatmak için önce `/simdi` yazabilirsiniz)."
+                    ),
+                )
+                return
+
+        payload: dict[str, Any] = {
+            "agent_curl": sess.validated_curl,
+        }
+        if force_now or not sess.respect_night_window:
+            payload["respect_night_window"] = False
+
+        try:
+            resp = await self.wrapper.post(
+                f"/v1/autopilot/runs/{target_id}/resume",
+                json=payload,
+            )
+        except httpx.HTTPError:
+            await self.send_text(
+                chat_id,
+                "Wrapper resume ucuna ulaşılamadı; cURL bellekte korundu, tekrar `/devam` "
+                "deneyebilirsiniz.",
+            )
+            return
+
+        if resp.status_code != 200:
+            await self.send_text(
+                chat_id,
+                f"❌ Devam başlatılamadı: {_autopilot_error_message(resp)}",
+            )
+            return
+
+        rdata = resp.json()
+        sess.clear_pending()
+        agent_url = str(rdata.get("agent_url") or "").strip()
+        agent_line = f"• Agent: {agent_url}\n" if agent_url else ""
+        night_on = bool(rdata.get("respect_night_window"))
+        sched_txt = (
+            f"🌙 Gece Penceresi (hemen başlatmak için: /simdi {target_id})"
+            if night_on
+            else "⚡ Hemen Devam Ediyor"
+        )
+        await self.send_text(
+            chat_id,
+            f"🔄 Otopilot projesi kaldığı yerden sürdürülüyor!\n"
+            f"• Run ID: {target_id}\n"
+            f"{agent_line}"
+            f"• Kayıtlı Tur: {rdata.get('turn_count', 0)}/{rdata.get('max_turns', '?')} "
+            "(tur başına Agent bekleme tavanı: 60 dk)\n"
+            f"• Zamanlama: {sched_txt}\n\n"
+            f"Durum takibi: /durum {target_id}",
+            disable_preview=True,
         )
 
     async def _start_autopilot_with_idea(
