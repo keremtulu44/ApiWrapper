@@ -10,17 +10,49 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel, Field
 
-from app.autopilot.curl_parse import extract_max_slot_identities, parse_agent_curl
+from app.autopilot.agent_client import AgentSessionClient
+from app.autopilot.curl_parse import (
+    extract_max_slot_identities,
+    inspect_agent_cookie_health,
+    parse_agent_curl,
+)
 from app.autopilot.manager import AutopilotManager
 from app.autopilot.orchestrator import SameAccountError
 from app.autopilot.upstream_slots import UpstreamSlotRuntimeManager
 from app.core.errors import InvalidRequestError, ModelNotFoundError
 from app.core.security import api_key_dependency
+from app.upstream.client import error_excerpt
+from app.upstream.exceptions import (
+    RecaptchaRejected,
+    UpstreamAuthRejected,
+    UpstreamHTTPError,
+    UpstreamNetworkError,
+    UpstreamQuotaExceeded,
+    UpstreamRefreshRequired,
+    UpstreamTimeout,
+)
 
 router = APIRouter(tags=["autopilot"], dependencies=[Depends(api_key_dependency)])
+
+_SYNTHETIC_TEST_TLDS: tuple[str, ...] = (
+    ".example",
+    ".example.com",
+    ".example.org",
+    ".example.net",
+    ".test",
+    ".invalid",
+    ".localhost",
+)
+
+
+def _is_synthetic_test_domain(host: str) -> bool:
+    lowered = (host or "").strip().lower().split(":", 1)[0]
+    if lowered in {"localhost", "127.0.0.1", "::1", "target.example"}:
+        return True
+    return lowered.endswith(_SYNTHETIC_TEST_TLDS)
 
 
 def _get_manager(request: Request) -> AutopilotManager:
@@ -43,10 +75,20 @@ def _get_slot_manager(request: Request) -> UpstreamSlotRuntimeManager:
 class InspectAgentCurlRequest(BaseModel):
     agent_curl: str = Field(..., min_length=10)
     chat_id: str | None = None
+    verify_live: bool = False
 
 
 class UpdateUpstreamSlotRequest(BaseModel):
     upstream_curl: str = Field(..., min_length=20)
+
+
+class ClearAutopilotRunsRequest(BaseModel):
+    include_active: bool = True
+    run_id: str | None = None
+
+
+class StopAllAutopilotRunsRequest(BaseModel):
+    force: bool = True
 
 
 class StartAutopilotRequest(BaseModel):
@@ -58,8 +100,8 @@ class StartAutopilotRequest(BaseModel):
     respect_night_window: bool = False
     night_start_hour: int = Field(default=22, ge=0, le=23)
     night_end_hour: int = Field(default=7, ge=0, le=23)
-    gap_min_seconds: float = Field(default=5.0, ge=0.0, le=120.0)
-    gap_max_seconds: float = Field(default=10.0, ge=0.0, le=180.0)
+    gap_min_seconds: float = Field(default=15.0, ge=0.0, le=120.0)
+    gap_max_seconds: float = Field(default=30.0, ge=0.0, le=180.0)
     agent_turn_timeout: float = Field(default=1500.0, ge=60.0, le=3600.0)
     max_mode: Literal["in_process", "external_http", "direct_curl"] = "in_process"
     max_base_url: str = ""
@@ -73,13 +115,14 @@ async def inspect_agent_curl_endpoint(
     body: InspectAgentCurlRequest,
     request: Request,
 ) -> dict[str, Any]:
-    """Agent Mode cURL'ünü ağa çıkmadan doğrular (gizli değer döndürmez)."""
+    """Agent Mode cURL'ünü ve istenirse canlı oturum sağlığını doğrular (secret sızdırmaz)."""
     try:
         cfg = parse_agent_curl(body.agent_curl, chat_id_override=body.chat_id)
     except ValueError as exc:
         raise InvalidRequestError(str(exc), param="agent_curl") from exc
 
     agent_sub = cfg.account_identity()
+    cookie_health = inspect_agent_cookie_health(cfg.cookie, cfg.access_token)
     settings = getattr(request.app.state, "settings", None)
     slot_subs = (
         extract_max_slot_identities(settings) if settings is not None else {}
@@ -91,7 +134,7 @@ async def inspect_agent_curl_endpoint(
     )
     same_conflict = bool(conflict_slots)
 
-    return {
+    result: dict[str, Any] = {
         "valid": True,
         "target_domain": cfg.target_domain,
         "chat_id": cfg.chat_id,
@@ -104,8 +147,72 @@ async def inspect_agent_curl_endpoint(
         "has_account_identity": bool(agent_sub),
         "same_account_conflict": same_conflict,
         "conflict_slots": conflict_slots,
+        "cookie_diagnostics": cookie_health,
+        "live_checked": False,
+        "live_ok": None,
         "warnings": cfg.warnings,
     }
+
+    if (
+        body.verify_live
+        and not same_conflict
+        and not _is_synthetic_test_domain(cfg.target_domain)
+    ):
+        try:
+            async with AgentSessionClient(
+                cfg,
+                connect_timeout=10.0,
+                read_timeout=15.0,
+            ) as probe_client:
+                before_names = {
+                    (c.domain, c.name): c.value for c in probe_client.client.cookies.jar
+                }
+                state = await probe_client.fetch_state(recover_run=False)
+                after_names = {
+                    (c.domain, c.name): c.value for c in probe_client.client.cookies.jar
+                }
+                rotated = bool(after_names and after_names != before_names)
+                result.update(
+                    {
+                        "live_checked": True,
+                        "live_ok": True,
+                        "live_message_count": len(state.messages),
+                        "live_has_pending_turn": state.has_pending_turn,
+                        "cookie_rotated_on_probe": rotated,
+                    }
+                )
+        except (
+            UpstreamAuthRejected,
+            RecaptchaRejected,
+            UpstreamQuotaExceeded,
+            UpstreamRefreshRequired,
+            UpstreamHTTPError,
+        ) as exc:
+            err_name = (
+                "UpstreamAuthRejected"
+                if exc.status_code == 401 and type(exc) is UpstreamHTTPError
+                else type(exc).__name__
+            )
+            result.update(
+                {
+                    "live_checked": True,
+                    "live_ok": False,
+                    "live_status_code": exc.status_code,
+                    "live_error_type": err_name,
+                    "live_error_detail": error_excerpt(str(exc), limit=220),
+                }
+            )
+        except (UpstreamTimeout, UpstreamNetworkError) as exc:
+            result.update(
+                {
+                    "live_checked": True,
+                    "live_ok": None,
+                    "live_error_type": type(exc).__name__,
+                    "live_error_detail": error_excerpt(str(exc), limit=180),
+                }
+            )
+
+    return result
 
 
 @router.post("/autopilot/runs")
@@ -167,6 +274,32 @@ async def list_autopilot_runs(request: Request) -> dict[str, Any]:
     }
 
 
+@router.post("/autopilot/runs/stop-all")
+async def stop_all_autopilot_runs(
+    request: Request,
+    body: StopAllAutopilotRunsRequest | None = None,
+) -> dict[str, Any]:
+    """Aktif veya gece sırasındaki tüm otopilot koşularını topluca durdurur."""
+    manager = _get_manager(request)
+    force = True if body is None else body.force
+    return await manager.stop_all_runs(force=force)
+
+
+@router.post("/autopilot/runs/clear")
+async def clear_autopilot_runs(
+    request: Request,
+    body: ClearAutopilotRunsRequest | None = None,
+) -> dict[str, Any]:
+    """Çalışan/bekleyen/bitmiş otopilot işlemlerini güvenli biçimde durdurup temizler."""
+    manager = _get_manager(request)
+    include_active = True if body is None else body.include_active
+    run_id = None if body is None else body.run_id
+    try:
+        return await manager.clear_runs(include_active=include_active, run_id=run_id)
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc), param="run_id") from exc
+
+
 @router.get("/autopilot/runs/{run_id}")
 async def get_autopilot_run(run_id: str, request: Request) -> dict[str, Any]:
     """Tek bir otopilot koşusunun hafıza defterini ve tüm tur kayıtlarını döndürür."""
@@ -181,16 +314,21 @@ async def get_autopilot_run(run_id: str, request: Request) -> dict[str, Any]:
 
 
 @router.post("/autopilot/runs/{run_id}/stop")
-async def stop_autopilot_run(run_id: str, request: Request) -> dict[str, Any]:
-    """Çalışan bir otopilot koşusuna güvenli durdurma işareti gönderir."""
+async def stop_autopilot_run(
+    run_id: str,
+    request: Request,
+    force: bool = Query(default=False),
+) -> dict[str, Any]:
+    """Çalışan bir otopilot koşusuna güvenli veya `force=true` ile anında durdurma gönderir."""
     manager = _get_manager(request)
-    state = manager.stop_run(run_id)
+    state = manager.stop_run(run_id, force=force)
     if state is None:
         raise ModelNotFoundError(f"Autopilot run '{run_id}' bulunamadı.", param="run_id")
     return {
         "run_id": state.run_id,
         "status": state.status,
         "stop_requested": True,
+        "forced": force,
     }
 
 

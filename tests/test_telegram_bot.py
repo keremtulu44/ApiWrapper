@@ -553,3 +553,164 @@ async def test_telegram_default_night_window_auto_turns_and_simdi_wake():
         assert "Akşam Başlangıç Planı" in sent[-1]
         assert "Sabah Teslim Raporu" in sent[-1]
 
+
+@pytest.mark.asyncio
+async def test_telegram_blocks_dead_agent_session_and_supports_temizle_commands() -> None:
+    """Telegram `/agent_curl` + `/bitir` canlı kontrolde 401 alan ölü cURL'ü anında
+    reddetmeli; geçerli oturumda `200 OK` göstermeli; `/durdur hepsi` ve `/temizle`
+    komutlarını doğru API uçlarına yönlendirmelidir.
+    """
+    sent: list[str] = []
+    api_calls: list[tuple[str, str, Any]] = []
+    live_probe_should_pass = False
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content.decode())
+        sent.append(body["text"])
+        return httpx.Response(200, json={"ok": True, "result": {"message_id": 1}})
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        path = request.url.path
+        body = json.loads(request.content.decode()) if request.content else None
+        api_calls.append((request.method, str(request.url), body))
+
+        if path == "/v1/autopilot/inspect-curl":
+            assert body is not None
+            if not body.get("verify_live"):
+                return httpx.Response(
+                    200,
+                    json={
+                        "valid": True,
+                        "target_domain": "live.io",
+                        "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                        "source_endpoint_kind": "input",
+                        "same_account_conflict": False,
+                        "conflict_slots": [],
+                        "cookie_diagnostics": {
+                            "cookie_count": 4,
+                            "auth_cookie_found": True,
+                            "auth_chunk_indices": [0, 1],
+                            "problems": [],
+                        },
+                        "live_checked": False,
+                        "live_ok": None,
+                        "warnings": [],
+                    },
+                )
+            if not live_probe_should_pass:
+                return httpx.Response(
+                    200,
+                    json={
+                        "valid": True,
+                        "target_domain": "live.io",
+                        "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                        "source_endpoint_kind": "input",
+                        "same_account_conflict": False,
+                        "conflict_slots": [],
+                        "cookie_diagnostics": {
+                            "cookie_count": 2,
+                            "auth_cookie_found": False,
+                            "auth_chunk_indices": [],
+                            "problems": ["İstek içinde oturum çerezi bulunamadı."],
+                        },
+                        "live_checked": True,
+                        "live_ok": False,
+                        "live_status_code": 401,
+                        "live_error_type": "UpstreamAuthRejected",
+                        "live_error_detail": "Not authenticated",
+                        "warnings": [],
+                    },
+                )
+            return httpx.Response(
+                200,
+                json={
+                    "valid": True,
+                    "target_domain": "live.io",
+                    "chat_id": "019d8420-fa0b-76a8-8b2f-268c897d22a9",
+                    "source_endpoint_kind": "input",
+                    "same_account_conflict": False,
+                    "conflict_slots": [],
+                    "cookie_diagnostics": {
+                        "cookie_count": 4,
+                        "auth_cookie_found": True,
+                        "auth_chunk_indices": [0, 1],
+                        "problems": [],
+                    },
+                    "live_checked": True,
+                    "live_ok": True,
+                    "live_message_count": 2,
+                    "cookie_rotated_on_probe": True,
+                    "warnings": [],
+                },
+            )
+        if path == "/v1/autopilot/runs/stop-all":
+            return httpx.Response(
+                200,
+                json={"stopped_count": 2, "stopped_run_ids": ["r1", "r2"], "active_count": 0},
+            )
+        if path == "/v1/autopilot/runs/clear":
+            inc = bool(body and body.get("include_active", True))
+            return httpx.Response(
+                200,
+                json={
+                    "found": True,
+                    "stopped_active": 1 if inc else 0,
+                    "cancelled_morning_reports": 1 if inc else 0,
+                    "removed_runs": 3 if inc else 2,
+                    "removed_run_ids": ["r1", "r2", "r3"] if inc else ["r2", "r3"],
+                    "remaining_runs": 0 if inc else 1,
+                },
+            )
+        return httpx.Response(404, json={"error": {"message": "not found"}})
+
+    settings = TelegramSettings(
+        telegram_bot_token="123:TEST",
+        wrapper_base_url="https://wrapper.test",
+        wrapper_api_key="sk-test",
+        telegram_allowed_chat_ids="42",
+    )
+    sample_curl = (
+        'curl "https://live.io/api/chat/019d8420-fa0b-76a8-8b2f-268c897d22a9/input" '
+        '-b "a=1"'
+    )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(settings, telegram, wrapper)
+
+        # 1) `/bitir` masaüstü ve `max` gibi ekstra upstream isteği atmadan doğrular
+        await bot.handle_message({"chat": {"id": 42}, "text": "/agent_curl"})
+        await bot.handle_message({"chat": {"id": 42}, "text": sample_curl})
+        await bot.handle_message({"chat": {"id": 42}, "text": "/bitir"})
+        assert "Agent cURL doğrulandı" in sent[-1]
+        assert bot._session(42).mode == "awaiting_idea"
+
+        # 2) İsteğe bağlı manuel `/agent_test` çağrısı canlı durumu raporlar (401 -> 200)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/agent_test"})
+        assert "HTTP 401" in sent[-1]
+
+        live_probe_should_pass = True
+        await bot.handle_message({"chat": {"id": 42}, "text": "/agent_test"})
+        assert "Agent oturumu hazır" in sent[-1]
+
+        # 3) /durdur hepsi -> POST /v1/autopilot/runs/stop-all
+        await bot.handle_message({"chat": {"id": 42}, "text": "/durdur hepsi"})
+        assert "anında durduruldu" in sent[-1]
+
+        # 4) /temizle bitenler -> include_active=False (açık fikir girişini bozmaz)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/temizle bitenler"})
+        assert "2 proje kaydı silindi" in sent[-1]
+        assert bot._session(42).mode == "awaiting_idea"
+
+        # 5) /temizle -> include_active=True ve bekleyen cURL/fikir oturumu da sıfırlanır
+        await bot.handle_message({"chat": {"id": 42}, "text": "/temizle"})
+        assert "3 proje kaydı silindi" in sent[-1]
+        assert "hesap-1" in sent[-1]
+        assert bot._session(42).mode == "idle"
+
+

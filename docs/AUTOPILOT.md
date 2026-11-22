@@ -37,12 +37,14 @@ Render üzerinde yeniden deploy atmadan (1. hesabın çalışan oturumunu sıfı
 - `/hesaplar` — Yuva 1 ve Yuva 2'nin sağlık, sıra, keepalive ve bağlantı durumunu görüntüle
 
 ### Otopilot (Agent Mode) Komutları
-- `/agent_curl` (veya `/curl`) + cURL yapıştır + `/bitir` — Parçalı Agent `/input` cURL'ünü birleştir ve doğrula
+- `/agent_curl` (veya `/curl`) + cURL yapıştır + `/bitir` — Parçalı Agent `/input` cURL'ünü birleştir, çerez bütünlüğünü ve canlı oturum sağlığını doğrula
+- `/agent_test` — Bellekteki doğrulanmış Agent cURL oturumunun canlı (`200 OK` / `401`) durumunu tekrar yokla
 - `/tur oto` | `/tur <1-25>` — Otomatik tur (varsayılan) veya sabit tur tavanı
 - `/gece` | `/simdi [run_id]` — `22:00–07:00` gece modu (varsayılan) veya beklemeden hemen çalıştır
-- `/projeler` | `/durum [run_id]` — Tüm projelerin anlık durumu ve Agent linkleri
+- `/projeler` | `/durum [run_id]` — Tüm projelerin anlık durumu, hata özeti ve Agent linkleri
 - `/rapor [run_id]` — Akşam başlangıç planı ve Agent sabah teslim raporunu görüntüle
-- `/durdur [run_id]` — Çalışan veya gece sırasındaki projeyi güvenli biçimde durdur
+- `/durdur [run_id | zorla <run_id> | hepsi]` — Çalışan/bekleyen projeyi güvenli veya anında (`zorla` / `hepsi`) durdur
+- `/temizle [hepsi | bitenler | <run_id>]` — Çalışan/bekleyen/hatalı otopilot projelerini durdurup bellekten sil (1. ana `max` hesabına dokunmaz)
 - `/iptal` — Açık cURL/fikir girişini temizle
 
 ---
@@ -69,9 +71,11 @@ python -m app.autopilot run \
 - `GET  /v1/autopilot/upstream-slots` — Canlı Yuva 1 & Yuva 2 durum özeti (secret içermez)
 - `POST /v1/autopilot/upstream-slots/{slot}` — Yuva 1 veya 2 `max` cURL canlı güncelleme
 - `POST /v1/autopilot/upstream-slots/2/close` — Yuva 2'yi kökten kapatma
-- `POST /v1/autopilot/inspect-curl` — Agent cURL doğrulaması ve yuva bazlı çakışma kontrolü (`conflict_slots`)
+- `POST /v1/autopilot/inspect-curl` — Agent cURL doğrulaması, çerez parça sağlığı, `verify_live` canlı oturum testi ve yuva bazlı çakışma kontrolü (`conflict_slots`)
 - `POST /v1/autopilot/runs` — Yeni otopilot koşusu başlatma (`auto_turns`, `respect_night_window` destekli)
 - `GET  /v1/autopilot/runs` — Koşuları listeleme
 - `GET  /v1/autopilot/runs/{run_id}` — Detay, hafıza defteri, akşam planı ve sabah teslim raporu
 - `POST /v1/autopilot/runs/{run_id}/start-now` — Gece sırasındaki koşuyu derhal uyandırma
-- `POST /v1/autopilot/runs/{run_id}/stop` — Güvenli durdurma
+- `POST /v1/autopilot/runs/{run_id}/stop?force=false|true` — Tek koşuyu güvenli veya anında durdurma
+- `POST /v1/autopilot/runs/stop-all` — Tüm aktif/bekleyen koşuları topluca durdurma
+- `POST /v1/autopilot/runs/clear` — Aktif/bekleyen/bitmiş otopilot koşularını durdurup bellekten temizleme

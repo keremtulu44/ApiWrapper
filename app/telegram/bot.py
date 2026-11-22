@@ -46,14 +46,16 @@ _HELP = (
     "• /hesaplar — Açık Max yuvalarını ve bağlantı durumunu görüntüle\n\n"
     "🤖 Otopilot (Model A — Agent Mode Proje):\n"
     "• /agent_curl (veya /curl) — Agent Mode '/input' cURL'ünü yapıştır (+ /bitir)\n"
-    "• /bitir — Yapıştırılan (Telegram'ın böldüğü) tüm cURL parçalarını birleştir ve kaydet\n"
+    "• /agent_test — Bellekteki Agent cURL oturumunun canlı sağlığını tekrar test et\n"
+    "• /bitir — Yapıştırılan (Telegram'ın böldüğü) tüm cURL parçalarını birleştir ve doğrula\n"
     "• /tur oto | /tur <1-25> — Otomatik tur (Max projeye göre seçer) veya sabit tavan\n"
     "• /gece — Yalnız 22:00–07:00 (TR) arasında çalıştır (varsayılan)\n"
     "• /simdi [run_id] — 22:00'yi beklemeden hemen çalıştır / sıradaki projeyi uyandır\n"
     "• /projeler (veya /durum) — Çalışan, sırada bekleyen ve biten projeleri listele\n"
     "• /durum <run_id> — Seçilen projenin tur/hafıza detayını ve Agent linkini gör\n"
     "• /rapor [run_id] — Akşam planını ve Agent sabah teslim özetini gör\n"
-    "• /durdur [run_id] — Çalışan veya gece sırasındaki projeyi güvenli biçimde durdur\n"
+    "• /durdur [run_id | hepsi] — Çalışan/bekleyen projeyi durdur (`hepsi` anında keser)\n"
+    "• /temizle [hepsi | bitenler | run_id] — Otopilot işlemlerini durdurup bellekten sil\n"
     "• /iptal — Açık cURL/fikir girişini temizle\n\n"
     "Diğer komutlar: /ping (wrapper health), /help."
 )
@@ -71,6 +73,7 @@ _KNOWN_BOT_COMMANDS: frozenset[str] = frozenset(
         "/cancel",
         "/curl",
         "/agent_curl",
+        "/agent_test",
         "/upstream_curl",
         "/upstream_curl2",
         "/hesaplar",
@@ -91,6 +94,9 @@ _KNOWN_BOT_COMMANDS: frozenset[str] = frozenset(
         "/ozet",
         "/durdur",
         "/stop",
+        "/temizle",
+        "/sil",
+        "/sifirla",
     }
 )
 _LONG_ARG_COMMANDS: frozenset[str] = frozenset(
@@ -418,6 +424,9 @@ class TelegramBot:
             if command in {"/agent_curl", "/curl"}:
                 await self._handle_curl_command(chat_id, sess, arg=arg, raw_arg=raw_arg)
                 return
+            if command == "/agent_test":
+                await self._handle_agent_test(chat_id, sess)
+                return
             if command in {"/bitir", "/curl_bitir", "/curlbitir", "/tamam"}:
                 await self._finish_curl_collection(chat_id, sess)
                 return
@@ -452,7 +461,10 @@ class TelegramBot:
                 await self._show_project_report(chat_id, arg.split()[0] if arg else "")
                 return
             if command in {"/durdur", "/stop"}:
-                await self._stop_project(chat_id, arg.split()[0] if arg else "")
+                await self._stop_project(chat_id, arg)
+                return
+            if command in {"/temizle", "/sil", "/sifirla"}:
+                await self._clear_projects(chat_id, sess, arg)
                 return
 
         # cURL toplama modundayken Telegram'ın 4096. karakterde böldüğü bir parça
@@ -810,6 +822,37 @@ class TelegramBot:
                 )
             return
 
+        live_checked = bool(data.get("live_checked"))
+        live_ok = data.get("live_ok")
+        cookie_diag = data.get("cookie_diagnostics") or {}
+        if live_checked and live_ok is False:
+            sess.mode = "collecting_curl"
+            sess.curl_target = "agent"
+            sess.updated_at = time.monotonic()
+            status_code = data.get("live_status_code") or "?"
+            err_type = data.get("live_error_type") or "Hata"
+            err_detail = str(data.get("live_error_detail") or "").strip()
+            problems = [str(p) for p in (cookie_diag.get("problems") or []) if p]
+            diag_lines = [
+                f"❌ Canlı Agent Oturumu Reddedildi (HTTP {status_code} · {err_type})!",
+                f"• Sohbet ID: {data.get('chat_id', '-')}",
+                f"• Çerez Sayısı: {cookie_diag.get('cookie_count', 0)} "
+                f"(auth çerezi: {'var' if cookie_diag.get('auth_cookie_found') else 'YOK'}, "
+                f"parçalar: {cookie_diag.get('auth_chunk_indices', [])})",
+            ]
+            if err_detail:
+                diag_lines.append(f"• Sunucu Yanıtı: {err_detail}")
+            if problems:
+                diag_lines.append("• Tespit Edilen Sorun: " + " ".join(problems))
+            diag_lines.append(
+                "\n💡 Çözüm: Hedef sitede Agent Mode içinde temiz bir sohbet açıp "
+                "ilk kısa mesajı gönderin, Network sekmesinden en güncel '/input' "
+                "'Copy as cURL (bash)' çıktısını kopyalayıp tekrar yapıştırın ve "
+                "/bitir yazın (İptal: /iptal)."
+            )
+            await self.send_text(chat_id, "\n".join(diag_lines), disable_preview=True)
+            return
+
         sess.mode = "awaiting_idea"
         sess.validated_curl = joined
         sess.validated_chat_id = str(data.get("chat_id") or "")
@@ -817,7 +860,30 @@ class TelegramBot:
         sess.updated_at = time.monotonic()
 
         warnings = [str(w) for w in (data.get("warnings") or []) if w]
+        if live_checked and live_ok is None and data.get("live_error_detail"):
+            warnings.append(
+                f"Canlı ön kontrol zaman aşımı/ağ uyarısı verdi ({data.get('live_error_type')}); "
+                "cURL sözdizimi geçerli olduğu için kaydedildi."
+            )
         warn_block = ("\n⚠️ Not: " + " ".join(warnings)) if warnings else ""
+        live_badge = ""
+        if live_checked and live_ok is True:
+            msg_cnt = data.get("live_message_count", 0)
+            rot_txt = (
+                " · güncel çerez korundu"
+                if data.get("cookie_rotated_on_probe")
+                else ""
+            )
+            rem_s = cookie_diag.get("token_remaining_seconds")
+            ttl_txt = (
+                f" · JWT ~{max(1, int(rem_s) // 60)} dk"
+                if isinstance(rem_s, int) and rem_s > 0
+                else ""
+            )
+            live_badge = (
+                f"\n• Canlı Oturum: 🟢 200 OK ({msg_cnt} mesaj{rot_txt}{ttl_txt}"
+                " · 8 dk koruma aktif)"
+            )
         turn_label = (
             f"Otomatik (Max projeye göre belirler, güvenlik tavanı: {sess.max_turns})"
             if sess.auto_turns
@@ -832,11 +898,63 @@ class TelegramBot:
             chat_id,
             f"✅ Agent cURL doğrulandı ({chunk_count} parça birleştirildi)!\n"
             f"• Agent Sohbet: {sess.validated_chat_id}\n"
-            f"• Kaynak Türü: {data.get('source_endpoint_kind', 'unknown')}\n"
+            f"• Kaynak Türü: {data.get('source_endpoint_kind', 'unknown')}"
+            f"{live_badge}\n"
             f"• Tur Planı: {turn_label}\n"
             f"• Çalışma Zamanı: {schedule_label}"
             f"{warn_block}\n\n"
             "✏️ Şimdi yaptırmak istediğiniz **proje fikrini** yazıp gönderin.",
+            disable_preview=True,
+        )
+
+    async def _handle_agent_test(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+    ) -> None:
+        if not sess.validated_curl:
+            await self.send_text(
+                chat_id,
+                "ℹ️ Bellekte test edilecek hazır bir Agent cURL yok.\n"
+                "Önce /agent_curl yazıp cURL'ü yapıştırın ve /bitir ile canlı doğrulayın.",
+            )
+            return
+        try:
+            response = await self.wrapper.post(
+                "/v1/autopilot/inspect-curl",
+                json={"agent_curl": sess.validated_curl, "verify_live": True},
+            )
+        except httpx.HTTPError:
+            await self.send_text(
+                chat_id,
+                "Wrapper /v1/autopilot/inspect-curl ucuna ulaşılamadı.",
+            )
+            return
+        if response.status_code != 200:
+            await self.send_text(
+                chat_id,
+                f"❌ Agent cURL testi başarısız: {_autopilot_error_message(response)}",
+            )
+            return
+        data = response.json()
+        diag = data.get("cookie_diagnostics") or {}
+        if data.get("live_checked") and data.get("live_ok") is False:
+            await self.send_text(
+                chat_id,
+                f"🔴 Canlı Agent oturumu düşmüş (HTTP {data.get('live_status_code', '?')} · "
+                f"{data.get('live_error_type', 'Hata')}).\n"
+                f"Detay: {data.get('live_error_detail', '-')}\n"
+                "Lütfen /agent_curl ile yeni bir cURL yapıştırın.",
+                disable_preview=True,
+            )
+            return
+        await self.send_text(
+            chat_id,
+            f"🟢 Agent oturumu hazır!\n"
+            f"• Sohbet: {data.get('chat_id', '-')}\n"
+            f"• Canlı Durum: {'200 OK' if data.get('live_ok') else 'Sözdizimi Geçerli'}\n"
+            f"• Çerez Sayısı: {diag.get('cookie_count', 0)} "
+            f"(auth parçaları: {diag.get('auth_chunk_indices', [])})",
             disable_preview=True,
         )
 
@@ -1178,12 +1296,13 @@ class TelegramBot:
                 block.append(f"  Son adım: {note}")
             elif item.get("morning_report_pending"):
                 block.append(f"  Sabah Raporu: 🌅 Hazır (07:00'de iletilecek · /rapor {rid})")
-            elif item.get("stop_reason") and st != "running":
-                reason_short = " ".join(str(item["stop_reason"]).split())[:140]
+            elif (item.get("stop_reason") or item.get("error_detail")) and st != "running":
+                raw_outcome = item.get("stop_reason") or item.get("error_detail") or ""
+                reason_short = " ".join(str(raw_outcome).split())[:150]
                 block.append(f"  Sonuç: {reason_short}")
             lines.extend(block)
 
-        lines.append("\nDetay için: /durum <run_id> · Yeni proje: /curl")
+        lines.append("\nDetay: /durum <run_id> · Temizlik: /temizle · Yeni proje: /curl")
         await self.send_text(chat_id, "\n".join(lines), disable_preview=True)
 
     async def _show_project_detail(self, chat_id: int, run_id: str) -> None:
@@ -1296,8 +1415,44 @@ class TelegramBot:
 
         await self.send_text(chat_id, "\n".join(parts), disable_preview=True)
 
-    async def _stop_project(self, chat_id: int, run_id: str) -> None:
-        target_id = run_id.strip()
+    async def _stop_project(self, chat_id: int, raw_arg: str) -> None:
+        tokens = [t.strip() for t in raw_arg.split() if t.strip()]
+        lowered_tokens = [t.lower() for t in tokens]
+        if lowered_tokens and lowered_tokens[0] in {"hepsi", "tümü", "tumu", "all", "*"}:
+            try:
+                resp = await self.wrapper.post(
+                    "/v1/autopilot/runs/stop-all",
+                    json={"force": True},
+                )
+            except httpx.HTTPError as exc:
+                logger.warning("telegram_autopilot_stop_all_failed", error_type=type(exc).__name__)
+                await self.send_text(chat_id, "Toplu durdurma isteği gönderilemedi.")
+                return
+            if resp.status_code != 200:
+                await self.send_text(chat_id, _autopilot_error_message(resp))
+                return
+            data = resp.json()
+            cnt = data.get("stopped_count", 0)
+            ids = data.get("stopped_run_ids") or []
+            if not cnt:
+                await self.send_text(chat_id, "ℹ️ Şu anda aktif veya bekleyen otopilot projesi yok.")
+                return
+            await self.send_text(
+                chat_id,
+                f"🛑 Toplam {cnt} aktif/bekleyen otopilot projesi anında durduruldu: "
+                f"{', '.join(str(x) for x in ids)}\n"
+                "(Kayıtları da tamamen silmek isterseniz /temizle yazabilirsiniz.)",
+            )
+            return
+
+        force_stop = any(t in {"zorla", "force", "hemen", "acil"} for t in lowered_tokens)
+        id_tokens = [
+            orig
+            for orig, low in zip(tokens, lowered_tokens, strict=False)
+            if low not in {"zorla", "force", "hemen", "acil"}
+        ]
+        target_id = id_tokens[0] if id_tokens else ""
+
         if not target_id:
             try:
                 list_resp = await self.wrapper.get("/v1/autopilot/runs")
@@ -1320,14 +1475,20 @@ class TelegramBot:
             if len(active) > 1:
                 await self.send_text(
                     chat_id,
-                    "Birden fazla aktif proje var; hangisini durduracağınızı belirtin:\n"
+                    "Birden fazla aktif proje var; hangisini durduracağınızı belirtin "
+                    "(veya tümünü kesmek için `/durdur hepsi` yazın):\n"
                     + "\n".join(f"• /durdur {rid}" for rid in active),
                 )
                 return
             target_id = active[0]
 
+        stop_path = (
+            f"/v1/autopilot/runs/{target_id}/stop?force=true"
+            if force_stop
+            else f"/v1/autopilot/runs/{target_id}/stop"
+        )
         try:
-            response = await self.wrapper.post(f"/v1/autopilot/runs/{target_id}/stop")
+            response = await self.wrapper.post(stop_path)
         except httpx.HTTPError as exc:
             logger.warning("telegram_autopilot_stop_failed", error_type=type(exc).__name__)
             await self.send_text(chat_id, "Durdurma isteği gönderilemedi.")
@@ -1337,10 +1498,85 @@ class TelegramBot:
             await self.send_text(chat_id, _autopilot_error_message(response))
             return
 
+        if force_stop:
+            await self.send_text(
+                chat_id,
+                f"🛑 {target_id} anında iptal edildi ve bağlantıları kapatıldı.",
+            )
+        else:
+            await self.send_text(
+                chat_id,
+                f"🛑 {target_id} için durdurma işareti gönderildi. Mevcut adım tamamlandığında "
+                "güvenli biçimde duracak (anında kesmek için: `/durdur zorla "
+                f"{target_id}`).",
+            )
+
+    async def _clear_projects(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+        raw_arg: str,
+    ) -> None:
+        cleaned = raw_arg.strip()
+        lowered = cleaned.lower()
+        include_active = True
+        run_id: str | None = None
+
+        if lowered in {"", "hepsi", "tümü", "tumu", "all", "*"}:
+            include_active = True
+        elif lowered in {"bitenler", "biten", "gecmis", "geçmiş", "done", "hatalilar"}:
+            include_active = False
+        else:
+            run_id = cleaned.split()[0]
+
+        # Yalnız genel temizlikte bekleyen yarım cURL/fikir oturumunu da sıfırla
+        had_pending_session = sess.mode != "idle" or bool(sess.validated_curl)
+        if run_id is None and include_active:
+            sess.clear_pending()
+
+        payload: dict[str, Any] = {"include_active": include_active}
+        if run_id is not None:
+            payload["run_id"] = run_id
+
+        try:
+            response = await self.wrapper.post("/v1/autopilot/runs/clear", json=payload)
+        except httpx.HTTPError as exc:
+            logger.warning("telegram_autopilot_clear_failed", error_type=type(exc).__name__)
+            await self.send_text(chat_id, "Wrapper /v1/autopilot/runs/clear ucuna ulaşılamadı.")
+            return
+
+        if response.status_code != 200:
+            await self.send_text(chat_id, _autopilot_error_message(response))
+            return
+
+        data = response.json()
+        if run_id is not None and not data.get("found", True):
+            await self.send_text(
+                chat_id,
+                f"⚠️ '{run_id}' ID'li bir otopilot kaydı bulunamadı (/projeler ile kontrol edin).",
+            )
+            return
+
+        stopped_cnt = int(data.get("stopped_active") or 0)
+        removed_cnt = int(data.get("removed_runs") or 0)
+        remaining_cnt = int(data.get("remaining_runs") or 0)
+        morning_cnt = int(data.get("cancelled_morning_reports") or 0)
+
+        extra_bits: list[str] = []
+        if stopped_cnt:
+            extra_bits.append(f"{stopped_cnt} çalışan/bekleyen görev anında durduruldu")
+        if morning_cnt:
+            extra_bits.append(f"{morning_cnt} bekleyen sabah raporu iptal edildi")
+        if had_pending_session and run_id is None and include_active:
+            extra_bits.append("bekleyen cURL/proje girişi sıfırlandı")
+
+        detail_line = (" (" + ", ".join(extra_bits) + ")") if extra_bits else ""
         await self.send_text(
             chat_id,
-            f"🛑 {target_id} için durdurma işareti gönderildi. Mevcut adım tamamlandığında "
-            "güvenli biçimde duracak.",
+            f"🧹 Otopilot temizliği tamamlandı: {removed_cnt} proje kaydı silindi"
+            f"{detail_line}.\n"
+            f"• Kalan otopilot kaydı: {remaining_cnt}\n"
+            "• 1. ana Max hesabı (hesap-1) korunmaya devam ediyor.",
         )
 
     async def ping(self, chat_id: int) -> None:

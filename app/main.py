@@ -12,8 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
 from app.api.v1 import admin, ask, autopilot, chat, health, models
+from app.autopilot.curl_parse import normalize_windows_cmd_curl_for_upstream
 from app.autopilot.upstream_slots import UpstreamSlotRuntimeManager
-from app.core.config import Settings, get_settings
+from app.core.config import MAX_ACCOUNT_SLOTS, Settings, get_settings
 from app.core.errors import register_exception_handlers
 from app.core.logging import configure_logging, get_logger
 from app.core.middleware import (
@@ -245,9 +246,23 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         logger.info("application_stopped")
 
 
+def _prenormalize_startup_curls(settings: Settings) -> Settings:
+    """Render ortam değişkenine mobilden yapıştırılan `$'...'` cURL'lerini normalize eder."""
+    updates: dict[str, object] = {}
+    slot_attrs = ("upstream_curl", *(f"upstream_curl_{i}" for i in range(2, MAX_ACCOUNT_SLOTS + 1)))
+    for attr in slot_attrs:
+        raw = getattr(settings, attr, "")
+        if isinstance(raw, str) and raw.strip():
+            norm = normalize_windows_cmd_curl_for_upstream(raw)
+            if norm != raw:
+                updates[attr] = norm
+    return settings.model_copy(update=updates) if updates else settings
+
+
 def create_app(settings: Settings | None = None) -> FastAPI:
     """Uygulamayı oluşturur (testler kendi Settings'ini geçebilir)."""
     settings = settings or get_settings()
+    settings = _prenormalize_startup_curls(settings)
     settings, upstream_curl_model_id = apply_upstream_curl(settings)
     configure_logging(settings.log_level, settings.log_json)
 

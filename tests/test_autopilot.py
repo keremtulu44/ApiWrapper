@@ -1531,3 +1531,323 @@ async def test_autopilot_waits_patiently_on_max_429_and_ask_problem_without_hamm
     assert sum("dinlenip kaldığı yerden" in n for n in progress_notes) == 2
 
 
+def test_lemur_http3_multiple_cookie_headers_and_posix_adjacent_quotes_preserved() -> None:
+    """Android Lemur Browser HTTP/2-HTTP/3 'Copy as cURL (bash)' çıktısında birden fazla
+    `-H 'cookie: ...'` satırı geldiğinde son satır (`_dd_s`) önceki `arena-auth-prod-v1.0/.1`
+    çerezlerini ezmemeli; ayrıca POSIX bitişik tırnakları (`'...'$'\''...'`, `--data-raw=$'...'`)
+    tek argüman olarak birleşmelidir.
+    """
+    from app.autopilot.curl_parse import (
+        inspect_agent_cookie_health,
+        parse_raw_agent_curl,
+        reassemble_agent_curl_chunks,
+    )
+
+    supa_cookie = _make_fake_supabase_cookie("lemur-http3-user-44")
+    part0, part1 = [c.strip() for c in supa_cookie.split(";")]
+    chat_id = "019da5d9-f4fc-7691-9e1e-34b5c1c9b784"
+    msg_id = "019da5d9-f37d-71be-9d31-000000000001"
+
+    lemur_http3_curl = (
+        f"curl 'https://target.example/api/chat/{chat_id}/input' \\\n"
+        "  -H 'authority: target.example' \\\n"
+        "  -H ':method: POST' \\\n"
+        "  -H 'sec-ch-ua-mobile: ?1' \\\n"
+        "  -H 'sec-ch-ua-platform: \"Android\"' \\\n"
+        "  -H 'cookie: cf_clearance=cf_lemur_ok' \\\n"
+        f"  -H 'cookie: {part0}' \\\n"
+        f"  -H 'cookie: {part1}' \\\n"
+        "  -H 'cookie: _dd_s=rum=0&expire=1999999999' \\\n"
+        + r"  -H 'x-custom-note: merhaba'$'\'''dunya' "
+        + "\\\n"
+        + f"  --data-raw=$'{{\"message\":{{\"id\":\"{msg_id}\"}},"
+        "\"recaptchaV3Token\":\"rc_tok\"}'"
+    )
+
+    # Telegram 4096 benzeri parçalanma altında da çerez parçalarının tamamı korunmalı
+    mid = len(lemur_http3_curl) // 2
+    rejoined = reassemble_agent_curl_chunks([lemur_http3_curl[:mid], lemur_http3_curl[mid:]])
+    raw_parsed = parse_raw_agent_curl(rejoined)
+    cfg = parse_agent_curl(rejoined)
+
+    assert cfg.account_identity() == "lemur-http3-user-44"
+    assert "arena-auth-prod-v1.0=" in cfg.cookie
+    assert "arena-auth-prod-v1.1=" in cfg.cookie
+    assert "cf_clearance=cf_lemur_ok" in cfg.cookie
+    assert "_dd_s=rum=0&expire=1999999999" in cfg.cookie
+    assert ":method" not in cfg.extra_headers
+    assert cfg.extra_headers.get("sec-ch-ua-mobile") == "?1"
+    assert cfg.sec_ch_ua_platform_override == '"Android"'
+    assert raw_parsed["headers"].get("x-custom-note") == "merhaba'dunya"
+    assert cfg.last_user_message_id == msg_id
+    assert cfg.recaptcha_token == "rc_tok"
+
+    health = inspect_agent_cookie_health(cfg.cookie, cfg.access_token)
+    assert health["auth_cookie_found"] is True
+    assert health["auth_chunk_indices"] == [0, 1]
+    assert health["incomplete_auth_chunks"] is False
+    assert health["jwt_found"] is True
+    assert health["problems"] == []
+
+
+def test_inspect_agent_cookie_health_detects_missing_chunks_and_expired_jwt() -> None:
+    """Eksik `.0` parçası, kesilmiş uzun tekil `.0` parçası ve süresi dolmuş JWT `exp`
+    gizli değer sızdırmadan teşhis edilmelidir.
+    """
+    from app.autopilot.curl_parse import inspect_agent_cookie_health
+
+    # 1) Yalnız `.1` var, `.0` düşmüş
+    diag_missing_0 = inspect_agent_cookie_health("arena-auth-prod-v1.1= yarim_parca; _dd_s=1")
+    assert diag_missing_0["auth_cookie_found"] is True
+    assert diag_missing_0["incomplete_auth_chunks"] is True
+    assert any("[0]" in p for p in diag_missing_0["problems"])
+
+    # 2) Yalnız `.0` var ve >=2800 karakter (kesilmiş JSON, `.1` kopyalanmamış)
+    truncated_0 = "arena-auth-prod-v1.0=base64-" + ("A" * 3000)
+    diag_trunc = inspect_agent_cookie_health(truncated_0)
+    assert diag_trunc["incomplete_auth_chunks"] is True
+    assert diag_trunc["jwt_found"] is False
+
+    # 3) Süresi dolmuş JWT (`exp` geçmişte)
+    hdr = base64.urlsafe_b64encode(b'{"alg":"HS256"}').decode().rstrip("=")
+    old_payload = (
+        base64.urlsafe_b64encode(json.dumps({"sub": "u-exp", "exp": 1700000000}).encode())
+        .decode()
+        .rstrip("=")
+    )
+    expired_jwt = f"{hdr}.{old_payload}.sig"
+    sess_b64 = "base64-" + base64.urlsafe_b64encode(
+        json.dumps({"access_token": expired_jwt}).encode()
+    ).decode().rstrip("=")
+    diag_exp = inspect_agent_cookie_health(f"arena-auth-prod-v1={sess_b64}")
+    assert diag_exp["jwt_found"] is True
+    assert diag_exp["token_expired"] is True
+    assert any("dolmuş" in p for p in diag_exp["problems"])
+
+
+@pytest.mark.asyncio
+async def test_inspect_curl_verify_live_detects_401_and_caches_rotated_cookie_without_secret_leak(
+    respx_mock: Any,
+) -> None:
+    """`/v1/autopilot/inspect-curl` (`verify_live=True`) gerçek dışı olmayan alan adlarında
+    canlı oturumu yoklamalı:
+    - 401 döndüğünde `live_ok=False` bildirmeli,
+    - 200 döndüğünde ve `Set-Cookie` ile çerez yenilendiğinde yeni çerezi yalnız RAM'e
+      kaydetmeli (JSON çıktısına asla ham çerez sızdırmamalı).
+    """
+    chat_id = "019da5d9-f4fc-7691-9e1e-34b5c1c9b784"
+    supa_cookie = _make_fake_supabase_cookie("agent-live-user-2")
+    live_curl = (
+        f"curl 'https://live-upstream.io/api/chat/{chat_id}/input' "
+        f"-H 'cookie: {supa_cookie}' "
+        "--data-raw '{\"id\":\"019da5d9-f37d-71be-9d31-000000000001\",\"text\":\"hi\"}'"
+    )
+
+    settings = Settings(api_keys=["sk-test-key"])
+    app = create_app(settings)
+    headers = {"Authorization": "Bearer sk-test-key"}
+
+    # Senaryo A: 401 Unauthorized -> live_ok=False (ek sayfa isteği atmadan doğrudan döner)
+    respx_mock.get(f"https://live-upstream.io/api/chat/{chat_id}").mock(
+        return_value=httpx.Response(401, json={"error": "Not authenticated"})
+    )
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://wrapper.local",
+        ) as client,
+    ):
+        r401 = await client.post(
+            "/v1/autopilot/inspect-curl",
+            headers=headers,
+            json={"agent_curl": live_curl, "verify_live": True},
+        )
+        assert r401.status_code == 200
+        body401 = r401.json()
+        assert body401["live_checked"] is True
+        assert body401["live_ok"] is False
+        assert body401["live_status_code"] == 401
+        assert body401["live_error_type"] == "UpstreamAuthRejected"
+
+        # Senaryo B: 200 OK + `Domain=.live-upstream.io` Set-Cookie rotasyonu (CookieConflict yok)
+        secret_rotated = "ROTATED_SUPER_SECRET_COOKIE_VALUE_999"
+        respx_mock.get(f"https://live-upstream.io/api/chat/{chat_id}").mock(
+            return_value=httpx.Response(
+                200,
+                headers={
+                    "set-cookie": (
+                        f"cf_clearance={secret_rotated}; Domain=.live-upstream.io; Path=/"
+                    )
+                },
+                json={"id": chat_id, "messages": [{"id": "m1", "role": "user", "parts": []}]},
+            )
+        )
+        r200 = await client.post(
+            "/v1/autopilot/inspect-curl",
+            headers=headers,
+            json={"agent_curl": live_curl, "verify_live": True},
+        )
+        assert r200.status_code == 200
+        raw_txt = r200.text
+        assert secret_rotated not in raw_txt
+        body200 = r200.json()
+        assert body200["live_checked"] is True
+        assert body200["live_ok"] is True
+        assert body200["live_message_count"] == 1
+        assert body200["cookie_rotated_on_probe"] is True
+
+
+@pytest.mark.asyncio
+async def test_autopilot_stop_all_and_clear_runs_cancels_active_and_preserves_slot_1() -> None:
+    """`POST /v1/autopilot/runs/clear` ve `/runs/stop-all` bekleyen/çalışan otopilot
+    görevlerini anında iptal etmeli, gece semaforunu serbest bırakmalı ve 1. ana Max
+    hesabına (`slot_manager`) kesinlikle dokunmamalıdır.
+    """
+    max_cookie_1 = _make_fake_supabase_cookie("max-primary-slot-1")
+    max_curl_1 = (
+        "curl 'https://target.example/nextjs-api/stream/create-evaluation' "
+        f"-H 'cookie: {max_cookie_1}' "
+        "-H 'referer: https://target.example/c/1' "
+        "--data-raw '{\"id\":\"1\",\"mode\":\"direct\",\"modelAId\":\"m1\","
+        "\"userMessage\":\"hi\",\"recaptchaV3Token\":\"rc-slot1\"}'"
+    )
+    settings = Settings(api_keys=["sk-test-key"], upstream_curl=max_curl_1)
+    app = create_app(settings)
+    headers = {"Authorization": "Bearer sk-test-key"}
+    agent_curl = _build_windows_cmd_input_curl(sub="agent-slot-2-distinct")
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://wrapper.local",
+        ) as client,
+    ):
+        # Gece penceresi bekleyen (veya çalışan) bir görev başlat
+        start_resp = await client.post(
+            "/v1/autopilot/runs",
+            headers=headers,
+            json={
+                "project_idea": "Temizlenecek deneme projesi",
+                "agent_curl": agent_curl,
+                "respect_night_window": True,
+                "night_start_hour": 4,
+                "night_end_hour": 5,
+            },
+        )
+        assert start_resp.status_code == 200
+        run_id = start_resp.json()["run_id"]
+
+        list_before = (await client.get("/v1/autopilot/runs", headers=headers)).json()
+        assert len(list_before["runs"]) == 1
+
+        clear_resp = await client.post(
+            "/v1/autopilot/runs/clear",
+            headers=headers,
+            json={"include_active": True},
+        )
+        assert clear_resp.status_code == 200
+        clear_data = clear_resp.json()
+        assert clear_data["removed_runs"] == 1
+        assert run_id in clear_data["removed_run_ids"]
+        assert clear_data["remaining_runs"] == 0
+        assert not app.state.autopilot_manager._night_semaphore.locked()
+
+        list_after = (await client.get("/v1/autopilot/runs", headers=headers)).json()
+        assert list_after["runs"] == []
+        assert list_after["active_count"] == 0
+
+        # 1. ana Max hesabı sapasağlam açık kalmalı
+        slots_resp = await client.get("/v1/autopilot/upstream-slots", headers=headers)
+        assert slots_resp.status_code == 200
+        assert slots_resp.json()["active_slots"] == [1]
+
+
+def test_startup_upstream_curl_mobile_ansi_c_quoting_preserves_recaptcha_token() -> None:
+    """Render Environment -> `UPSTREAM_CURL` içine mobil Lemur `--data-raw $'...'`
+    cURL'ü yapıştırıldığında `create_app()` ön normalizasyonu sayesinde `recaptchaV3Token`
+    kayıpsız okunmalıdır (`curl_import.py`'ye dokunmadan).
+    """
+    supa_cookie = _make_fake_supabase_cookie("mobile-render-env-1")
+    mobile_max_curl = (
+        "curl 'https://target.example/nextjs-api/stream/create-evaluation' \\\n"
+        f"  -H 'cookie: {supa_cookie}' \\\n"
+        "  -H 'user-agent: Mozilla/5.0 (Linux; Android 10; K) Mobile Safari/537.36' \\\n"
+        "  -H 'referer: https://target.example/c/123' \\\n"
+        "  --data-raw $'{\"id\":\"chat-1\",\"mode\":\"direct\",\"modelAId\":\"m-1\","
+        "\"userMessage\":\"merhaba\\ndunya\",\"recaptchaV3Token\":\"mobile_recaptcha_ok_777\"}'"
+    )
+    settings = Settings(api_keys=["sk-test"], upstream_curl=mobile_max_curl)
+    app = create_app(settings)
+    assert app.state.settings.recaptcha_static_token == "mobile_recaptcha_ok_777"
+    assert app.state.settings.target_domain == "target.example"
+
+
+def test_lemur_eruda_curl_with_markdown_artifacts_and_vercel_connector_preserved() -> None:
+    """Lemur Browser mobil DevTools (`curl --url '...'`, boş satırlı veya Markdown `\\_`,
+    `\\[`, `\\]`, `&amp;` kaçışlı) cURL çıktısı, `enabledConnectors: ["vercel"]` ve
+    `refresh_token` varlığıyla birlikte kayıpsız çözülmelidir.
+    """
+    from app.autopilot.curl_parse import inspect_agent_cookie_health
+
+    hdr = base64.urlsafe_b64encode(b'{"alg":"ES256","typ":"JWT"}').decode().rstrip("=")
+    pld = (
+        base64.urlsafe_b64encode(
+            json.dumps({"sub": "lemur-real-shape-sub", "exp": 1895289179}).encode()
+        )
+        .decode()
+        .rstrip("=")
+    )
+    jwt_tok = f"{hdr}.{pld}.sig"
+    sess_json = json.dumps(
+        {
+            "access_token": jwt_tok,
+            "token_type": "bearer",
+            "expires_in": 1200,
+            "refresh_token": "synth_refresh_tok_123",
+        }
+    )
+    b64_val = "base64-" + base64.urlsafe_b64encode(sess_json.encode()).decode().rstrip("=")
+    mid = len(b64_val) // 2
+    c0, c1 = b64_val[:mid], b64_val[mid:]
+    chat_id = "01a1ff8c-6fc1-7fc5-ae74-a206595a1300"
+
+    eruda_md_curl = (
+        f"curl --url 'https://target.example/api/chat/{chat_id}/input'   \n\n"
+        " -H 'accept: */*'   \n\n"
+        " -b 'arena\\_device\\_id=dev1; "
+        f"arena-auth-prod-v1.0={c0}; arena-auth-prod-v1.1={c1}; "
+        "cf\\_clearance=cf1; \\_\\_cf\\_bm=bm1; "
+        "\\_dd\\_s=aid=1&amp;rum=2&amp;id=2&amp;logs=1'   \n\n"
+        ' -H \'sec-ch-ua: "Not A(Brand";v="99", "Chromium";v="154", '
+        '"Microsoft Edge Simulate";v="154", "Lemur";v="154"\'   \n\n'
+        " -H 'sec-ch-ua-mobile: ?1'   \n\n"
+        ' -H \'sec-ch-ua-platform: "Android"\'   \n\n'
+        " --data-raw '{\"kind\":\"message\",\"payload\":{\"message\":{\"parts\":"
+        r'\[{"type":"text","text":"Tamam"}\],'
+        "\"id\":\"01a1ff8c-bd28-7a14-b239-75c096d97a83\",\"role\":\"user\","
+        "\"metadata\":{\"lastUserMessageId\":\"01a1ff8c-2c6c-7df1-8f55-e69710dfaadc\"}},"
+        f"\"chatId\":\"agent-runner:{chat_id}\",\"trigger\":\"submit-message\","
+        "\"metadata\":{\"timezone\":\"Europe/Istanbul\","
+        r'"enabledConnectors":\["vercel"\],'
+        r'"submissionSource":"chat\_input",'
+        "\"cx\":\"AiBuibR\",\"recaptchaV3Token\":\"rc_lemur_ok\"}}}'"
+    )
+
+    cfg = parse_agent_curl(eruda_md_curl)
+    assert cfg.chat_id == chat_id
+    assert cfg.account_identity() == "lemur-real-shape-sub"
+    assert cfg.metadata_template.get("enabledConnectors") == ["vercel"]
+    assert cfg.submission_source == "chat_input"
+    assert cfg.warnings == []
+
+    diag = inspect_agent_cookie_health(cfg.cookie, cfg.access_token)
+    assert diag["has_refresh_token"] is True
+    assert diag["incomplete_auth_chunks"] is False
+
+
+
+
+
