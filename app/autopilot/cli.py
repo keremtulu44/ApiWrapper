@@ -337,8 +337,8 @@ def build_parser() -> argparse.ArgumentParser:
         target.add_argument(
             "--agent-timeout",
             type=float,
-            default=3600.0,
-            help="Tur başına azami Agent bekleme süresi (sn, varsayılan: 3600 = 1 saat)",
+            default=5400.0,
+            help="Tur başına azami Agent bekleme süresi (sn, varsayılan: 5400 = 1 sa 30 dk)",
         )
         target.add_argument(
             "--state-file",

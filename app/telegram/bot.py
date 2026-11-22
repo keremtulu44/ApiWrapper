@@ -1351,7 +1351,7 @@ class TelegramBot:
             f"• Run ID: {target_id}\n"
             f"{agent_line}"
             f"• Kayıtlı Tur: {rdata.get('turn_count', 0)}/{rdata.get('max_turns', '?')} "
-            "(tur başına Agent bekleme tavanı: 60 dk)\n"
+            "(tur başına Agent bekleme tavanı: 90 dk)\n"
             f"• Zamanlama: {sched_txt}\n\n"
             f"Durum takibi: /durum {target_id}",
             disable_preview=True,

@@ -125,7 +125,7 @@ class AutopilotManager:
         night_end_hour: int = 7,
         gap_min_seconds: float = 15.0,
         gap_max_seconds: float = 30.0,
-        agent_turn_timeout: float = 3600.0,
+        agent_turn_timeout: float = 5400.0,
         max_mode: Literal["in_process", "external_http", "direct_curl"] = "in_process",
         in_process_service: CompletionService | None = None,
         external_max_url: str = "",
@@ -248,7 +248,7 @@ class AutopilotManager:
         agent_curl: str,
         respect_night_window: bool | None = None,
         max_turns: int | None = None,
-        agent_turn_timeout: float = 3600.0,
+        agent_turn_timeout: float = 5400.0,
         in_process_service: CompletionService | None = None,
         alerter: TelegramAlerter | None = None,
     ) -> AutopilotRunState | None:
