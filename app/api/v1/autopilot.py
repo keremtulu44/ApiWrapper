@@ -482,6 +482,30 @@ async def close_upstream_slot_2(request: Request) -> dict[str, Any]:
     return await slot_mgr.close_slot_2()
 
 
+class SetSlotRoleRequest(BaseModel):
+    """Yuvanın rolü. Hesap **kapatılmaz**; yalnız görevi değişir."""
+
+    role: Literal["max", "spare", "agent", "yedek", "ajan"] = "max"
+
+
+@router.post("/autopilot/upstream-slots/{slot}/role")
+async def set_upstream_slot_role(
+    slot: int, body: SetSlotRoleRequest, request: Request
+) -> dict[str, Any]:
+    """Bir yuvaya rol verir: `max` (gündüz trafiği), `spare` (sıcak yedek),
+    `agent` (Agent projesi hesabı).
+
+    Hesap açık kalır: cURL/çerez/token silinmez, yuva yerinde durur. `agent`
+    rolündeki yuva gündüz `max` isteği almaz ve keepalive yapılmaz; `spare`
+    trafik almaz ama açık ve sıcak bekler.
+    """
+    slot_mgr = _get_slot_manager(request)
+    try:
+        return await slot_mgr.set_role(slot, body.role)
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc), param="role") from exc
+
+
 class SwapUpstreamSlotsRequest(BaseModel):
     """İki Max yuvasının rollerini takas eder (3 hesaplı rotasyon)."""
 

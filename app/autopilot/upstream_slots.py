@@ -177,13 +177,21 @@ class UpstreamSlotRuntimeManager:
                 await self._cancel_keepalive(key)
             return
 
-        active_keys = {(ln.slot if ln.slot > 0 else 1) for ln in lanes.lanes}
+        # `agent` rolündeki yuva için keepalive **çalışmaz** (o pencere Agent'ın
+        # hakkı) ama yuva açık kalır: cURL, çerez ve sıra yerinde durur.
+        active_keys = {
+            (ln.slot if ln.slot > 0 else 1)
+            for ln in lanes.lanes
+            if lanes.roles is None or lanes.roles.keepalive_allowed(ln.slot)
+        }
         for key in list(self._keepalive_tasks):
             if key not in active_keys:
                 await self._cancel_keepalive(key)
 
         for lane in lanes.lanes:
             slot_key = lane.slot if lane.slot > 0 else 1
+            if slot_key not in active_keys:
+                continue
             existing = self._keepalive_tasks.get(slot_key)
             mode_changed = self._keepalive_multi_mode.get(slot_key) != lanes.multi
             needs_restart = (
@@ -287,6 +295,15 @@ class UpstreamSlotRuntimeManager:
                     "slot": slot,
                     "configured": configured,
                     "label": slot_label,
+                    # Rol: hesap **açık kalır**; yalnız ne iş yaptığını söyler.
+                    "role": (
+                        lanes.roles.role_of(slot) if lanes.roles is not None else "max"
+                    ),
+                    "keepalive_allowed": (
+                        lanes.roles.keepalive_allowed(slot)
+                        if lanes.roles is not None
+                        else True
+                    ),
                     "usable": bool(configured and lane is not None and lanes.usable(lane)),
                     "failing": bool(lane.health.failing) if (configured and lane) else False,
                     "failure_code": (lane.health.code or None) if (configured and lane) else None,
@@ -328,6 +345,9 @@ class UpstreamSlotRuntimeManager:
             "roles": self.role_snapshot(slots_info),
             # Hesap rotasyonu: "hangi hesap cevaplıyor" sorusunun tek kaynağı.
             "rotation": self._rotation_snapshot(),
+            "slot_roles": (
+                lanes.roles.snapshot() if lanes.roles is not None else {"enabled": False}
+            ),
         }
 
     @staticmethod
@@ -576,6 +596,47 @@ class UpstreamSlotRuntimeManager:
         view = rotator.describe()
         view["last_decision"] = getattr(lanes, "last_decision", {}) or {}
         return view
+
+    # ---------------------------------------------------------- rol değiştirme
+    async def set_role(self, slot: int, role: str) -> dict[str, Any]:
+        """Bir yuvanın **rolünü** değiştirir; hesabı kapatmaz.
+
+        `max` → gündüz trafiği, `spare` → açık/sıcak yedek (trafik almaz),
+        `agent` → Agent projesinin hesabı (`max` isteği almaz, keepalive durur).
+
+        cURL, çerez, token ve pencere sayacı **yerinde kalır**; yalnız iş bölümü
+        değişir. Etki anındadır: dağıtıcı ve keepalive bu tabloyu canlı okur.
+        """
+        async with self._lock:
+            lanes: LaneSet = self.app.state.lanes
+            accounts: AccountPool = self.app.state.accounts
+            if not 1 <= int(slot) <= MAX_ACCOUNT_SLOTS:
+                raise ValueError(f"Yuva 1..{MAX_ACCOUNT_SLOTS} arasında olmalıdır.")
+            if accounts.get(int(slot)) is None:
+                raise ValueError(
+                    f"Yuva {slot}'te yapılandırılmış hesap yok. Önce "
+                    f"/upstream_curl{'' if slot == 1 else slot} ile cURL ekleyin "
+                    "(rol vermek hesabı yaratmaz)."
+                )
+            from app.services.slot_roles import SlotRoles
+
+            if lanes.roles is None:
+                lanes.roles = SlotRoles()
+            new_role = lanes.roles.set_role(int(slot), role)
+
+            # Rol değişince keepalive tablosu da güncellenir: `agent` yuvasında
+            # ısıtma isteği durur (o pencere Agent'a aittir), `max`/`spare`'da sürer.
+            await self._reconcile_keepalives(updated_slot=int(slot))
+            logger.info("upstream_slot_role_set", slot=int(slot), role=new_role)
+
+            snap = self.status_snapshot()
+            return {
+                "slot": int(slot),
+                "role": new_role,
+                "keepalive_allowed": lanes.roles.keepalive_allowed(int(slot)),
+                "roles": snap.get("slot_roles"),
+                "note": "Hesap açık kaldı; yalnız görevi değişti.",
+            }
 
     # ------------------------------------------------------------ rol takası
     async def swap_roles(

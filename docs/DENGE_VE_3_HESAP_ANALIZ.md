@@ -521,3 +521,35 @@ içinde `rotation`, Telegram `/hesaplar` çıkışında `🔁 Rotasyon: açık �
 Testler: `tests/test_rotation_engine.py` → 21 test (sıra, aynı-metin kuralı,
 strict/excluded/agent yuvası, ağırlık, sticky, pinned, sağlık düşüşü, üç rolün
 aynı gün çakışmadan çalışması, format-nötrlüğü). Tam paket **879 passed**.
+
+### 12.1 Düzeltme: hesap **verilmiyor**, rol değişiyor (üç hesap da açık)
+
+Kullanıcı itirazı (haklı): *"nasıl yani hesabı verme artık olmayacak ki, 3 farklı
+hesap kullanılacak"*. Önceki anlatımda "serbest bırak / kapat" geçiyordu; bu
+yanlıştı. Doğrusu:
+
+| Rol | Gündüz `max` trafiği | Keepalive | Hesap açık mı? | cURL silinir mi? |
+|---|---|---|---|---|
+| `max` | **alır** (rotasyon üyesi) | açık | ✅ evet | ❌ hayır |
+| `spare` | almaz (sıcak yedek) | açık | ✅ evet | ❌ hayır |
+| `agent` | **almaz** | **yapılmaz** (o pencere Agent'ın) | ✅ evet | ❌ hayır |
+
+Uygulama: `app/services/slot_roles.py` (`SlotRoles`), `LaneSet.usable()` rolü
+`max` olmayan yuvayı gündüz trafiğinden çıkarır ama **hattı/hesabı korur**;
+keepalive yalnız `agent` yuvasında durur. Canlı değişim: `/rol <yuva> <rol>`
+veya `POST /v1/autopilot/upstream-slots/{slot}/role`. Roller
+`ACCOUNT_SLOT_ROLES="1:max,2:max,3:agent"` ile de verilebilir.
+
+Üç hesap senaryosu (hepsi açık):
+```
+yuva 1  max    → gündüz trafiği (1/2 sırayla)
+yuva 2  max    → gündüz trafiği
+yuva 3  agent  → gece Agent projesi; max isteği almaz, cURL yerinde
+```
+Yedek istersen: `/rol 3 yedek` (trafik almaz, sıcak bekler) →
+`/rol 3 max` ile tekrar gündüz trafiğine alınır.
+
+Testler: `tests/test_slot_roles.py` → 12 test (rol ayrıştırma, Türkçe eş adlar,
+agent yuvasının **açık kalması** ama trafik almaması, yedek yuvanın sıcak
+beklemesi, kapanmadan rol takası, boş yuvaya rol verilememesi, uç sözleşmesi).
+Tam paket **893 passed**.

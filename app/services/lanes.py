@@ -103,6 +103,7 @@ class LaneSet:
         retry_failing_after: float = 0.0,
         sticky_size: int = 1024,
         rotation: Any | None = None,
+        roles: Any | None = None,
     ) -> None:
         self.lanes: list[Lane] = list(lanes)
         if not self.lanes:
@@ -119,6 +120,10 @@ class LaneSet:
         #: davranış **tam olarak** eski yük dengesidir; rotasyon yalnız açıkken
         #: devreye girer (varsayılan kapalı).
         self.rotation = rotation
+        #: Yuva rolleri (`app/services/slot_roles.py`). `None`/kapalıyken her yuva
+        #: eşittir (eski davranış). Roller hesabı **kapatmaz**: yalnız o yuvanın
+        #: gündüz `max` trafiği alıp almayacağını belirler.
+        self.roles = roles
         #: Son rotasyon kararı (gözlemlenebilirlik; secret içermez).
         self.last_decision: dict[str, Any] = {}
 
@@ -156,12 +161,16 @@ class LaneSet:
             from app.services.account_rotation import AccountRotator
 
             rotation = AccountRotator.from_settings(settings)
+        from app.services.slot_roles import SlotRoles
+
+        roles = SlotRoles.from_settings(settings)
         return cls(
             lanes,
             failover=settings.account_failover,
             cooldown=accounts.cooldown_remaining,
             retry_failing_after=0.0 if probes else RETRY_FAILING_WITHOUT_PROBE_SECONDS,
             rotation=rotation,
+            roles=roles,
         )
 
     # ------------------------------------------------------------- durum
@@ -190,7 +199,14 @@ class LaneSet:
         return max(0.0, float(self._cooldown(lane.slot)))
 
     def usable(self, lane: Lane) -> bool:
-        """Hat yeni iş alabilir mi? (Bilinen arızası yok, hesap dinlenmiyor.)"""
+        """Hat yeni iş alabilir mi?
+
+        Üç koşul: bilinen arızası yok, hesap dinlenmiyor ve **rolü `max`**
+        (`agent` rolündeki yuva gündüz `max` trafiği almaz — hesap açık kalır,
+        yalnız o pencere Agent projesine ayrılır).
+        """
+        if self.roles is not None and not self.roles.is_max(lane.slot):
+            return False
         return not lane.health.failing and self.cooling(lane) <= 0
 
     def others_usable(self, lane: Lane) -> bool:
@@ -446,6 +462,12 @@ class LaneSet:
         return tuple(notes)
 
     # ------------------------------------------------------- gözlemlenebilirlik
+    def role_of(self, lane: Lane) -> str:
+        """Hattın rolü (`max` / `spare` / `agent`). Rol sistemi kapalıysa `max`."""
+        if self.roles is None:
+            return "max"
+        return self.roles.role_of(lane.slot)
+
     def describe(self) -> str:
         """Hesapların tek satırlık durumu (operatör bildirimleri için)."""
         parts: list[str] = []
@@ -465,6 +487,12 @@ class LaneSet:
                 "account": lane.label or None,
                 "slot": lane.slot or None,
                 "usable": self.usable(lane),
+                "role": self.role_of(lane),
+                "keepalive": (
+                    self.roles.keepalive_allowed(lane.slot)
+                    if self.roles is not None
+                    else True
+                ),
                 "assigned_total": lane.assigned,
                 "cooldown_remaining_seconds": round(self.cooling(lane), 1),
                 "queue": lane.queue.snapshot(),

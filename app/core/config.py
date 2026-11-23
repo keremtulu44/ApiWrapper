@@ -405,6 +405,16 @@ class Settings(BaseSettings):
     #: Ağırlıklar: "1:2,2:1" → 1. yuva iki katı iş alır (mode="weighted").
     account_rotation_weights: str = ""
 
+    # --------------------------------------------------------------- roller
+    #: Yuva rolleri: `"1:max,2:max,3:agent"`. Hesap **kapatılmaz**; yalnız o
+    #: yuvanın ne iş yapacağı belirlenir:
+    #: `max`   = gündüz `max` trafiği (rotasyona katılır)
+    #: `spare` = açık ve sıcak bekler, gündüz trafiği almaz (acil yedek)
+    #: `agent` = Agent Mode projesinin hesabı; `max` trafiği almaz, keepalive
+    #:           yapılmaz (o pencere Agent'ın hakkı). cURL yuvada kalır.
+    #: Boş = rol sistemi kapalı, tüm yuvalar eşit (eski davranış).
+    account_slot_roles: str = ""
+
     # --------------------------------------------------------------- models
     models_file: str = "config/models.yaml"
 

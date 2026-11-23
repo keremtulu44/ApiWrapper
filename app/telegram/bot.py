@@ -44,7 +44,8 @@ _HELP = (
     "• /upstream_curl2 — Gündüz 2. Max hesabını canlı ekle/güncelle (+ /bitir)\n"
     "• /upstream_curl2 kapat — 2. Max hesabının bağlantısını ve keepalive'ını kökten kes\n"
     "• /hesaplar — Açık Max yuvalarını, rollerini ve bağlantı durumunu görüntüle\n"
-    "• /rotasyon [a b] — İki Max yuvasının yerini değiştir (3 hesap dönüşümü)\n\n"
+    "• /rotasyon [a b] — İki Max yuvasının yerini değiştir (3 hesap dönüşümü)\n"
+    "• /rol <yuva> <max|yedek|agent> — Hesabı KAPATMADAN görevini değiştir\n\n"
     "🤖 Otopilot (Model A — Agent Mode Proje):\n"
     "• /agent_curl (veya /curl) — Agent Mode '/input' cURL'ünü yapıştır (+ /bitir)\n"
     "• /agent_test — Bellekteki Agent cURL oturumunun canlı sağlığını tekrar test et\n"
@@ -73,6 +74,22 @@ _ROTATION_RULES = {
     "single_lane": "tek hesap",
     "excluded": "uygun yuva yok",
 }
+
+
+#: Rol → kısa etiket.
+_ROLE_SHORT = {"max": "gündüz trafiği", "spare": "sıcak yedek", "agent": "Agent projesi"}
+
+
+def _roles_line(view: dict[str, object]) -> str:
+    """`/hesaplar` için rollerin tek satırlık özeti."""
+    roles = view.get("roles") or {}
+    if not isinstance(roles, dict) or not roles:
+        return "tanımsız"
+    parts = [
+        f"yuva {slot} = {_ROLE_SHORT.get(str(role), role)}"
+        for slot, role in sorted(roles.items(), key=lambda kv: str(kv[0]))
+    ]
+    return " · ".join(parts) + " (hepsi açık)"
 
 
 def _rotation_line(view: dict[str, object]) -> str:
@@ -127,6 +144,7 @@ _KNOWN_BOT_COMMANDS: frozenset[str] = frozenset(
         "/upstream_curl2",
         "/hesaplar",
         "/rotasyon",
+        "/rol",
         "/bitir",
         "/curl_bitir",
         "/curlbitir",
@@ -547,6 +565,9 @@ class TelegramBot:
             if command == "/rotasyon":
                 await self._handle_rotation(chat_id, arg)
                 return
+            if command == "/rol":
+                await self._handle_slot_role(chat_id, arg)
+                return
             if command in {"/simdi", "/hemen"}:
                 await self._handle_start_now(chat_id, sess, arg)
                 return
@@ -769,8 +790,16 @@ class TelegramBot:
             )
             if item.get("failure_code"):
                 lines.append(f"  Son arıza kodu: {item['failure_code']}")
+        slot_roles = data.get("slot_roles") or {}
+        if slot_roles.get("enabled"):
+            lines.append(f"\n🎭 Roller: {_roles_line(slot_roles)}")
+        else:
+            lines.append(
+                "\n🎭 Roller: tanımsız (üç yuva da `max`) — "
+                "`/rol 3 agent` ile hesabı kapatmadan görev verebilirsin"
+            )
         rotation = data.get("rotation") or {}
-        lines.append(f"\n🔁 Rotasyon: {_rotation_line(rotation)}")
+        lines.append(f"🔁 Rotasyon: {_rotation_line(rotation)}")
         lines.append(f"🤖 Aktif/Gece Sırasındaki Agent Projesi: {active_ap}")
         await self.send_text(chat_id, "\n".join(lines))
 
@@ -1298,6 +1327,57 @@ class TelegramBot:
             chat_id,
             "⚡ Sıradaki proje için hemen başlatma modu açıldı (22:00 beklenmeyecek). "
             "Tekrar gece moduna dönmek için /gece yazabilirsiniz.",
+        )
+
+    async def _handle_slot_role(self, chat_id: int, arg: str) -> None:
+        """`/rol <yuva> <max|yedek|agent>` — hesabı kapatmadan görevini değiştirir.
+
+        Üç hesap **açık kalır**; yalnız kim hangi işi yapıyor değişir. Gece
+        Agent'a hesap vermek için `/upstream_curlN kapat` gerekmez.
+        """
+        tokens = [t.strip() for t in arg.split() if t.strip()]
+        if len(tokens) != 2:
+            await self.send_text(
+                chat_id,
+                "Kullanım: /rol <yuva> <max|yedek|agent>\n"
+                "Örnek: /rol 3 agent — 3. hesap Agent projesine geçer, "
+                "hesap açık kalır (cURL silinmez).\n"
+                "• max = gündüz trafiği · yedek = açık, sıcak bekler · "
+                "agent = Agent projesi (max isteği almaz)",
+            )
+            return
+        slot_txt, role_txt = tokens
+        try:
+            slot = int(slot_txt)
+        except ValueError:
+            await self.send_text(chat_id, "Yuva numarası sayı olmalı. Örnek: /rol 3 agent")
+            return
+        try:
+            resp = await self.wrapper.post(
+                f"/v1/autopilot/upstream-slots/{slot}/role",
+                json={"role": role_txt.lower()},
+            )
+        except httpx.HTTPError:
+            await self.send_text(chat_id, "Wrapper rol ucuna ulaşılamadı.")
+            return
+        if resp.status_code != 200:
+            await self.send_text(chat_id, _autopilot_error_message(resp))
+            return
+        data = resp.json()
+        role = str(data.get("role") or "")
+        explain = {
+            "max": "gündüz `max` trafiğini alıyor.",
+            "spare": "gündüz trafiği almıyor ama açık ve sıcak bekliyor.",
+            "agent": "Agent projesinin hesabı: `max` isteği almıyor, "
+            "ısıtma (keepalive) yapılmıyor.",
+        }.get(role, "")
+        await self.send_text(
+            chat_id,
+            f"✅ Yuva {slot} rolü: {role}\n"
+            f"• {explain}\n"
+            "• Hesap **kapatılmadı**: cURL/çerez/token yerinde duruyor; "
+            "istediğin an `/rol "
+            f"{slot} max` ile geri alabilirsin.",
         )
 
     async def _handle_rotation(self, chat_id: int, arg: str) -> None:
