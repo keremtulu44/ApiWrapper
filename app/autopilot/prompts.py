@@ -201,6 +201,32 @@ def _clip_head_tail(text: str, max_chars: int, *, head_ratio: float = 0.4) -> st
     return cleaned[:head].rstrip() + marker + cleaned[-tail:].lstrip()
 
 
+#: Bir turun hedef süresi (dk). Kullanıcı ölçümü: tur ~1.5 saate kadar uzuyordu.
+#: Tur süresi Max'in istem boyutuyla değil **istediği işin kapsamıyla** büyür;
+#: bu bütçe istemin içine somut sınır olarak yazılır ve aşılırsa bölünür.
+TURN_BUDGET_MINUTES = 90
+#: Tur bütçesini aşan istekleri bölmek için kullanılan yumuşak sınır (dk).
+TURN_BUDGET_SOFT_MINUTES = 60
+
+
+def build_turn_budget_line(elapsed_minutes: float | None = None) -> str:
+    """Tur bütçesini tek satırda, ölçülebilir biçimde yazar.
+
+    `elapsed_minutes` verilirse "ne kadar kaldı" bilgisi de eklenir; kullanıcının
+    şikâyeti tam olarak buydu: tur sürerken ne olduğu ve ne kadar kaldığı
+    görünmüyordu.
+    """
+    line = (
+        f"⏱️ TUR BÜTÇESİ: bu tur ~{TURN_BUDGET_SOFT_MINUTES}-{TURN_BUDGET_MINUTES} dk sürmeli. "
+        "Tek turda bitmeyecek kadar büyük bir iş varsa böl: bu turda yalnız ilk "
+        "parçayı bitir ve kalanı hafızaya 'sıradaki' olarak yaz."
+    )
+    if elapsed_minutes is not None and elapsed_minutes > 0:
+        remaining = max(0.0, TURN_BUDGET_MINUTES - elapsed_minutes)
+        line += f" (Geçen: {elapsed_minutes:.0f} dk · Kalan: {remaining:.0f} dk)"
+    return line
+
+
 def build_kickoff_user_prompt(
     *,
     project_idea: str,
@@ -272,16 +298,23 @@ def build_kickoff_user_prompt(
 
     return (
         f"[PROJE FİKRİ]\n{safe_idea}\n\n"
-        f"[BÜTÇE]\n{budget_header}\n\n"
+        f"[BÜTÇE]\n{budget_header}\n{build_turn_budget_line()}\n\n"
         f"{state_block}\n\n"
         "[1. TUR GÖREVİN]\n"
         "1. Fikri sıradan CRUD olmaktan çıkar; karakterli arayüz, gerçekçi Türkçe veri "
         "ve 2-3 yaratıcı imza özellik kurgula.\n"
         "2. <HEDEF_TUR> içine kapsamına göre ideal toplam tur sayısını yaz "
         f"{tur_hint}.\n"
-        "3. <AKSAM_PLANI> içine proje sahibine gönderilecek kısa, maddeli akşam "
-        "başlangıç planını yaz (Vizyon, İmza Özellikler, Mimari; en fazla 6-8 satır).\n"
-        "4. <GUNCEL_HAFIZA> içine kısa maddelerle 5 aşamalı yol haritasını yaz.\n"
+        "3. <AKSAM_PLANI> içine proje sahibine gidecek planı **tam olarak şu 5 "
+        "satır** biçiminde yaz (başka satır ekleme):\n"
+        "   AMAC: tek cümle\n"
+        "   OZELLIK: en fazla 3 imza özellik, virgülle\n"
+        "   MIMARI: tek satır (stack + veri)\n"
+        "   ILK_TUR: bu turda yapılacak tek şey\n"
+        f"   TUR_SAYISI: ~N (her tur ~{TURN_BUDGET_SOFT_MINUTES} dk)\n"
+        "4. <GUNCEL_HAFIZA> içine yol haritasını **en fazla 4 madde** olarak yaz; "
+        "her madde tek satır ve şu biçimde: '- [ ] aşama adı · kabul ölçütü'. "
+        "Tamamlanan madde işaretlenir; aynı madde iki kez yazılmaz.\n"
         f"{step5_line}"
     )
 
@@ -303,8 +336,12 @@ def build_turn_user_prompt(
     planned_turns: int | None = None,
     has_interactive_blocker: bool = False,
     early_exit_rejection_note: str = "",
+    chained_next_line: str = "",
 ) -> str:
     """Ara ve son turlarda durumsuz `max`'a verilen dengeli bağlam paketi."""
+    chained_next_line = chained_next_line.strip() or (
+        "(Hafızadaki yol haritasından sıradaki eksik maddeyi seç; yeni kapsam açma.)"
+    )
     done_turns = completed_turns if completed_turns is not None else max(1, turn - 1)
     remaining = max(0, max_turns - done_turns)
     effective_min = (
@@ -347,6 +384,38 @@ def build_turn_user_prompt(
     ]
     history_block = "\n".join(history_lines) if history_lines else "(Yok)"
 
+    # Yol haritasındaki işaretli maddeler = bitmiş işler; işaretsizler = sırada.
+    done_items: list[str] = []
+    todo_items: list[str] = []
+    for raw_line in (memory_summary or "").splitlines():
+        line = raw_line.strip()
+        if not line.startswith(("-", "*", "•")):
+            continue
+        marker = line[:6].lower()  # "- [x] ", "✅ ", "* [ ] " gibi işaretleri kapsar
+        body = line.lstrip("-*• ").strip()
+        # İşaret öneki gövdeden düşürülür; aksi halde "- ✓ [x] ..." gibi çift iz kalır.
+        body = re.sub(r"^(?:\[[ xX]\]|✅)\s*", "", body).strip()
+        if not body:
+            continue
+        if "[x]" in marker or "✅" in marker or "[X]" in line[:6]:
+            done_items.append(body)
+        elif "[ ]" in marker:
+            todo_items.append(body)
+    if done_items:
+        done_block = "\n".join(f"- ✓ {item}" for item in done_items[-8:])
+    elif turn_digests:
+        # İşaret yoksa son turların talimatlarından türet (en azından tekrarı önler).
+        done_block = "\n".join(
+            f"- ✓ T{item.turn} bitti: {item.max_summary}" for item in turn_digests[-5:]
+        )
+    else:
+        done_block = "(Henüz bir şey bitmedi; bu ilk tur.)"
+    next_block = (
+        "\n".join(f"- {item}" for item in todo_items[:3])
+        if todo_items
+        else chained_next_line
+    )
+
     # Dilim bütçeleri bilinçli olarak dengeli: ham sohbet dökümü değil, karar
     # vermeye yetecek kadar sinyal gönderilir (uzun istem = daha yavaş/dağınık karar).
     clipped_memory = _clip_head_tail(memory_summary, 800, head_ratio=0.5) or "(Boş)"
@@ -368,6 +437,11 @@ def build_turn_user_prompt(
         "bölümler). Ajan AYNI Agent sohbetinde ilerliyor; dosyaları ve sunucuları "
         "duruyor. Bitmiş işi tekrar yaptırma, yalnız sıradaki eksiği iste.",
         f"[HAFIZA VE YOL HARİTASI]\n{clipped_memory}",
+        # Kullanıcının şikâyeti: "prompt her seferinde yapılan şeyi tekrar
+        # yaptırıyor". `max` durumsuz olduğu için önceki talimatı hatırlamaz;
+        # aşağıdaki iki bölüm onu tekrar istemekten alıkoyar.
+        f"[ŞİMDİYE KADAR YAPILDI — TEKRAR İSTEME]\n{done_block}",
+        f"[SIRADAKİ (yalnız bunu iste)]\n{next_block}",
         f"[SON TURLAR]\n{history_block}",
         f"[SON TALİMATIN]\n{clipped_last_msg}",
         f"[SANDBOX GERÇEK EYLEM KANITI]\n{clipped_evidence}",
@@ -390,6 +464,7 @@ def build_turn_user_prompt(
     if early_lock_active:
         decision_task = (
             "[KARAR]\n"
+            f"{build_turn_budget_line()}\n"
             "Sandbox Kanıtını ve yol haritanı kontrol et; erken bitirme kilidi aktif "
             "olduğu için <DURUM>DEVAM</DURUM> ver, yapılan işi tekrarlatmadan sıradaki "
             "en değerli aşamayı <AJANA_MESAJ> içine yaz ve <GUNCEL_HAFIZA>'yı kısa tut."
@@ -397,6 +472,7 @@ def build_turn_user_prompt(
     else:
         decision_task = (
             "[KARAR]\n"
+            f"{build_turn_budget_line()}\n"
             "İmza özellikler, sıfır sahte kontrol, uçtan uca testler (exit_code=0) ve "
             "0.0.0.0 canlı sunucu HTTP doğrulaması kanıtla tamsa <DURUM>TAMAMLANDI</DURUM> "
             "ve <ASAMA>5_KABUL</ASAMA> ver; eksik varsa <DURUM>DEVAM</DURUM> ile net "

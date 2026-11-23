@@ -1309,7 +1309,9 @@ async def test_night_window_queue_auto_turns_and_every_turn_no_ask_guardrail(
 
     # Akşam 22:05'te başlayan iş bittiğinde sabah 07:00'ye (8 sa 55 dk = 32100 sn) planlanmalı!
     assert seconds_until_morning_hour(datetime(2026, 11, 21, 1, 0, tzinfo=TR_TZ)) == 21600.0
-    assert any("🌆 Akşam Proje Planı Hazır" in msg for msg in immediate_alerts)
+    # Plan başlığı sadeleşti (mesaj artık "tek bakışta anlaşılır" biçimde).
+    assert any("🌆 Plan hazır" in msg for msg in immediate_alerts)
+    assert any("Ne yapacağız:" in msg for msg in immediate_alerts)
     assert len(scheduled_morning) == 1
     assert "🌅 Sabah Teslim Raporu" in scheduled_morning[0][1]
     assert "Tur 5 tamam." in scheduled_morning[0][1]
@@ -2034,3 +2036,137 @@ def test_autopilot_run_state_survives_disk_roundtrip(tmp_path: Path) -> None:
     assert restored.turn_extensions == 2
     assert restored.stuck_recoveries == 1
     assert restored.memory_summary == "Sunucu ayakta."
+
+
+# ---------------------------------------------------------------------------
+# 8. Okunabilirlik + tekrar yasağı: 1.5 saatlik tur, "ne oldu / ne kaldı"
+# ---------------------------------------------------------------------------
+
+
+def _roadmap_memory() -> str:
+    return (
+        "- [x] iskelet kuruldu · test exit_code=0\n"
+        "- [x] bütçe grafiği · canlı 200\n"
+        "- [ ] hedef takibi ekranı · mobil uyumlu\n"
+        "- [ ] bildirimler · uçtan uca test"
+    )
+
+
+def test_turn_prompt_has_done_ledger_and_single_next_step() -> None:
+    """`max` durumsuz: biten işler açıkça yazılmalı ki aynı işi tekrar istemesin."""
+    prompt = build_turn_user_prompt(
+        project_idea="Kişisel finans",
+        turn=3,
+        max_turns=8,
+        current_phase="3_IMZA_OZELLIKLER",
+        memory_summary=_roadmap_memory(),
+        turn_digests=[],
+        last_sent_to_agent="Bütçe grafiği ekle",
+        agent_reply_text="Grafik hazır.",
+        sandbox_evidence="bash: npm test → exit_code=0",
+        completed_turns=2,
+        min_turns=4,
+        planned_turns=8,
+    )
+    assert "[ŞİMDİYE KADAR YAPILDI — TEKRAR İSTEME]" in prompt
+    assert "✓ iskelet kuruldu" in prompt
+    assert "✓ bütçe grafiği" in prompt
+    # Biten iş "sıradaki" bölümünde tekrar edilmemeli.
+    next_block = prompt.split("[SIRADAKİ (yalnız bunu iste)]", 1)[1].split("[SON TURLAR]", 1)[0]
+    assert "iskelet kuruldu" not in next_block
+    assert "hedef takibi ekranı" in next_block
+
+
+def test_turn_prompt_carries_1_5_hour_turn_budget() -> None:
+    """Tur bütçesi istemde somut sınır olarak yazılmalı (kullanıcı: maks 1.5 saat)."""
+    from app.autopilot.prompts import TURN_BUDGET_MINUTES, TURN_BUDGET_SOFT_MINUTES
+
+    assert TURN_BUDGET_MINUTES == 90
+    assert TURN_BUDGET_SOFT_MINUTES < TURN_BUDGET_MINUTES
+    prompt = build_turn_user_prompt(
+        project_idea="Kişisel finans",
+        turn=2,
+        max_turns=8,
+        current_phase="2_TEMEL",
+        memory_summary=_roadmap_memory(),
+        turn_digests=[],
+        last_sent_to_agent="x",
+        agent_reply_text="y",
+        sandbox_evidence="z",
+        completed_turns=1,
+        min_turns=4,
+        planned_turns=8,
+    )
+    assert "TUR BÜTÇESİ" in prompt
+    assert "60-90 dk" in prompt
+    assert "böl" in prompt  # büyük işi parçalama talimatı
+
+
+def test_kickoff_plan_is_forced_to_five_named_lines() -> None:
+    """Plan 5 etiketli satıra zorlanmalı: 'ne olacağım' tek bakışta anlaşılsın."""
+    kickoff = build_kickoff_user_prompt(project_idea="Kişisel finans", max_turns=8)
+    for token in ("AMAC:", "OZELLIK:", "MIMARI:", "ILK_TUR:", "TUR_SAYISI:"):
+        assert token in kickoff
+    assert "en fazla 4 madde" in kickoff
+    assert "- [ ] aşama adı · kabul ölçütü" in kickoff
+
+
+def test_compact_plan_limits_evening_plan_message() -> None:
+    """Uzun plan mesajı 6 satıra/620 karaktere indirilmeli."""
+    from app.autopilot.orchestrator import PLAN_MAX_LINES, _compact_plan
+
+    long_plan = "\n".join(f"SATIR {i} " + ("x" * 200) for i in range(20))
+    compact = _compact_plan(long_plan)
+    assert compact.count("\n") + 1 <= PLAN_MAX_LINES
+    assert len(compact) <= 700
+
+
+@pytest.mark.anyio
+async def test_turn_start_and_heartbeat_lines_explain_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tur başında ve sürerken 'ne oldu / ne kadar kaldı' satırı üretilmeli."""
+    import app.autopilot.orchestrator as orch_mod
+
+    alerts: list[str] = []
+
+    class _Alerter:
+        enabled = True
+
+        async def send(self, text: str, label: str = "") -> None:
+            alerts.append(text)
+
+    async def _no_wait(_self: Any, _seconds: float) -> bool:
+        return True
+
+    monkeypatch.setattr(AutopilotOrchestrator, "_sleep_interruptible", _no_wait)
+    # Heartbeat'i testte hemen tetikle:
+    monkeypatch.setattr(orch_mod, "TURN_HEARTBEAT_SECONDS", 0.0)
+
+    bridge = _FakeMaxBridge(
+        [
+            "<DURUM>DEVAM</DURUM><MESAJ>Sunucuyu kur.</MESAJ><HAFIZA>- [ ] sunucu</HAFIZA>",
+            "<DURUM>DEVAM</DURUM><MESAJ>Testi yaz.</MESAJ><HAFIZA>- [ ] test</HAFIZA>",
+            "<DURUM>TAMAMLANDI</DURUM><DEGERLENDIRME>Bitti.</DEGERLENDIRME>",
+        ],
+        sub="max-readable-sub",
+    )
+    agent = _FlakyAgent(failures=0)
+    cfg = AutopilotConfig(
+        project_idea="Okunabilirlik",
+        max_turns=2,
+        gap_min_seconds=0.0,
+        gap_max_seconds=0.0,
+        state_file=tmp_path / "readable.json",
+    )
+    orch = AutopilotOrchestrator(
+        config=cfg, agent=agent, max_bridge=bridge, alerter=_Alerter()  # type: ignore[arg-type]
+    )
+    st = await orch.run()
+
+    assert st.status == "completed"
+    joined = "\n".join(alerts)
+    assert "▶️ Tur 1 başladı" in joined
+    assert "🎯 Bu turun işi:" in joined
+    # Tur sürerken kalan süre bilgisi (heartbeat kapalıysa da başlangıç satırında var):
+    assert "dk'da bir durum güncellemesi" in joined or "kaldı" in joined

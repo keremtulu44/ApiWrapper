@@ -22,6 +22,7 @@ import contextlib
 import json
 import os
 import random
+import re
 import time
 from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
@@ -37,6 +38,8 @@ from app.autopilot.prompts import (
     AGENT_MORNING_HANDOFF_PROMPT,
     AGENT_OPERATING_GUARDRAILS,
     MAX_SYSTEM_PROMPT,
+    TURN_BUDGET_MINUTES,
+    TURN_BUDGET_SOFT_MINUTES,
     MaxDecision,
     TurnDigest,
     build_early_exit_fallback_instruction,
@@ -173,6 +176,10 @@ MAX_TRANSIENT_TURN_RETRIES = 2
 MAX_TURN_EXTENSIONS = 48
 #: Tur tavanı dolunca otomatik modda eklenecek tur sayısı.
 TURN_LIMIT_AUTO_EXTEND = 3
+#: Tur sürerken "ne olduğu / ne kadar kaldı" bilgisini Telegram'a kaç saniyede
+#: bir yazacağız. 0 = kapalı. Kullanıcı geri bildirimi: uzun turda hiçbir şey
+#: görünmediği için süreç anlaşılmıyordu.
+TURN_HEARTBEAT_SECONDS = 600.0
 
 
 @dataclass(slots=True)
@@ -347,6 +354,32 @@ class AutopilotRunState:
         )
 
 
+#: Akşam planı mesajında gösterilecek en fazla satır/karakter. Kullanıcı geri
+#: bildirimi: plan uzun çıkıyordu ve ne okunacağı anlaşılmıyordu.
+PLAN_MAX_LINES = 6
+PLAN_MAX_CHARS = 620
+
+
+def _compact_plan(text: str) -> str:
+    """Plan metnini okunur bir blok hâline getirir (en fazla 6 satır)."""
+    raw = (text or "").strip()
+    if not raw:
+        return ""
+    lines = [ln.strip() for ln in raw.splitlines() if ln.strip()]
+    out: list[str] = []
+    used = 0
+    for line in lines:
+        if len(out) >= PLAN_MAX_LINES:
+            out.append("…")
+            break
+        if used + len(line) > PLAN_MAX_CHARS:
+            out.append(line[: max(20, PLAN_MAX_CHARS - used)] + "…")
+            break
+        out.append(line)
+        used += len(line)
+    return "\n".join(out)
+
+
 ProgressCallback = Callable[[AutopilotRunState, str], None]
 
 
@@ -375,6 +408,10 @@ class AutopilotOrchestrator:
         self.alerter = alerter
         self.on_progress = on_progress
         self.on_agent_delta = on_agent_delta
+        #: Tur içi canlı ilerleme (heartbeat) zamanlayıcısı.
+        self._last_heartbeat = 0.0
+        self._turn_started_at = 0.0
+        self._turn_activity = ""
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self._sleep_fn = sleep_fn
         self._execution_semaphore = execution_semaphore
@@ -601,7 +638,57 @@ class AutopilotOrchestrator:
             exc, (UpstreamTimeout, UpstreamNetworkError, UpstreamProtocolError)
         )
 
-    async def _send_turn_with_retries(self, outgoing: str) -> AgentMessage | None:
+    def _turn_start_line(self, turn: int, outgoing: str) -> str:
+        """Tur başlarken gönderilen **tek bakışta anlaşılır** satır bloğu."""
+        done = len(self.state.turns)
+        planned = self.state.planned_turns or self.config.max_turns
+        next_step = self._next_step_line() or _summarize_one_line(outgoing, 160)
+        return "\n".join(
+            [
+                f"▶️ Tur {turn} başladı ({done}/{planned} bitti · tavan {self.config.max_turns})",
+                f"🎯 Bu turun işi: {_summarize_one_line(next_step, 180)}",
+                f"⏱️ Hedef: {TURN_BUDGET_SOFT_MINUTES}-{TURN_BUDGET_MINUTES} dk · "
+                f"{TURN_HEARTBEAT_SECONDS / 60:.0f} dk'da bir durum güncellemesi gelecek",
+            ]
+        )
+
+    def _note_agent_activity(self, delta: Any) -> None:
+        """Akıştan gelen olayla 'şu an ne yapılıyor' satırını tazeler."""
+        kind = getattr(delta, "kind", "")
+        if kind == "tool_input" or kind == "tool_output":
+            tool = getattr(delta, "tool_name", "") or "araç"
+            self._turn_activity = f"{tool} çalıştırıyor"
+        elif kind == "text":
+            self._turn_activity = "açıklama yazıyor"
+
+    def _turn_status_line(self) -> str:
+        """Tur sürerken: geçen süre, kalan süre ve son görülen eylem."""
+        if not self._turn_started_at:
+            return ""
+        elapsed_min = (time.monotonic() - self._turn_started_at) / 60.0
+        left = max(0.0, TURN_BUDGET_MINUTES - elapsed_min)
+        over = " · BÜTÇE AŞILDI, bir sonraki turda bölünecek" if left <= 0 else ""
+        return (
+            f"⏳ Tur {self.state.current_turn}: {elapsed_min:.0f} dk geçti · "
+            f"~{left:.0f} dk kaldı · {self._turn_activity or 'çalışıyor'}{over}"
+        )
+
+    async def _maybe_heartbeat(self) -> None:
+        """Uzun turda Telegram'a periyodik durum satırı düşer (sessizlik = kaygı)."""
+        if TURN_HEARTBEAT_SECONDS <= 0 or not self._turn_started_at:
+            return
+        now = time.monotonic()
+        if now - self._last_heartbeat < TURN_HEARTBEAT_SECONDS:
+            return
+        self._last_heartbeat = now
+        line = self._turn_status_line()
+        if line:
+            self._emit_progress(line)
+            await self._notify_telegram(line)
+
+    async def _send_turn_with_retries(
+        self, outgoing: str, *, turn: int | None = None
+    ) -> AgentMessage | None:
         """Ajan turunu geçici hatada yeniden dener; olmazsa koşuyu duraklatır.
 
         Dönen `None`, koşunun `stopped` durumuna alındığını bildirir (yeniden
@@ -611,10 +698,30 @@ class AutopilotOrchestrator:
         attempts = max(0, self.config.max_transient_turn_retries)
         last_exc: BaseException | None = None
         for attempt in range(attempts + 1):
+            def _delta(delta: Any) -> None:
+                self._note_agent_activity(delta)
+                if self.on_agent_delta is not None:
+                    self.on_agent_delta(delta)
+                # Heartbeat uyandırıcıyı ana döngüde bırakmak yerine buradan
+                # tetiklemek yeterli: tur bekleyişi tek bir await içinde.
+                if (
+                    TURN_HEARTBEAT_SECONDS > 0
+                    and time.monotonic() - self._last_heartbeat
+                    >= TURN_HEARTBEAT_SECONDS
+                ):
+                    self._last_heartbeat = time.monotonic()
+                    line = self._turn_status_line()
+                    if line:
+                        self._emit_progress(line)
+                        with contextlib.suppress(RuntimeError):
+                            asyncio.get_running_loop().create_task(
+                                self._notify_telegram(line)
+                            )
+
             try:
                 return await self.agent.send_and_wait(
                     outgoing,
-                    on_delta=self.on_agent_delta,
+                    on_delta=_delta,
                 )
             except UpstreamException as exc:
                 last_exc = exc
@@ -666,6 +773,27 @@ class AutopilotOrchestrator:
         delay = lo if hi <= lo else random.uniform(lo, hi)
         if delay > 0:
             await self._sleep_interruptible(delay)
+
+    def _next_step_line(self) -> str:
+        """Hafızadaki yol haritasından **sıradaki tek** maddeyi seçer.
+
+        Amaç: `max` her turda yeni sohbet açtığı için "ne yapılacaktı?" sorusunun
+        cevabını kendisi uydurup yapılmış işi tekrar istemesi. Burada tek satır
+        verilir; birden fazla madde verilirse kapsam yeniden genişliyor.
+        """
+        for raw_line in (self.state.memory_summary or "").splitlines():
+            line = raw_line.strip()
+            if not line.startswith(("-", "*", "•")):
+                continue
+            head = line[:6].lower()
+            if "[x]" in head or "✅" in head:
+                continue
+            if "[ ]" in head:
+                body = line.lstrip("-*• ").strip()
+                body = re.sub(r"^(?:\[[ xX]\]|✅)\s*", "", body).strip()
+                if body:
+                    return f"- {body}"
+        return ""
 
     def _build_digests(self) -> list[TurnDigest]:
         out: list[TurnDigest] = []
@@ -851,6 +979,7 @@ class AutopilotOrchestrator:
             current_phase=self.state.current_phase,
             memory_summary=self.state.memory_summary,
             turn_digests=self._build_digests(),
+            chained_next_line=self._next_step_line(),
             last_sent_to_agent=last_sent,
             agent_reply_text=agent_reply.text,
             sandbox_evidence=sandbox_evidence,
@@ -1229,12 +1358,18 @@ class AutopilotOrchestrator:
                     else str(self.config.max_turns)
                 )
                 plan_lines = [
-                    "🌆 Akşam Proje Planı Hazır — Geliştirme Başlıyor",
+                    "🌆 Plan hazır — geliştirme başlıyor",
                     *self._project_header_lines(),
-                    f"Hedeflenen Kapsam: {target_desc}",
+                    f"Hedef: {target_desc} · Tur bütçesi "
+                    f"{TURN_BUDGET_SOFT_MINUTES}-{TURN_BUDGET_MINUTES} dk",
                 ]
                 if self.state.evening_plan:
-                    plan_lines.extend(["", "📋 Max'ın Çıkardığı Plan:", self.state.evening_plan])
+                    # Plan metni artık 5 satıra zorlanıyor (AMAC/OZELLIK/MIMARI/
+                    # ILK_TUR/TUR_SAYISI). Yine de uzun gelirse kırpılır: Telegram
+                    # mesajı bir bakışta okunmalı.
+                    plan_lines.extend(
+                        ["", "📋 Ne yapacağız:", _compact_plan(self.state.evening_plan)]
+                    )
                 await self._notify_telegram("\n".join(plan_lines))
             else:
                 await self._notify_telegram(
@@ -1368,11 +1503,18 @@ class AutopilotOrchestrator:
                 self._persist_state()
 
                 t0 = time.monotonic()
+                self._turn_started_at = t0
+                self._turn_activity = "talimat gönderildi"
                 self._emit_progress(
                     f"Tur {turn}/{self.config.max_turns} [{self.state.current_phase}]: "
                     "Talimat Agent'a gönderiliyor ve sandbox çalışması bekleniyor..."
                 )
-                agent_reply = await self._send_turn_with_retries(outgoing)
+                await self._notify_telegram(
+                    self._turn_start_line(turn, outgoing)
+                )
+                agent_reply = await self._send_turn_with_retries(
+                    outgoing, turn=turn
+                )
                 if agent_reply is None:
                     return self.state
                 elapsed = round(time.monotonic() - t0, 2)

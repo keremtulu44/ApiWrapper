@@ -62,6 +62,16 @@ _HELP = (
     "Diğer komutlar: /ping (wrapper health), /help."
 )
 
+def _first_lines(text: object, count: int, limit: int) -> str:
+    """Metnin ilk `count` dolu satırını `limit` karaktere kırparak döndürür."""
+    raw = str(text or "").strip()
+    if not raw:
+        return ""
+    picked = [ln.strip() for ln in raw.splitlines() if ln.strip()][:count]
+    out = " / ".join(picked)
+    return out[:limit] + ("..." if len(out) > limit else "")
+
+
 _CURL_SESSION_TTL_SECONDS = 1800.0
 _MAX_CURL_CHUNKS = 25
 _MAX_CURL_BUFFER_CHARS = 250_000
@@ -1623,15 +1633,32 @@ class TelegramBot:
 
         turns = data.get("turns") or []
         if turns:
-            lines.append("\n📜 Son Turlar:")
+            lines.append("\n📜 Son Turlar (ne oldu → ne istendi):")
             for t in turns[-4:]:
                 if not isinstance(t, dict):
                     continue
-                lines.append(
-                    f"  - Tur {t.get('turn')}: [{t.get('phase')}] "
-                    f"{t.get('duration_seconds')} sn · {t.get('tool_count')} araç "
-                    f"({t.get('bash_count')} bash, {t.get('error_tool_count')} hata)"
+                duration = t.get("duration_seconds") or 0
+                # Tur süresini dakika olarak da yaz: "1650 sn" kimseye bir şey
+                # anlatmıyordu, "27 dk" anlatıyor.
+                dur_txt = (
+                    f"{duration / 60:.0f} dk"
+                    if isinstance(duration, (int, float)) and duration >= 90
+                    else f"{duration} sn"
                 )
+                lines.append(
+                    f"  - Tur {t.get('turn')}: [{t.get('phase')}] {dur_txt} · "
+                    f"{t.get('tool_count')} araç ({t.get('bash_count')} bash, "
+                    f"{t.get('error_tool_count')} hata)"
+                )
+                done_before = _first_lines(t.get("sent_to_agent"), 1, 120)
+                if done_before:
+                    lines.append(f"      ↳ istendi: {done_before}")
+            # Son turun somut kanıtı: "gerçekten bir şey yapıldı mı" sorusunun
+            # cevabı yalnız burada görünüyordu.
+            last = turns[-1] if isinstance(turns[-1], dict) else {}
+            evidence = _first_lines(last.get("sandbox_evidence"), 2, 160)
+            if evidence:
+                lines.append(f"\n🔬 Son tur kanıtı:\n{evidence}")
 
         await self.send_text(chat_id, "\n".join(lines), disable_preview=True)
 

@@ -428,3 +428,27 @@ Rotasyon döngüsü: gün sonunda tükenmeye en yakın hesap yedek yuvaya alın�
 * `tests/test_account_rotation.py` → 6 (takas, atomiklik/geri alınabilirlik,
   boş yuva reddi, `release_slot(1)` yasağı, API sözleşmesi, 3. yuva alanları).
 * Tam paket: **852 passed**.
+
+---
+
+## 11. "Uzun plan + anlaşılmaz tur" düzeltmesi
+
+Kullanıcı geri bildirimi (23 Kasım): *plan çok uzun çıkıyor, uygulaması ~2 saat
+sürüyor; tur akışı dengesiz, ne okuduğu anlaşılmıyor; prompt yapılan işi tekrar
+yaptırıyor gibi.*
+
+Ölçüm: kickoff istemi 967 kr, sistem istemi 1672 kr — yani **şişme promptta
+değildi**; şişme (a) Max'in ürettiği serbest metin plan/hafızada, (b) turun
+kapsamında, (c) görünürlük eksikliğindeydi. Yapılanlar:
+
+| Sorun | Çözüm | Yer |
+|---|---|---|
+| Plan serbest metin, 6-8 satır | **5 etiketli satır zorunlu**: `AMAC / OZELLIK / MIMARI / ILK_TUR / TUR_SAYISI`; hafıza **en fazla 4 madde**, `- [ ] aşama · kabul ölçütü` | `prompts.build_kickoff_user_prompt` |
+| Plan süresi teoride saatler | **tur bütçesi** istemde somut: "bu tur ~60-90 dk; büyükse böl" (`TURN_BUDGET_MINUTES=90`) | `prompts.build_turn_budget_line` |
+| Plan mesajı Telegram'da çok uzun | `_compact_plan`: en fazla 6 satır / 620 kr | `orchestrator._compact_plan` |
+| "Yapılan işi tekrar yaptırıyor" | Yeni iki bölüm: **[ŞİMDİYE KADAR YAPILDI — TEKRAR İSTEME]** ve **[SIRADAKİ (yalnız bunu iste)]**; hafızadaki `[x]`/`[ ]` işaretlerinden türetilir | `prompts.build_turn_user_prompt`, `orchestrator._next_step_line` |
+| Tur sürerken hiçbir şey görünmüyor | Tur başında 3 satır (`▶️ Tur 3 başladı`, `🎯 Bu turun işi`, `⏱️ Hedef`) + **10 dk'da bir** `⏳ Tur 3: 25 dk geçti · ~65 dk kaldı · bash çalıştırıyor` | `orchestrator._turn_start_line`, `_turn_status_line`, `TURN_HEARTBEAT_SECONDS` |
+| Tur süresi okunmuyor ("1650 sn") | `/durum` artık **dk** yazar, tur başına "↳ istendi: …" ve "🔬 Son tur kanıtı" ekler | `telegram/bot._show_project_detail` |
+
+Testler: `test_autopilot.py` +5 (defter/sıradaki, bütçe, 5 satırlı plan,
+`_compact_plan`, tur başlangıç+heartbeat satırları). Tam paket **857 passed**.
