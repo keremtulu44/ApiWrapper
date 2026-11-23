@@ -553,3 +553,67 @@ Testler: `tests/test_slot_roles.py` → 12 test (rol ayrıştırma, Türkçe eş
 agent yuvasının **açık kalması** ama trafik almaması, yedek yuvanın sıcak
 beklemesi, kapanmadan rol takası, boş yuvaya rol verilememesi, uç sözleşmesi).
 Tam paket **893 passed**.
+
+---
+
+## 13. Tam denetim (23 Kasım 2026, kapanış)
+
+### 13.1 Geçmişe göre ne yapıldı (5 commit, 4.081 satır)
+
+| Commit | Konu | Kapsam |
+|---|---|---|
+| `8406c34` | Süreklilik + 3 hesaplı rotasyon + prompt dengeleme | `orchestrator`, `prompts`, `manager`, `upstream_slots` |
+| `8a74075` | Turu okunur yap: tekrar yasağı, 90 dk ölçek, canlı ilerleme | `prompts`, `orchestrator`, `bot`, `test_autopilot` |
+| `a4af977` | Tur ölçeği **sınır değil**, sıradaki adım **kilit değil** | `prompts`, `orchestrator` + 3 sözleşme testi |
+| `9f95b0b` | Hesap rotasyon motoru (format-nötr) | `account_rotation`, `lanes`, `completion_service`, `admin` |
+| `30cef34` | Rol sistemi: **üç hesap da açık kalır** | `slot_roles`, `lanes`, `upstream_slots`, `bot`, `api` |
+
+### 13.2 Ölçülen durum (denetim çıktısı)
+
+| Ölçüm | Önce | Şimdi | Not |
+|---|---|---|---|
+| Test | 842 passed | **896 passed** | +54 yeni test, 0 kırık |
+| ruff | temiz | temiz | `app`, `tests`, `scripts` |
+| Prompt (kickoff) | 967 kr | 1421 kr | 5 etiketli satır zorunlu → net |
+| Tur istemi | 3265 kr | 1677 kr | dengeli dilimler |
+| Turu kesen süre | yok | **yok** (`turn_timeout=None`) | testle kilitli |
+| Tur aralığı | 15–30 sn ×2 | 0–3 sn | çifte bekleme bitti |
+| Gece penceresi | varsayılan açık | opt-in | `/gece`, `/gece kapat` |
+
+### 13.3 Bilinen açık noktalar (dürüst liste)
+
+1. **401/409'da otomatik hesap takası yok.** Rotasyon sıradaki hesabı seçer ve
+   arızalı hesabı atlar; ama `swap_roles` çağrısı operatör/telefon komutundadır.
+   İstenirse `_is_fatal_max_error` yakalandığında otomatik `/rotasyon` eklenebilir.
+2. **Rotasyon 409'u "arıza" sayar.** `failover` açıkken hesap devre dışı kalır ve
+   keepalive düzeltene kadar trafik öbür hesaba gider — davranış doğru ama
+   operatöre bildirim gitmesi için Telegram uyarısı ayrıca ayarlanmalı.
+3. **`state_dir` kalıcı değil.** Render Free'de disk yok; `AUTOPILOT_STATE_DIR`
+   yalnız kalıcı disk bağlandıysa anlamlı (belgeye yazıldı).
+4. **`ACCOUNT_ROTATION_*` varsayılan kapalı.** Açmadan davranış eskisiyle aynı;
+   açmak için `.env`/Render'da 4 satır gerekiyor (bölüm 12).
+5. **Agent ile aynı hesabı kullanma** hâlâ `SameAccountError` ile sert durur —
+   bilinçli: iki mod aynı oturumu düşürür.
+
+### 13.4 2. Max cURL'ü nasıl konur
+
+Yeni araç: `scripts/put_curl2.py` (tarayıcıdan kopyalanan cURL'ü doğrular,
+`.env`'de **yalnız** 2. yuva satırlarını yazar, yedek alır, tam değeri ekrana
+basmaz).
+
+```bash
+# 1) Tarayıcıda 2. hesapla giriş yap → sohbetten bir mesaj gönder →
+#    DevTools → Network → create-evaluation isteği → sağ tık →
+#    Copy → Copy as cURL (bash)  (PowerShell/fetch DEĞİL)
+# 2) curl2.txt dosyasına yapıştır, sonra:
+python scripts/put_curl2.py curl2.txt            # yalnız kontrol
+python scripts/put_curl2.py curl2.txt --write    # .env'e yaz (yedek: .env.bak)
+```
+
+Araç şunları reddeder: Agent cURL'ü, `modelAId` eksik gövde, çerezi kesilmiş
+(`.0`/`.1` parçası boş) oturum, 1. hesapla **aynı** Google hesabı, boş hedef alan
+adı. `cf_clearance` yoksa uyarır (403 riski).
+
+Render'da: Environment → `UPSTREAM_CURL_2` alanına cURL'ün tamamını yapıştırın
+(tek satır olması gerekmez). Doğrulama: deploy sonrası Telegram'da `/hesaplar` →
+`Yuva 2: 🟢 Sağlıklı` ve `🎭 Roller` satırı.

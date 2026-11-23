@@ -236,3 +236,80 @@ def test_account_pool_still_reports_three_accounts() -> None:
         ],
     )
     assert pool.size == 3
+
+
+# --------------------------------------------------------------------------
+# 2. Max cURL'ü yerleştirme aracı (scripts/put_curl2.py)
+# --------------------------------------------------------------------------
+def test_put_curl2_accepts_valid_second_account_curl() -> None:
+    """Geçerli 2. hesap cURL'ü kabul edilir; model kimliği kendi gövdesinden okunur."""
+    import importlib.util
+    from pathlib import Path
+
+    from tests.test_upstream_slots import _build_realistic_max_curl
+
+    spec = importlib.util.spec_from_file_location(
+        "put_curl2", Path(__file__).resolve().parent.parent / "scripts" / "put_curl2.py"
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    curl = _build_realistic_max_curl(sub="ikinci-hesap")
+    ok, problems, values = mod.check(curl, env={})
+    assert ok, problems
+    assert values["identity"] == "ikinci-hesap"
+    assert values["model_id"] == "019c-max-model-v1"  # 1. yuva boş olsa bile
+    assert values["has_cookie"] == "evet"
+
+
+def test_put_curl2_rejects_agent_curl_for_max_slot() -> None:
+    """Agent cURL'ü Max yuvasına konmaz (karışırsa oturumlar çakışır)."""
+    import importlib.util
+    from pathlib import Path
+
+    from tests.test_autopilot import _build_windows_cmd_input_curl
+
+    spec = importlib.util.spec_from_file_location(
+        "put_curl2", Path(__file__).resolve().parent.parent / "scripts" / "put_curl2.py"
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    ok, problems, _ = mod.check(_build_windows_cmd_input_curl(sub="ajan"), env={})
+    assert ok is False
+    assert any("Agent Mode" in item for item in problems)
+
+
+def test_put_curl2_writes_only_slot_two_lines(tmp_path) -> None:
+    """Yazma yalnız 2. yuvaya dokunur; 1. hesap ve diğer satırlar aynen kalır."""
+    import importlib.util
+    from pathlib import Path
+
+
+    spec = importlib.util.spec_from_file_location(
+        "put_curl2", Path(__file__).resolve().parent.parent / "scripts" / "put_curl2.py"
+    )
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    env_file = tmp_path / ".env"
+    env_file.write_text(
+        "API_KEYS=sk-test\nTARGET_DOMAIN=eski.test\nUPSTREAM_CURL_2=eski-deger\n",
+        encoding="utf-8",
+    )
+    values = {
+        "curl_env": "UPSTREAM_CURL_2=curl 'https://yeni.test/x' \\\n  -b 'a=b'",
+        "target_domain": "yeni.test",
+    }
+    backup, replaced = mod.write_env(env_file, values)
+    text = env_file.read_text(encoding="utf-8")
+
+    assert backup.exists()  # yedek alındı
+    assert "API_KEYS=sk-test" in text  # dokunulmadı
+    assert "TARGET_DOMAIN=eski.test" in text  # 1. hesap alanı korundu
+    assert "TARGET_DOMAIN_2=yeni.test" in text
+    assert "eski-deger" not in text  # 2. yuva güncellendi
+    assert set(replaced) == {"UPSTREAM_CURL_2", "TARGET_DOMAIN_2"}
