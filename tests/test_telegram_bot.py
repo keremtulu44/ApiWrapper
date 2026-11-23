@@ -881,8 +881,8 @@ async def test_one_hour_agent_timeout_and_telegram_devam_resume_flow() -> None:
             '-b "a=1"'
         ),
     )
-    assert req_start.agent_turn_timeout == 5400.0
-    assert req_resume.agent_turn_timeout == 5400.0
+    assert req_start.agent_turn_timeout is None
+    assert req_resume.agent_turn_timeout is None
 
     # Deploy sonrası mevcut Agent sohbetinden devam istemi kontrolü:
     kickoff_with_existing = build_kickoff_user_prompt(
@@ -1016,9 +1016,9 @@ async def test_one_hour_agent_timeout_and_telegram_devam_resume_flow() -> None:
 
     agent_client = AgentSessionClient.from_curl(
         f'curl "https://live.example/api/chat/{chat_id}/input" -b "a=1"',
-        turn_timeout=3600.0,
         transport=httpx.MockTransport(agent_mock_handler),
     )
+    assert agent_client.turn_timeout is None
     bridge = _DummyMaxBridge()
     orch = AutopilotOrchestrator(
         config=AutopilotConfig(
@@ -1131,7 +1131,7 @@ async def test_one_hour_agent_timeout_and_telegram_devam_resume_flow() -> None:
         assert len(resume_calls) == 1
         assert resume_calls[0]["respect_night_window"] is False
         assert "kaldığı yerden sürdürülüyor" in sent_tg[-1]
-        assert "90 dk" in sent_tg[-1]
+        assert "süre sınırı yok" in sent_tg[-1]
 
 
 

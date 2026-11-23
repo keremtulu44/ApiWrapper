@@ -76,7 +76,7 @@ class AgentSessionClient:
         *,
         connect_timeout: float = 15.0,
         read_timeout: float = 150.0,
-        turn_timeout: float = 900.0,
+        turn_timeout: float | None = None,
         events_window_seconds: int = 120,
         http2: bool = True,
         verify_tls: bool = True,
@@ -116,7 +116,7 @@ class AgentSessionClient:
         raw_curl: str,
         *,
         chat_id_override: str | None = None,
-        turn_timeout: float = 900.0,
+        turn_timeout: float | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> AgentSessionClient:
         config = parse_agent_curl(raw_curl, chat_id_override=chat_id_override)
@@ -623,17 +623,29 @@ class AgentSessionClient:
         require_new_assistant: bool = True,
         on_delta: DeltaCallback | None = None,
     ) -> AgentMessage:
-        """Ajanın turunu bitirmesini bekler ve kesinleşmiş `AgentMessage`'ı döndürür."""
-        deadline = time.monotonic() + max(10.0, self.turn_timeout)
+        """Ajanın turunu bitirmesini bekler ve kesinleşmiş `AgentMessage`'ı döndürür.
+
+        `self.turn_timeout` `None` veya `<= 0` olduğunda yapay süre sınırı uygulanmaz;
+        karşı taraftaki Agent turunu bitirene kadar (veya kullanıcı `/durdur` diyene kadar)
+        2 dakikalık `/events` pencereleriyle izlemeye devam eder.
+        """
+        deadline = (
+            time.monotonic() + max(10.0, float(self.turn_timeout))
+            if self.turn_timeout is not None and self.turn_timeout > 0
+            else None
+        )
         stream_failures = 0
 
         while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                raise UpstreamTimeout(
-                    f"Agent yanıtı {int(self.turn_timeout)} sn içinde tamamlanmadı.",
-                    url=self.config.events_url,
-                )
+            if deadline is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise UpstreamTimeout(
+                        f"Agent yanıtı {int(self.turn_timeout or 0)} sn içinde tamamlanmadı.",
+                        url=self.config.events_url,
+                    )
+            else:
+                remaining = float(self.events_window_seconds) + 30.0
 
             try:
                 completed_signal = await self._consume_events_once(

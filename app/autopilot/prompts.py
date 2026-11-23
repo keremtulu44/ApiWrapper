@@ -27,7 +27,10 @@ AGENT_OPERATING_GUARDRAILS = (
     "önizleme sunucusunu doğrudan kendi ortamında bizzat çalıştırıp doğrula. "
     "Arka plan web sunucusu başlatırken (start_process) 0.0.0.0 adresine bağla, "
     "önizleme proxy hostlarına izin ver ve tarayıcı kodunda asla "
-    "localhost/127.0.0.1 sabitleme (göreli URL kullan)."
+    "localhost/127.0.0.1 sabitleme (göreli URL kullan). Tek seferlik terminal "
+    "(bash) çağrılarında asla ön planda takılı kalacak sunucu veya etkileşimli "
+    "onay bekleyen CLI komutu çalıştırma; sunucuları yalnızca start_process ile "
+    "başlat ve dağıtım araçlarını etkileşimsiz bayraklarla çalıştır."
 )
 
 #: 2..N turlarında ajanın bağlam uzadığında unutmasını önleyen kısa ask_user kilidi.
