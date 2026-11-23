@@ -1,7 +1,9 @@
 # Merge öncesi inceleme — `arena/a3b1ec5d-apiwrapper` → `arena/1kasim-test`
 
-**Durum: MERGE EDİLMEDİ.** Kullanıcı talebi: "incele ama merge etme asla".
-Bu belge yalnız kanıt ve adım listesidir; hiçbir birleştirme yapılmadı.
+**Durum: MERGE EDİLDİ (23 Kasım 2026).** Önce "incele ama merge etme asla"
+talimatıyla inceleme yapıldı; ardından kullanıcı "Birleştir merge et şimdi hemen"
+dedi ve PR #64 `arena/1kasim-test` dalına birleştirildi → merge commit `e2d3f53`.
+Aşağıdaki bulgular o merge'ün öncesinde düzeltildi.
 
 Tarih: 23 Kasım 2026 · İnceleme ucu: `70bc7cb` (+ bu belgeyle gelen düzeltmeler)
 Hedef dal ucu: `fc9ed55` (`arena/1kasim-test`, PR #63 merge'i)

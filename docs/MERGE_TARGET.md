@@ -66,6 +66,7 @@ benden izin al" dedi. Bu yüzden:
 | #22 | `arena/af86b04b-apiwrapper` | `arena/c55e601b-apiwrapper` | *(bu PR)* |
 | #25 | `arena/55a90bd1-apiwrapper` | `arena/c55e601b-apiwrapper` | *(bu PR)* |
 | — | `arena/b297a0bb-apiwrapper` | **`arena/1kasim-test`** | *(2026-11-15, yeni hedefe ilk merge; modlar: sohbet/web/görsel)* |
+| #64 | `arena/a3b1ec5d-apiwrapper` | **`arena/1kasim-test`** | `e2d3f53` (2026-11-23; 3 hesap + rol sistemi, 2 Max + 1 Agent) |
 
 Yeni bir merge yapıldığında bu tabloya bir satır ekleyin.
 
