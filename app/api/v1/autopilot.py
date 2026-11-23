@@ -95,7 +95,7 @@ class ResumeAutopilotRequest(BaseModel):
     agent_curl: str = Field(..., min_length=20)
     respect_night_window: bool | None = None
     max_turns: int | None = Field(default=None, ge=1, le=25)
-    agent_turn_timeout: float = Field(default=5400.0, ge=60.0, le=10800.0)
+    agent_turn_timeout: float | None = Field(default=None, ge=0.0)
 
 
 class StartAutopilotRequest(BaseModel):
@@ -109,7 +109,7 @@ class StartAutopilotRequest(BaseModel):
     night_end_hour: int = Field(default=7, ge=0, le=23)
     gap_min_seconds: float = Field(default=15.0, ge=0.0, le=120.0)
     gap_max_seconds: float = Field(default=30.0, ge=0.0, le=180.0)
-    agent_turn_timeout: float = Field(default=5400.0, ge=60.0, le=10800.0)
+    agent_turn_timeout: float | None = Field(default=None, ge=0.0)
     max_mode: Literal["in_process", "external_http", "direct_curl"] = "in_process"
     max_base_url: str = ""
     max_api_key: str = ""
