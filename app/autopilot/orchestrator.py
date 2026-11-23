@@ -49,6 +49,12 @@ from app.autopilot.prompts import (
 from app.core.logging import get_logger
 from app.services.alerting import TelegramAlerter
 from app.upstream.client import error_excerpt
+from app.upstream.exceptions import (
+    UpstreamException,
+    UpstreamNetworkError,
+    UpstreamProtocolError,
+    UpstreamTimeout,
+)
 from app.utils.ids import random_suffix
 
 logger = get_logger(__name__)
@@ -143,6 +149,32 @@ def _summarize_one_line(text: str, limit: int = 160) -> str:
     return flat if len(flat) <= limit else flat[: limit - 1].rstrip() + "…"
 
 
+#: Tür sürekliliği ayarlarının **tek kaynağı**. Aynı sayılar daha önce
+#: orkestratörde, HTTP isteğinde, CLI'da ve Telegram'da ayrı ayrı duruyordu;
+#: biri değişince diğerleri sessizce eski değerde kalıyordu.
+#:
+#: Zamanlama felsefesi: `max` çağrıları arasındaki **nazik aralık tele giden
+#: yolda** (`RequestQueue`, `REQUEST_GAP_*`) uygulanır. Orkestratörün kendi tur
+#: aralığı bu yüzden küçüktür; ikisi birlikte eskiden tur başına ~45 sn saf
+#: bekleme üretiyordu (ölçüm: docs/DENGE_VE_3_HESAP_ANALIZ.md §2.2).
+TURN_GAP_MIN_SECONDS = 0.0
+TURN_GAP_MAX_SECONDS = 3.0
+#: `max` 429 / geçici yoğunluk verdiğinde kademeli dinlenme (sn). İlk basamaklar
+#: kısa tutulur: 5 dakika beklemek yerine 1 dakikada yoklamak daha çok tur kazandırır;
+#: son basamak yine sabırlıdır.
+MAX_COOLDOWN_SCHEDULE: tuple[float, ...] = (60.0, 180.0, 420.0, 900.0)
+#: `TAKILDI` kararı koşuyu hemen öldürmez: en fazla bu kadar "kurtarma turu"
+#: verilir, sonra koşu `stopped` durumuna alınır (yeniden başlatılabilir kalır).
+MAX_STUCK_RECOVERIES = 1
+#: Bir turda oluşan geçici hatada (ağ/olay akışı) koşuyu öldürmeden önce
+#: yapılacak yeniden deneme sayısı.
+MAX_TRANSIENT_TURN_RETRIES = 2
+#: `max_turns` tavanına ulaşılınca koşu kapanmadan verilebilecek ek tur sayısı.
+MAX_TURN_EXTENSIONS = 48
+#: Tur tavanı dolunca otomatik modda eklenecek tur sayısı.
+TURN_LIMIT_AUTO_EXTEND = 3
+
+
 @dataclass(slots=True)
 class AutopilotConfig:
     """Tek bir otopilot koşusunun çalışma parametreleri."""
@@ -154,13 +186,17 @@ class AutopilotConfig:
     respect_night_window: bool = False
     night_start_hour: int = 22
     night_end_hour: int = 7
-    gap_min_seconds: float = 15.0
-    gap_max_seconds: float = 30.0
-    max_cooldown_schedule: tuple[float, ...] = (310.0, 600.0, 900.0)
+    gap_min_seconds: float = TURN_GAP_MIN_SECONDS
+    gap_max_seconds: float = TURN_GAP_MAX_SECONDS
+    max_cooldown_schedule: tuple[float, ...] = MAX_COOLDOWN_SCHEDULE
     state_file: Path | None = None
     run_id: str = field(default_factory=lambda: f"auto_{random_suffix(12)}")
     append_guardrails_on_first_turn: bool = True
     enable_handoff_report: bool = True
+    max_stuck_recoveries: int = MAX_STUCK_RECOVERIES
+    max_transient_turn_retries: int = MAX_TRANSIENT_TURN_RETRIES
+    #: Kaç kez tur uzatıldığı (kalıcı durumda saklanır; yeniden başlatmada korunur).
+    turn_extensions: int = 0
 
     @property
     def effective_min_turns(self) -> int:
@@ -185,6 +221,32 @@ class AutopilotConfig:
             raise ValueError("night_start_hour / night_end_hour 0..23 aralığında olmalıdır.")
         if self.gap_min_seconds < 0 or self.gap_max_seconds < self.gap_min_seconds:
             raise ValueError("gap_min_seconds / gap_max_seconds aralığı geçersiz.")
+
+
+    # ---------------------------------------------------------------- tur uzatma
+    def can_extend_turns(self) -> bool:
+        """Koşu, tur tavanında kapanmadan uzatılabilir mi?"""
+        return self.turn_extensions < MAX_TURN_EXTENSIONS
+
+    def extend_turns(self, extra_turns: int) -> int:
+        """Tavanı uzatır ve uzatma hakkını düşer; yeni tavanı döndürür.
+
+        `max_turns_reached` artık **koşunun ölümü değildir**: istenirse aynı
+        Agent sohbetinde (aynı dosyalar, aynı sunucular) yeni turlar eklenebilir.
+        """
+        allowed = max(0, min(int(extra_turns), MAX_TURN_EXTENSIONS - self.turn_extensions))
+        if allowed <= 0:
+            # Tavan doldu: çağıran taraf "hayır"ı bilmeli ama koşu **çökmemeli**
+            # (süreklilik ilkesi). Durum değişmez, mevcut tavan döner.
+            logger.info(
+                "autopilot_turn_extend_exhausted",
+                extensions=self.turn_extensions,
+                limit=MAX_TURN_EXTENSIONS,
+            )
+            return self.max_turns
+        self.max_turns += allowed
+        self.turn_extensions += allowed
+        return self.max_turns
 
 
 @dataclass(slots=True)
@@ -232,6 +294,10 @@ class AutopilotRunState:
     pending_turn: int = 0
     pending_instruction: str = ""
     pending_evaluation: str = ""
+    #: Kaç kez tur uzatıldığı ve kaç kez `TAKILDI` kurtarması kullanıldığı
+    #: (yeniden başlatmada da korunur; sonsuz döngüyü engeller).
+    turn_extensions: int = 0
+    stuck_recoveries: int = 0
     turns: list[AutopilotTurnRecord] = field(default_factory=list)
 
     @property
@@ -275,6 +341,8 @@ class AutopilotRunState:
             pending_turn=int(data.get("pending_turn") or 0),
             pending_instruction=str(data.get("pending_instruction") or ""),
             pending_evaluation=str(data.get("pending_evaluation") or ""),
+            turn_extensions=int(data.get("turn_extensions") or 0),
+            stuck_recoveries=int(data.get("stuck_recoveries") or 0),
             turns=turns,
         )
 
@@ -519,6 +587,74 @@ class AutopilotOrchestrator:
             await asyncio.sleep(step)
             remaining -= step
         return not self._stop_requested
+
+    @staticmethod
+    def _is_transient_turn_error(exc: BaseException) -> bool:
+        """Bu hata "tekrar denemeye değer" mi?
+
+        Yalnız ağ/zaman aşımı/protokol hataları geçicidir. Kota (`429`/kilit),
+        kimlik reddi ve `recaptcha` **geçici değildir**: yeniden denemek kilidi
+        uzatır, o yüzden tur yeniden denenmez; koşu duraklatılıp `/devam`a
+        bırakılır.
+        """
+        return isinstance(
+            exc, (UpstreamTimeout, UpstreamNetworkError, UpstreamProtocolError)
+        )
+
+    async def _send_turn_with_retries(self, outgoing: str) -> AgentMessage | None:
+        """Ajan turunu geçici hatada yeniden dener; olmazsa koşuyu duraklatır.
+
+        Dönen `None`, koşunun `stopped` durumuna alındığını bildirir (yeniden
+        başlatılabilir; tur geçmişi ve hafıza korunur). Kota/kimlik hatalarında
+        hiç denenmez, doğrudan duraklatılır.
+        """
+        attempts = max(0, self.config.max_transient_turn_retries)
+        last_exc: BaseException | None = None
+        for attempt in range(attempts + 1):
+            try:
+                return await self.agent.send_and_wait(
+                    outgoing,
+                    on_delta=self.on_agent_delta,
+                )
+            except UpstreamException as exc:
+                last_exc = exc
+                if not self._is_transient_turn_error(exc) or attempt >= attempts:
+                    break
+                backoff = 30.0 * (2**attempt)
+                self._emit_progress(
+                    f"⏳ Geçici Agent hatası ({type(exc).__name__}); "
+                    f"{backoff:.0f} sn sonra yeniden denenecek "
+                    f"({attempt + 1}/{attempts})."
+                )
+                if not await self._sleep_interruptible(backoff):
+                    return None
+
+        if last_exc is None:
+            return None
+        self.state.status = "stopped"
+        self.state.stop_reason = (
+            "Agent turu tamamlanamadı (ağ/akış hatası); taze cURL ile /devam "
+            "yazınca kaldığı yerden sürer: "
+            f"{_summarize_one_line(str(last_exc), 200)}"
+        )
+        self.state.error_detail = str(last_exc)[:1000]
+        self._persist_state()
+        self._emit_progress(
+            "⏸️ Otopilot duraklatıldı; taze Agent cURL ile /devam yazınca "
+            "kaldığı yerden sürer."
+        )
+        await self._notify_telegram(
+            "\n".join(
+                [
+                    "⏸️ Otopilot duraklatıldı (geçici olmayan Agent hatası)",
+                    *self._project_header_lines(),
+                    f"Tur: {self.state.current_turn}",
+                    f"Neden: {self.state.stop_reason}",
+                    f"Kaldığı yerden sürdürmek için: /devam {self.state.run_id}",
+                ]
+            )
+        )
+        return None
 
     async def _sleep_gap(self) -> None:
         if self._stop_requested:
@@ -827,6 +963,101 @@ class AutopilotOrchestrator:
             raw_response=retried.raw_response,
         )
 
+    def _auto_extend_on_turn_limit(self) -> bool:
+        """Tur tavanı dolduğunda ürün bitmediyse otomatik olarak tur ekler.
+
+        Yalnız `auto_turns` koşularında ve uzatma hakkı varken çalışır; sabit
+        tavan seçen kullanıcıya sürpriz yapılmaz.
+        """
+        if not self.config.auto_turns or self._stop_requested:
+            return False
+        if not self.config.can_extend_turns():
+            return False
+        try:
+            self.config.extend_turns(TURN_LIMIT_AUTO_EXTEND)
+        except ValueError:
+            return False
+        self.state.turn_extensions = self.config.turn_extensions
+        self._persist_state()
+        return True
+
+    async def _recover_from_stuck(
+        self,
+        decision: MaxDecision,
+        *,
+        completed_turns: int,
+        last_sent: str,
+        agent_reply: AgentMessage,
+        sandbox_evidence: str,
+        anti_loop_warning: str = "",
+    ) -> MaxDecision | None:
+        """`TAKILDI` kararını koşuyu öldürmeden kurtarmayı dener.
+
+        Tek bir kötü karar 8 saatlik geceyi bitirmemeli. Önce `max`'a "sorunu
+        küçült, farklı taktik" notuyla bir kez daha sorulur; kurtarma hakkı
+        bittiyse koşu `failed` yerine `stopped` durumuna alınır (yeniden
+        başlatılabilir kalır) ve `None` döner.
+        """
+        reason = decision.evaluation or "Max ilerleme sağlanamadığını bildirdi."
+        if (
+            self.state.stuck_recoveries < self.config.max_stuck_recoveries
+            and not self._stop_requested
+            and completed_turns < self.config.max_turns
+        ):
+            self.state.stuck_recoveries += 1
+            self._persist_state()
+            self._emit_progress(
+                f"♻️ Tur {completed_turns}: Max 'TAKILDI' dedi; koşu kapatılmadan "
+                f"kurtarma turu denenecek ({self.state.stuck_recoveries}/"
+                f"{self.config.max_stuck_recoveries})."
+            )
+            note = (
+                "Ajanın son turunda ilerleme sağlanamadı ve sen <DURUM>TAKILDI</DURUM> "
+                "verdin. Koşuyu bitirmiyorum. Aynı hatayı tekrarlamak yerine sorunu "
+                "KÜÇÜLT: tek bir küçük adım seç, gerekirse önce hatayı yeniden üretip "
+                "kök nedeni oku, alternatif kütüphane/yaklaşım dene ve <DURUM>DEVAM</DURUM> "
+                "ile net tek bir talimat ver."
+            )
+            try:
+                retried = await self._ask_max_for_next_step(
+                    completed_turns=completed_turns,
+                    last_sent=last_sent,
+                    agent_reply=agent_reply,
+                    sandbox_evidence=sandbox_evidence,
+                    anti_loop_warning=anti_loop_warning,
+                    early_exit_rejection_note=note,
+                )
+            except MaxBridgeError as exc:
+                logger.warning(
+                    "autopilot_stuck_recovery_failed",
+                    run_id=self.state.run_id,
+                    error_type=type(exc).__name__,
+                )
+                retried = None
+            if (
+                retried is not None
+                and retried.status == "DEVAM"
+                and retried.message_to_agent.strip()
+            ):
+                return retried
+
+        # Kurtarma hakkı bitti (ya da `max` yine takıldı): koşuyu öldürme, duraklat.
+        self.state.status = "stopped"
+        self.state.stop_reason = reason
+        self._emit_progress(f"⏸️ Otopilot duraklatıldı: {_summarize_one_line(reason, 200)}")
+        await self._notify_telegram(
+            "\n".join(
+                [
+                    "⏸️ ApiWrapper Autopilot duraklatıldı (koşu silinmedi)",
+                    *self._project_header_lines(),
+                    f"Tur: {completed_turns}",
+                    f"Neden: {_summarize_one_line(reason, 240)}",
+                    "Devam: /devam <run_id> (aynı Agent sohbeti, aynı dosyalar)",
+                ]
+            )
+        )
+        return None
+
     async def _finish_stopped(self, reason: str) -> AutopilotRunState:
         self.state.status = "stopped"
         self.state.stop_reason = reason
@@ -1037,6 +1268,30 @@ class AutopilotOrchestrator:
                     agent_reply=resume_msg,
                     sandbox_evidence=resume_evidence,
                 )
+                if next_decision.status == "TAMAMLANDI":
+                    self.state.status = "completed"
+                    self.state.stop_reason = next_decision.evaluation or "Proje kabul edildi."
+                    self._emit_progress("✅ Proje kaldığı yerden tamamlandı ve kabul edildi!")
+                    await self._collect_and_dispatch_morning_report(
+                        headline="🌅 Sabah Teslim Raporu — Proje Tamamlandı"
+                    )
+                    return self.state
+                if next_decision.status == "TAKILDI":
+                    recovered = await self._recover_from_stuck(
+                        next_decision,
+                        completed_turns=done_so_far,
+                        last_sent=prev.sent_to_agent,
+                        agent_reply=resume_msg,
+                        sandbox_evidence=resume_evidence,
+                    )
+                    if recovered is None:
+                        return self.state
+                    next_decision = recovered
+                if start_turn > self.config.max_turns and self._auto_extend_on_turn_limit():
+                    self._emit_progress(
+                        f"↔️ Tur tavanı ({self.config.max_turns}) doldu; bitmemiş proje için "
+                        f"{TURN_LIMIT_AUTO_EXTEND} tur eklendi."
+                    )
                 next_decision = await self._guard_premature_completion(
                     next_decision,
                     completed_turns=done_so_far,
@@ -1117,10 +1372,9 @@ class AutopilotOrchestrator:
                     f"Tur {turn}/{self.config.max_turns} [{self.state.current_phase}]: "
                     "Talimat Agent'a gönderiliyor ve sandbox çalışması bekleniyor..."
                 )
-                agent_reply = await self.agent.send_and_wait(
-                    outgoing,
-                    on_delta=self.on_agent_delta,
-                )
+                agent_reply = await self._send_turn_with_retries(outgoing)
+                if agent_reply is None:
+                    return self.state
                 elapsed = round(time.monotonic() - t0, 2)
                 evidence = format_sandbox_evidence(agent_reply)
 
@@ -1205,24 +1459,21 @@ class AutopilotOrchestrator:
                     return self.state
 
                 if next_decision.status == "TAKILDI":
-                    self.state.status = "failed"
-                    self.state.stop_reason = (
-                        next_decision.evaluation or "Max ilerleme sağlanamadığını bildirdi."
+                    recovered = await self._recover_from_stuck(
+                        next_decision,
+                        completed_turns=done_so_far,
+                        last_sent=record.sent_to_agent,
+                        agent_reply=agent_reply,
+                        sandbox_evidence=evidence,
+                        anti_loop_warning=anti_loop_note,
                     )
-                    self._emit_progress(f"⚠️ Otopilot durdu: {self.state.stop_reason}")
-                    await self._notify_telegram(
-                        "\n".join(
-                            [
-                                "⚠️ ApiWrapper Autopilot takıldı",
-                                *self._project_header_lines(),
-                                f"Tur: {turn}",
-                                f"Neden: {_summarize_one_line(self.state.stop_reason, 240)}",
-                            ]
-                        )
-                    )
-                    return self.state
+                    if recovered is None:
+                        return self.state
+                    next_decision = recovered
+                    if next_decision.updated_memory.strip():
+                        self.state.memory_summary = next_decision.updated_memory.strip()
+                    self.state.current_phase = next_decision.phase
 
-            # Döngü max_turns sınırına ulaştı
             self.state.status = "max_turns_reached"
             self.state.stop_reason = (
                 next_decision.evaluation
@@ -1230,6 +1481,9 @@ class AutopilotOrchestrator:
                 else f"Azami tur sınırına ({self.config.max_turns}) ulaşıldı."
             )
             self._emit_progress(f"⏹️ Azami tur sınırına ({self.config.max_turns}) ulaşıldı.")
+            # `max_turns_reached` artık "ölüm" değil, "duraklama": teslim raporu
+            # hazırlanır ve koşu `/devam` (ya da yeni `extend` ucu) ile aynı Agent
+            # sohbetinde sürdürülebilir. Bu yüzden `failed` işaretlenmez.
             await self._collect_and_dispatch_morning_report(
                 headline=(
                     "🌅 Sabah Teslim Raporu — Tur Sınırına Ulaşıldı "

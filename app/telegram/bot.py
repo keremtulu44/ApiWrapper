@@ -43,13 +43,14 @@ _HELP = (
     "• /upstream_curl — 1. ana Max hesabının cURL'ünü canlı güncelle (+ /bitir)\n"
     "• /upstream_curl2 — Gündüz 2. Max hesabını canlı ekle/güncelle (+ /bitir)\n"
     "• /upstream_curl2 kapat — 2. Max hesabının bağlantısını ve keepalive'ını kökten kes\n"
-    "• /hesaplar — Açık Max yuvalarını ve bağlantı durumunu görüntüle\n\n"
+    "• /hesaplar — Açık Max yuvalarını, rollerini ve bağlantı durumunu görüntüle\n"
+    "• /rotasyon [a b] — İki Max yuvasının yerini değiştir (3 hesap dönüşümü)\n\n"
     "🤖 Otopilot (Model A — Agent Mode Proje):\n"
     "• /agent_curl (veya /curl) — Agent Mode '/input' cURL'ünü yapıştır (+ /bitir)\n"
     "• /agent_test — Bellekteki Agent cURL oturumunun canlı sağlığını tekrar test et\n"
     "• /bitir — Yapıştırılan (Telegram'ın böldüğü) tüm cURL parçalarını birleştir ve doğrula\n"
     "• /tur oto | /tur <1-25> — Otomatik tur (Max projeye göre seçer) veya sabit tavan\n"
-    "• /gece — Yalnız 22:00–07:00 (TR) arasında çalıştır (varsayılan)\n"
+    "• /gece — Yalnız 22:00–07:00 (TR) arasında çalıştır (artık isteğe bağlı)\n"
     "• /simdi [run_id] — 22:00'yi beklemeden hemen çalıştır / sıradaki projeyi uyandır\n"
     "• /devam [run_id] [simdi] — Taze cURL sonrası yarıda kalan projeyi kaldığı yerden sürdür\n"
     "• /projeler (veya /durum) — Çalışan, sırada bekleyen ve biten projeleri listele\n"
@@ -78,6 +79,7 @@ _KNOWN_BOT_COMMANDS: frozenset[str] = frozenset(
         "/upstream_curl",
         "/upstream_curl2",
         "/hesaplar",
+        "/rotasyon",
         "/bitir",
         "/curl_bitir",
         "/curlbitir",
@@ -493,7 +495,10 @@ class TelegramBot:
                 await self._handle_turn_limit(chat_id, sess, arg)
                 return
             if command == "/gece":
-                await self._handle_night_mode(chat_id, sess)
+                await self._handle_night_mode(chat_id, sess, arg)
+                return
+            if command == "/rotasyon":
+                await self._handle_rotation(chat_id, arg)
                 return
             if command in {"/simdi", "/hemen"}:
                 await self._handle_start_now(chat_id, sess, arg)
@@ -1158,14 +1163,25 @@ class TelegramBot:
         self,
         chat_id: int,
         sess: _ChatAutopilotSession,
+        arg: str = "",
     ) -> None:
+        if arg.strip().lower() in {"kapat", "off", "hayir", "hayır", "kaldir", "kaldır"}:
+            sess.respect_night_window = False
+            sess.updated_at = time.monotonic()
+            await self.send_text(
+                chat_id,
+                "☀️ Gece penceresi kapatıldı: projeler gönderildiği an başlar. "
+                "Süreklilik için varsayılan davranış budur.",
+            )
+            return
         sess.respect_night_window = True
         sess.updated_at = time.monotonic()
         await self.send_text(
             chat_id,
             "🌙 Gece çalışma penceresi aktif: Başlatacağınız proje yalnızca "
             "22:00–07:00 (TR) saatleri arasında çalışacak; gündüz gönderirseniz "
-            "Max'a dokunmadan 22:00'yi bekleyecek.",
+            "Max'a dokunmadan 22:00'yi bekleyecek.\n"
+            "Geri almak için /gece kapat yazın (varsayılan: bekleme yok).",
         )
 
     async def _handle_start_now(
@@ -1229,6 +1245,57 @@ class TelegramBot:
             chat_id,
             "⚡ Sıradaki proje için hemen başlatma modu açıldı (22:00 beklenmeyecek). "
             "Tekrar gece moduna dönmek için /gece yazabilirsiniz.",
+        )
+
+    async def _handle_rotation(self, chat_id: int, arg: str) -> None:
+        """`/rotasyon` — iki Max yuvasının rollerini takas eder.
+
+        Üç hesap dönüşümünde hiçbir hesabın tamamen tükenmemesi için roller
+        döndürülür: Max-1 / Max-2 / yedek (3. yuva) / Agent. Argümansız çağrı
+        en güvenli takası önerir: 1 ↔ 2 (trafigin çoğu iki Max hesabında kalsın).
+        """
+        tokens = [t.strip() for t in arg.split() if t.strip()]
+        slots: list[int] = []
+        for token in tokens[:2]:
+            try:
+                slots.append(int(token))
+            except ValueError:
+                await self.send_text(
+                    chat_id,
+                    "Kullanım: /rotasyon [yuva_a yuva_b] — örn. /rotasyon 1 2",
+                )
+                return
+        if not slots:
+            slots = [1, 2]
+        if len(slots) == 1:
+            slots.append(1 if slots[0] != 1 else 2)
+
+        try:
+            resp = await self.wrapper.post(
+                "/v1/autopilot/upstream-slots/swap",
+                json={"slot_a": slots[0], "slot_b": slots[1]},
+            )
+        except httpx.HTTPError:
+            await self.send_text(
+                chat_id, "Wrapper /v1/autopilot/upstream-slots/swap ucuna ulaşılamadı."
+            )
+            return
+        if resp.status_code != 200:
+            await self.send_text(chat_id, _autopilot_error_message(resp))
+            return
+
+        data = resp.json()
+        roles = data.get("roles") or {}
+        primary = roles.get("max_primary") or {}
+        secondary = roles.get("max_secondary") or {}
+        spare = roles.get("max_spare") or {}
+        await self.send_text(
+            chat_id,
+            f"🔁 Yuvalar takas edildi: {slots[0]} ↔ {slots[1]}\n"
+            f"• Max-1 (ana): {primary.get('label') or 'boş'}\n"
+            f"• Max-2: {secondary.get('label') or 'boş'}\n"
+            f"• Yedek (3. yuva): {spare.get('label') or 'boş'}\n"
+            "Hesaplar tükenmesin diye rolleri /rotasyon ile dönüşümlü tutabilirsiniz.",
         )
 
     async def _handle_resume_command(

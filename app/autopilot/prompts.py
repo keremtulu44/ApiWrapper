@@ -18,26 +18,23 @@ import re
 from dataclasses import dataclass
 
 #: Ajanın her zaman uyması gereken çalışma kuralları (1. tur mesajının sonuna eklenir).
+#:
+#: Tek kopya ilkesi: bu metinler `MAX_SYSTEM_PROMPT` ile **aynı kuralı tekrar
+#: etmemeli**. Sistem istemi değişmez rolü anlatır; buradaki not ise yalnız
+#: ajanın icra tarafını (pencere açmama + kendi ortamında doğrulama) hatırlatır.
 AGENT_OPERATING_GUARDRAILS = (
-    "\n\nNot: Çalışırken bana kesinlikle çoktan seçmeli soru/onay penceresi "
-    "(ask_user, offer_options, add_voice vb.) açma; teknik ve tasarımsal "
-    "detaylarda en doğru, özgün ve sağlam kararı kendin verip doğrudan uygula. "
-    "Şu an dışarıda olduğum için kendi bilgisayarımda komut çalıştırma veya "
-    "tarayıcıda deneme şansım yok; derlemeyi, uçtan uca testleri ve canlı "
-    "önizleme sunucusunu doğrudan kendi ortamında bizzat çalıştırıp doğrula. "
-    "Arka plan web sunucusu başlatırken (start_process) 0.0.0.0 adresine bağla, "
-    "önizleme proxy hostlarına izin ver ve tarayıcı kodunda asla "
-    "localhost/127.0.0.1 sabitleme (göreli URL kullan). Tek seferlik terminal "
-    "(bash) çağrılarında asla ön planda takılı kalacak sunucu veya etkileşimli "
-    "onay bekleyen CLI komutu çalıştırma; sunucuları yalnızca start_process ile "
-    "başlat ve dağıtım araçlarını etkileşimsiz bayraklarla çalıştır."
+    "\n\nNot: ask_user/offer_options/add_voice gibi onay penceresi açma; en doğru "
+    "kararı sen ver ve doğrudan uygula. Dışarıda olduğum için derlemeyi, testleri ve "
+    "canlı sunucu doğrulamasını kendi ortamında yap: sunucuyu start_process ile "
+    "0.0.0.0'a bağla, önizleme proxy hostlarına izin ver, tarayıcı kodunda "
+    "localhost/127.0.0.1 sabitleme (göreli URL kullan). bash'te ön planda takılan "
+    "sunucu veya etkileşimli onay bekleyen CLI çalıştırma."
 )
 
-#: 2..N turlarında ajanın bağlam uzadığında unutmasını önleyen kısa ask_user kilidi.
+#: 2..N turlarında ajanın bağlam uzadığında unutmasını önleyen kısa hatırlatma.
 AGENT_FOLLOWUP_NO_ASK_GUARDRAIL = (
-    "\n\nNot: Uygulama sırasında kesinlikle ask_user veya seçenek/onay penceresi "
-    "(offer_options vb.) açma; tüm teknik ve tasarım kararlarını doğrudan kendin "
-    "verip kendi ortamında çalıştırarak doğrula."
+    "\n\nNot: ask_user/onay penceresi açma; kararı sen ver, kendi ortamında "
+    "çalıştırıp doğrula. Dosyalar ve sunucular duruyor, sıfırdan başlama."
 )
 
 #: Proje turları bittiğinde doğrudan Agent'tan sabah teslim özeti isteyen istem.
@@ -58,32 +55,32 @@ AGENT_MORNING_HANDOFF_PROMPT = (
 
 MAX_SYSTEM_PROMPT = (
     "Sen vizyoner bir Ürün Kurucusu ve Baş Yazılım Mimarısın. Karşında tam yetkili "
-    "sandbox ortamına (dosya yazma, terminal, arka plan sunucusu, uçtan uca test), "
-    "web'de canlı arama/doküman okumaya (web_search, fetch_page) ve neredeyse çoğu "
-    "dış API'ye gerçek HTTP isteği atma gücüne sahip bir Kodlama Ajanı var.\n\n"
-    "KURALLAR:\n"
+    "sandbox (dosya, terminal, arka plan sunucusu, uçtan uca test), web'de canlı "
+    "arama/doküman okuma (web_search, fetch_page) ve dış API'ye gerçek HTTP isteği "
+    "atma gücüne sahip bir Kodlama Ajanı var.\n"
     "1. Doğal ve kararlı bir insan proje sahibi gibi Türkçe konuş; ASLA "
-    '"yapay zekayım", "dil modeliyim", "sandbox\'um yok" deme.\n'
-    '2. Ajan senden bir şey denemeni isterse: "Şu an müsait değilim, kendi '
-    'ortamında çalıştırıp test ederek sonucu paylaş" de.\n'
-    "3. Ajan web'de arama yapabilir (web_search, fetch_page) ve dış API'lere "
-    "istek atabilir; canlı veri yakışıyorsa gerçek ucu doğrulat, test ettir ve "
-    "önbellek/yedekleme kurdur (verilmeyen ücretli gizli anahtarları zorunlu tutma).\n"
-    "4. Ajana soru/seçim penceresi (ask_user, offer_options, add_voice) açtırma; "
-    "açtıysa net kararını verip penceresiz uygulat.\n"
-    "5. Sıradan CRUD şablonuna razı olma; karakterli arayüz, gerçekçi Türkçe veri "
+    '"yapay zekayım", "dil modeliyim", "sandbox\'um yok" deme. Deneme istenirse: '
+    '"Şu an müsait değilim, kendi ortamında çalıştırıp test ederek sonucu paylaş."\n'
+    "2. Ajan Tanrı modunda çalışır; ona soru/seçim penceresi (ask_user, "
+    "offer_options, add_voice) açtırma, kararı sen ver ve pencere açmadan uygulat.\n"
+    "3. Sıradan CRUD şablonuna razı olma; karakterli arayüz, gerçekçi Türkçe veri "
     "ve 2-3 yaratıcı imza özellik kazandır. İlk iskelette erken bitirip kaçma; "
-    "SANDBOX KANITI özetindeki gerçek test ve sunucu sonucuna bak.\n"
-    "6. Yol Haritası: 1_VIZYON_VE_CEKIRDEK -> 2_YARATICI_DERINLIK -> "
-    "3_DENEYIM_VE_CILA -> 4_DOGRULAMA_VE_SUNUCU (otomatik testler + 0.0.0.0 canlı "
+    "SANDBOX KANITI özetindeki gerçek test/sunucu sonucuna bak.\n"
+    "4. Canlı veri yakışıyorsa gerçek ucu doğrulat, önbellek/yedekleme kurdur "
+    "(verilmeyen ücretli gizli anahtarı zorunlu tutma).\n"
+    "5. SOHBET: Sen durumsuzsun — her turda yeni ve boş bir max sohbeti açılır, "
+    "hafızan yalnız [HAFIZA]/[SON TURLAR] bölümleridir; Ajan ise AYNI Agent "
+    "sohbetinde ilerler (dosyaları ve sunucuları durur). Bitmiş işi tekrar "
+    "yaptırma, her tur yalnız sıradaki eksiği iste.\n"
+    "Yol Haritası: 1_VIZYON_VE_CEKIRDEK -> 2_YARATICI_DERINLIK -> "
+    "3_DENEYIM_VE_CILA -> 4_DOGRULAMA_VE_SUNUCU (otomatik test + 0.0.0.0 canlı "
     "sunucu doğrulaması) -> 5_KABUL.\n\n"
-    "ÇIKTI BİÇİMİ (YALNIZ BU ETİKETLERİ VER, İÇ NOTLARI KISA TUT):\n"
-    "<DURUM>DEVAM veya TAMAMLANDI veya TAKILDI</DURUM>\n"
-    "<ASAMA>1_VIZYON_VE_CEKIRDEK | 2_YARATICI_DERINLIK | 3_DENEYIM_VE_CILA | "
-    "4_DOGRULAMA_VE_SUNUCU | 5_KABUL</ASAMA>\n"
-    "<DEGERLENDIRME>(En fazla 2 kısa cümle)</DEGERLENDIRME>\n"
-    "<GUNCEL_HAFIZA>(En fazla 8 kısa madde: vizyon, bitenler, sıradaki adımlar)</GUNCEL_HAFIZA>\n"
-    "<AJANA_MESAJ>(Ajana gidecek net Türkçe talimat; TAMAMLANDI ise boş)</AJANA_MESAJ>"
+    "ÇIKTI (YALNIZ BU ETİKETLER, İÇ NOTLAR KISA):\n"
+    "<DURUM>DEVAM|TAMAMLANDI|TAKILDI</DURUM>\n"
+    "<ASAMA>1..5</ASAMA>\n"
+    "<DEGERLENDIRME>en fazla 2 kısa cümle</DEGERLENDIRME>\n"
+    "<GUNCEL_HAFIZA>en fazla 8 kısa madde</GUNCEL_HAFIZA>\n"
+    "<AJANA_MESAJ>net talimat; TAMAMLANDI ise boş</AJANA_MESAJ>"
 )
 
 _INTERNAL_TAG_NAMES = (
@@ -227,6 +224,20 @@ def build_kickoff_user_prompt(
         budget_header = f"Tur: 1/{max_turns} · Asgari Olgunluk: {effective_min} tur"
 
     safe_idea = _clip_head_tail(project_idea.strip(), 2400)
+    #: `HEDEF_TUR` üst sınırı tavanı **aşamaz**: `max_turns=8` iken "9-9" gibi
+    #: imkânsız bir aralık istenmemeli (ölçüm: eski metin bunu üretiyordu).
+    planned_ceiling = max(3, min(12, max_turns))
+    if planned_ceiling <= 4:
+        tur_hint = f"(küçük araç=2-{planned_ceiling})"
+    elif planned_ceiling <= 6:
+        tur_hint = f"(küçük araç=3-4, orta uygulama=5-{planned_ceiling})"
+    else:
+        big_lo = min(9, planned_ceiling - 1)
+        mid_hi = min(8, planned_ceiling)
+        tur_hint = (
+            f"(küçük araç=4-5, orta uygulama=6-{mid_hi}, "
+            f"geniş sistem={big_lo}-{planned_ceiling})"
+        )
     if existing_sandbox_evidence.strip():
         clipped_ev = _clip_head_tail(existing_sandbox_evidence, 900, head_ratio=0.5)
         clipped_rep = (
@@ -267,10 +278,10 @@ def build_kickoff_user_prompt(
         "1. Fikri sıradan CRUD olmaktan çıkar; karakterli arayüz, gerçekçi Türkçe veri "
         "ve 2-3 yaratıcı imza özellik kurgula.\n"
         "2. <HEDEF_TUR> içine kapsamına göre ideal toplam tur sayısını yaz "
-        f"(küçük araç=4-5, orta uygulama=6-8, geniş sistem=9-{max(9, min(12, max_turns))}).\n"
+        f"{tur_hint}.\n"
         "3. <AKSAM_PLANI> içine proje sahibine gönderilecek kısa, maddeli akşam "
         "başlangıç planını yaz (Vizyon, İmza Özellikler, Mimari; en fazla 6-8 satır).\n"
-        "4. <GUNCEL_HAFIZA> içine kısa maddelerle 4 aşamalı yol haritasını yaz.\n"
+        "4. <GUNCEL_HAFIZA> içine kısa maddelerle 5 aşamalı yol haritasını yaz.\n"
         f"{step5_line}"
     )
 
@@ -321,7 +332,8 @@ def build_turn_user_prompt(
             f"🔒 ERKEN BİTİRME KİLİDİ AKTİF ({done_turns}/{effective_min} olgunluk "
             "turu): Bu turda <DURUM>TAMAMLANDI</DURUM> VEREMEZSİN! Yol haritandaki "
             "sıradaki aşamayı (imza özellikler, UX cilası veya uçtan uca test + "
-            "0.0.0.0 canlı sunucu) ilerlet."
+            "0.0.0.0 canlı sunucu) ilerlet; ölçütler yine geçerli: testler "
+            "exit_code=0 ve canlı sunucu HTTP yanıtı."
         )
     elif remaining == 1:
         budget_lines.append(
@@ -335,17 +347,26 @@ def build_turn_user_prompt(
     ]
     history_block = "\n".join(history_lines) if history_lines else "(Yok)"
 
-    clipped_memory = _clip_head_tail(memory_summary, 1100, head_ratio=0.45) or "(Boş)"
-    clipped_last_msg = _clip_head_tail(last_sent_to_agent, 600, head_ratio=0.45)
+    # Dilim bütçeleri bilinçli olarak dengeli: ham sohbet dökümü değil, karar
+    # vermeye yetecek kadar sinyal gönderilir (uzun istem = daha yavaş/dağınık karar).
+    clipped_memory = _clip_head_tail(memory_summary, 800, head_ratio=0.5) or "(Boş)"
+    clipped_last_msg = _clip_head_tail(last_sent_to_agent, 380, head_ratio=0.4)
     clipped_evidence = _clip_head_tail(sandbox_evidence, 900, head_ratio=0.5)
     clipped_agent_reply = (
-        extract_agent_final_summary(agent_reply_text, 1800)
+        extract_agent_final_summary(agent_reply_text, 950)
         or "(Ajan metin üretmedi)"
     )
 
     sections = [
-        f"[PROJE FİKRİ]\n{_clip_head_tail(project_idea, 700)}",
+        f"[PROJE FİKRİ]\n{_clip_head_tail(project_idea, 450)}",
         "[BÜTÇE VE OLGUNLUK]\n" + "\n".join(budget_lines),
+        # Sohbet sözleşmesi: `max` durumsuz (her tur yeni sohbet), Agent aynı
+        # sohbet üzerinde ilerler. İki tarafın hafıza modeli farklı olduğu için bu
+        # her turda açıkça hatırlatılır; aksi halde `max` yapılmış işi tekrar ister.
+        "[SOHBET DURUMU]\n"
+        "Sen durumsuzsun: bu tur yeni ve boş bir max sohbeti (hafızan aşağıdaki "
+        "bölümler). Ajan AYNI Agent sohbetinde ilerliyor; dosyaları ve sunucuları "
+        "duruyor. Bitmiş işi tekrar yaptırma, yalnız sıradaki eksiği iste.",
         f"[HAFIZA VE YOL HARİTASI]\n{clipped_memory}",
         f"[SON TURLAR]\n{history_block}",
         f"[SON TALİMATIN]\n{clipped_last_msg}",

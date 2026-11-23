@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -1477,8 +1478,14 @@ async def test_autopilot_waits_patiently_on_max_429_and_ask_problem_without_hamm
     from app.autopilot.max_bridge import MaxBridgeError
 
     default_cfg = AutopilotConfig(project_idea="Test")
-    assert (default_cfg.gap_min_seconds, default_cfg.gap_max_seconds) == (15.0, 30.0)
-    assert default_cfg.max_cooldown_schedule == (310.0, 600.0, 900.0)
+    # Zamanlama sözleşmesi (bilinçli değişiklik, 2026-11-23):
+    # * Orkestratörün tur aralığı 15-30 sn -> 0-3 sn: nazik aralık artık tele
+    #   giden yolda (`RequestQueue`, REQUEST_GAP_*) uygulanıyor; ikisi birlikte
+    #   tur başına ~45 sn saf bekleme üretiyordu (docs/DENGE_VE_3_HESAP_ANALIZ §2.2).
+    # * Soğuma 310/600/900 -> 60/180/420/900: 429 çoğu kez geçici; 5 dk beklemek
+    #   yerine 1 dk'da yoklamak daha çok tur kazandırıyor, son basamak yine sabırlı.
+    assert (default_cfg.gap_min_seconds, default_cfg.gap_max_seconds) == (0.0, 3.0)
+    assert default_cfg.max_cooldown_schedule == (60.0, 180.0, 420.0, 900.0)
 
     assert AutopilotOrchestrator._is_fatal_max_error(MaxBridgeError("HTTP 401 unauthorized"))
     assert AutopilotOrchestrator._is_fatal_max_error(MaxBridgeError("HTTP 409 refresh_required"))
@@ -1497,6 +1504,9 @@ async def test_autopilot_waits_patiently_on_max_429_and_ask_problem_without_hamm
 
         async def shutdown(self) -> None:
             return None
+
+        async def connect(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(last_assistant_message=None, has_pending_turn=False)
 
         def account_identity(self) -> str:
             return "max-sub"
@@ -1851,3 +1861,176 @@ def test_lemur_eruda_curl_with_markdown_artifacts_and_vercel_connector_preserved
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# 7. Süreklilik: tur tavanı uzatma, geçici hata yeniden denemesi, arşivden devam
+# ---------------------------------------------------------------------------
+
+
+class _FlakyAgent:
+    """İlk N turda geçici hata fırlatan, sonra normal yanıt veren sahte istemci."""
+
+    def __init__(self, failures: int) -> None:
+        from app.autopilot.events_parser import AgentMessage
+        from app.upstream.exceptions import UpstreamTimeout
+
+        self._message_cls = AgentMessage
+        self._timeout_cls = UpstreamTimeout
+        self.remaining = failures
+        self.calls = 0
+        self.config = SimpleNamespace(chat_id="chat-continuity", target_domain="proje.test")
+
+    def account_identity(self) -> str:
+        return "agent-flaky-sub"
+
+    async def startup(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def connect(self, **kwargs: Any) -> Any:
+        return SimpleNamespace(last_assistant_message=None, has_pending_turn=False)
+
+    async def send_and_wait(self, text: str, *, on_delta: Any = None) -> Any:
+        self.calls += 1
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise self._timeout_cls("olay akışı koptu", url="https://agent.test/stream")
+        return self._message_cls(
+            id=f"m{self.calls}",
+            role="assistant",
+            text="Sunucu 0.0.0.0:8000 üzerinde çalışıyor; GET / 200 döndü.",
+            tools=[],
+        )
+
+
+@pytest.mark.anyio
+async def test_transient_agent_error_is_retried_then_run_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ağ hatası koşuyu öldürmemeli: tur yeniden denenip akış sürmeli."""
+    import app.autopilot.orchestrator as orch_mod
+
+    # Bekleme sürelerini testte gerçekten uyumayalım:
+    async def _no_wait(_self: Any, _seconds: float) -> bool:
+        return True
+
+    monkeypatch.setattr(AutopilotOrchestrator, "_sleep_interruptible", _no_wait)
+    assert orch_mod.MAX_TRANSIENT_TURN_RETRIES >= 1
+
+    bridge = _FakeMaxBridge(
+        [
+            # 1. tur talimatı
+            "<DURUM>DEVAM</DURUM><MESAJ>Sunucuyu kur ve çalıştır.</MESAJ>"
+            "<HAFIZA>Sunucu kuruldu.</HAFIZA>",
+            # 1. tur değerlendirmesi: bitmedi
+            "<DURUM>DEVAM</DURUM><MESAJ>Arayüzü ekle.</MESAJ><HAFIZA>Arayüz eklendi.</HAFIZA>",
+            "<DURUM>TAMAMLANDI</DURUM><DEGERLENDIRME>Bitti.</DEGERLENDIRME>",
+        ],
+        sub="max-flaky-sub",
+    )
+    agent = _FlakyAgent(failures=2)
+    cfg = AutopilotConfig(
+        project_idea="Geçici hata dayanıklılığı",
+        max_turns=2,
+        gap_min_seconds=0.0,
+        gap_max_seconds=0.0,
+        state_file=tmp_path / "flaky.json",
+    )
+    orch = AutopilotOrchestrator(config=cfg, agent=agent, max_bridge=bridge)  # type: ignore[arg-type]
+    state = await orch.run()
+
+    # 2 hata + 1 başarılı tur: yeniden deneme gerçekten devreye girdi.
+    assert agent.calls >= 3
+    assert state.status == "completed"
+    assert state.turns and state.turns[0].agent_reply_text
+
+
+@pytest.mark.anyio
+async def test_non_transient_error_pauses_instead_of_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Geçici **olmayan** hata (kimlik reddi) yeniden denenmez; koşu /devam'a açık kalır."""
+    from app.upstream.exceptions import UpstreamAuthRejected
+
+    class _AuthFailAgent:
+        config = SimpleNamespace(chat_id="chat-auth", target_domain="proje.test")
+        calls = 0
+
+        def account_identity(self) -> str:
+            return "agent-auth-sub"
+
+        async def startup(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
+            return None
+
+        async def connect(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(last_assistant_message=None, has_pending_turn=False)
+
+        async def send_and_wait(self, text: str, *, on_delta: Any = None) -> Any:
+            type(self).calls += 1
+            raise UpstreamAuthRejected("401 yetkisiz", status_code=401)
+
+    async def _no_wait(_self: Any, _seconds: float) -> bool:
+        return True
+
+    monkeypatch.setattr(AutopilotOrchestrator, "_sleep_interruptible", _no_wait)
+
+    bridge = _FakeMaxBridge(
+        ["<DURUM>DEVAM</DURUM><MESAJ>Başla.</MESAJ><HAFIZA>Başladı.</HAFIZA>"],
+        sub="max-auth-sub",
+    )
+    cfg = AutopilotConfig(
+        project_idea="Kimlik hatası",
+        max_turns=2,
+        gap_min_seconds=0.0,
+        gap_max_seconds=0.0,
+        state_file=tmp_path / "auth.json",
+    )
+    orch = AutopilotOrchestrator(
+        config=cfg, agent=_AuthFailAgent(), max_bridge=bridge  # type: ignore[arg-type]
+    )
+    state = await orch.run()
+
+    assert _AuthFailAgent.calls == 1  # tek deneme, boşa dövme yok
+    assert state.status == "stopped"  # "failed" değil: /devam ile sürer
+    assert "/devam" in state.stop_reason
+
+
+def test_extend_turns_respects_lifetime_cap() -> None:
+    """Tur uzatma sınırsız değil: ömür boyu tavan aşılamaz (sonsuz döngü koruması)."""
+    from app.autopilot.orchestrator import MAX_TURN_EXTENSIONS
+
+    cfg = AutopilotConfig(project_idea="Uzatma", max_turns=4)
+    assert cfg.can_extend_turns() is True
+    grown = cfg.extend_turns(MAX_TURN_EXTENSIONS)
+    assert grown == 4 + MAX_TURN_EXTENSIONS
+    assert cfg.turn_extensions == MAX_TURN_EXTENSIONS
+    assert cfg.can_extend_turns() is False
+    assert cfg.extend_turns(2) == grown  # tavan aşılmıyor
+
+
+def test_autopilot_run_state_survives_disk_roundtrip(tmp_path: Path) -> None:
+    """Koşu durumu diske yazılıp geri okunabilmeli (süreç yeniden başlasa da sürsün)."""
+    state = AutopilotRunState(
+        run_id="run-persist",
+        chat_id="chat-persist",
+        project_idea="Kalıcılık",
+        max_turns=6,
+    )
+    state.status = "stopped"
+    state.turn_extensions = 2
+    state.stuck_recoveries = 1
+    state.memory_summary = "Sunucu ayakta."
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps(state.to_dict(), ensure_ascii=False), encoding="utf-8")
+
+    restored = AutopilotRunState.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    assert restored.run_id == "run-persist"
+    assert restored.turn_extensions == 2
+    assert restored.stuck_recoveries == 1
+    assert restored.memory_summary == "Sunucu ayakta."

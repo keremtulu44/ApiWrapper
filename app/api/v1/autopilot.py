@@ -20,8 +20,13 @@ from app.autopilot.curl_parse import (
     parse_agent_curl,
 )
 from app.autopilot.manager import AutopilotManager
-from app.autopilot.orchestrator import SameAccountError
+from app.autopilot.orchestrator import (
+    TURN_GAP_MAX_SECONDS,
+    TURN_GAP_MIN_SECONDS,
+    SameAccountError,
+)
 from app.autopilot.upstream_slots import UpstreamSlotRuntimeManager
+from app.core.config import MAX_ACCOUNT_SLOTS
 from app.core.errors import InvalidRequestError, ModelNotFoundError
 from app.core.security import api_key_dependency
 from app.upstream.client import error_excerpt
@@ -58,7 +63,11 @@ def _is_synthetic_test_domain(host: str) -> bool:
 def _get_manager(request: Request) -> AutopilotManager:
     manager: AutopilotManager | None = getattr(request.app.state, "autopilot_manager", None)
     if manager is None:
-        manager = AutopilotManager()
+        # Kalıcılık klasörü `Settings`'ten gelir (`AUTOPILOT_STATE_DIR`); boşsa
+        # koşular yalnız bellekte tutulur (eski davranış korunur).
+        settings = getattr(request.app.state, "settings", None)
+        state_dir = getattr(settings, "autopilot_state_dir", "") or None
+        manager = AutopilotManager(state_dir=state_dir)
         request.app.state.autopilot_manager = manager
     return manager
 
@@ -91,6 +100,12 @@ class StopAllAutopilotRunsRequest(BaseModel):
     force: bool = True
 
 
+class ExtendAutopilotRequest(BaseModel):
+    """Bitmemiş bir koşuya eklenecek tur sayısı (koşu kapanmadan sürer)."""
+
+    extra_turns: int = Field(default=4, ge=1, le=24)
+
+
 class ResumeAutopilotRequest(BaseModel):
     agent_curl: str = Field(..., min_length=20)
     respect_night_window: bool | None = None
@@ -104,11 +119,16 @@ class StartAutopilotRequest(BaseModel):
     chat_id: str | None = None
     max_turns: int = Field(default=8, ge=1, le=25)
     auto_turns: bool = False
+    #: Gece penceresi artık **opt-in**: varsayılan "hemen ilerle". 22:00-07:00
+    #: arasında beklemek sürekliliğin en büyük düşmanıydı (gündüz başlatılan iş
+    #: akşama kadar hiç ilerlemiyordu).
     respect_night_window: bool = False
     night_start_hour: int = Field(default=22, ge=0, le=23)
     night_end_hour: int = Field(default=7, ge=0, le=23)
-    gap_min_seconds: float = Field(default=15.0, ge=0.0, le=120.0)
-    gap_max_seconds: float = Field(default=30.0, ge=0.0, le=180.0)
+    #: Tur aralığı artık küçük: nazik aralık tele giden yolda (REQUEST_GAP_*)
+    #: uygulanıyor, ikisi birlikte tur başına ~45 sn saf bekleme üretiyordu.
+    gap_min_seconds: float = Field(default=TURN_GAP_MIN_SECONDS, ge=0.0, le=120.0)
+    gap_max_seconds: float = Field(default=TURN_GAP_MAX_SECONDS, ge=0.0, le=180.0)
     agent_turn_timeout: float | None = Field(default=None, ge=0.0)
     max_mode: Literal["in_process", "external_http", "direct_curl"] = "in_process"
     max_base_url: str = ""
@@ -312,11 +332,17 @@ async def get_autopilot_run(run_id: str, request: Request) -> dict[str, Any]:
     """Tek bir otopilot koşusunun hafıza defterini ve tüm tur kayıtlarını döndürür."""
     manager = _get_manager(request)
     managed = manager.get(run_id)
-    if managed is None:
+    if managed is not None:
+        data = managed.orchestrator.state.to_dict()
+        data["last_note"] = managed.last_note
+        data["restored_from_disk"] = False
+        return data
+    archived = manager.get_state(run_id)
+    if archived is None:
         raise ModelNotFoundError(f"Autopilot run '{run_id}' bulunamadı.", param="run_id")
-
-    data = managed.orchestrator.state.to_dict()
-    data["last_note"] = managed.last_note
+    data = archived.to_dict()
+    data["last_note"] = "Diskten geri yüklendi (süreç yeniden başladı); /devam ile sürdürün."
+    data["restored_from_disk"] = True
     return data
 
 
@@ -336,6 +362,33 @@ async def stop_autopilot_run(
         "status": state.status,
         "stop_requested": True,
         "forced": force,
+    }
+
+
+@router.post("/autopilot/runs/{run_id}/extend")
+async def extend_autopilot_run(
+    run_id: str,
+    request: Request,
+    body: ExtendAutopilotRequest | None = None,
+) -> dict[str, Any]:
+    """Tur tavanını uzatır; `max_turns_reached` artık koşunun ölümü değil.
+
+    Aynı Agent sohbeti (aynı dosyalar, aynı sunucular) korunur; yalnız izin
+    verilen tur sayısı artar. Varsayılan uzatma 4 turdur.
+    """
+    manager = _get_manager(request)
+    extra = 4 if body is None else body.extra_turns
+    try:
+        state = manager.extend_run_turns(run_id, extra)
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc), param="run_id") from exc
+    if state is None:
+        raise ModelNotFoundError(f"Autopilot run '{run_id}' bulunamadı.", param="run_id")
+    return {
+        "run_id": state.run_id,
+        "status": state.status,
+        "max_turns": state.max_turns,
+        "turn_extensions": state.turn_extensions,
     }
 
 
@@ -408,11 +461,55 @@ async def get_upstream_slots_status(request: Request) -> dict[str, Any]:
     return snap
 
 
+@router.post("/autopilot/upstream-slots/{slot}/close")
+async def close_upstream_slot(slot: int, request: Request) -> dict[str, Any]:
+    """Bir `max` yuvasını (2, 3, 4) bağlantısı ve keepalive'ıyla kökten bırakır.
+
+    Gece Agent Mode'a hazırlığın genel hâli: hangi hesap serbest bırakılacaksa
+    yuvası buradan kapatılır. 1. yuva bırakılamaz (ana hesap).
+    """
+    slot_mgr = _get_slot_manager(request)
+    try:
+        return await slot_mgr.release_slot(slot)
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc), param="slot") from exc
+
+
 @router.post("/autopilot/upstream-slots/2/close")
 async def close_upstream_slot_2(request: Request) -> dict[str, Any]:
     """2. `max` hesabının (`upstream_curl2`) bağlantısını ve kaydını kökten kapatır."""
     slot_mgr = _get_slot_manager(request)
     return await slot_mgr.close_slot_2()
+
+
+class SwapUpstreamSlotsRequest(BaseModel):
+    """İki Max yuvasının rollerini takas eder (3 hesaplı rotasyon)."""
+
+    slot_a: int = Field(..., ge=1, le=MAX_ACCOUNT_SLOTS)
+    slot_b: int = Field(..., ge=1, le=MAX_ACCOUNT_SLOTS)
+
+
+@router.post("/autopilot/upstream-slots/swap")
+async def swap_upstream_slots(
+    body: SwapUpstreamSlotsRequest,
+    request: Request,
+) -> dict[str, Any]:
+    """İki yuvanın **yerini** değiştirir; hesaplar yer değiştirir, trafik şekli değişmez.
+
+    Üç hesapta rotasyonun çekirdeği: hiçbir hesap sürekli aynı rolde kalmayıp
+    Max-1 / Max-2 / yedek / Agent rolleri dönüşümlü olur. Takas atomiktir; aynı
+    Google hesabı iki yuvada görünmez.
+    """
+    slot_mgr = _get_slot_manager(request)
+    autopilot_mgr: AutopilotManager | None = getattr(
+        request.app.state, "autopilot_manager", None
+    )
+    try:
+        return await slot_mgr.swap_roles(
+            body.slot_a, body.slot_b, autopilot_manager=autopilot_mgr
+        )
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc), param="slot") from exc
 
 
 @router.post("/autopilot/upstream-slots/{slot}")
@@ -421,19 +518,22 @@ async def update_upstream_slot(
     body: UpdateUpstreamSlotRequest,
     request: Request,
 ) -> dict[str, Any]:
-    """1. veya 2. `max` hesabının (`upstream_curl` / `upstream_curl2`) cURL'ünü canlı günceller."""
-    if slot not in (1, 2):
+    """Bir `max` yuvasının (`upstream_curl` / `upstream_curl_N`) cURL'ünü canlı günceller.
+
+    3 ve 4 numaralı yuvalar desteklidir; üç hesap rotasyonunda yedek/Agent
+    hesabını Max hattına almak için kullanılır.
+    """
+    if not 1 <= slot <= MAX_ACCOUNT_SLOTS:
         raise InvalidRequestError(
-            "Yalnızca 1 veya 2 numaralı Max yuvası güncellenebilir.", param="slot"
+            f"Yuva 1..{MAX_ACCOUNT_SLOTS} arasında olmalıdır.", param="slot"
         )
     slot_mgr = _get_slot_manager(request)
     autopilot_mgr: AutopilotManager | None = getattr(
         request.app.state, "autopilot_manager", None
     )
-    lit_slot: Literal[1, 2] = 1 if slot == 1 else 2
     try:
         return await slot_mgr.update_slot(
-            lit_slot,
+            slot,
             body.upstream_curl,
             autopilot_manager=autopilot_mgr,
         )

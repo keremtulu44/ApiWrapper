@@ -389,6 +389,15 @@ class Settings(BaseSettings):
     # -------------------------------------------------------------- metrics
     metrics_enabled: bool = True
 
+    # ------------------------------------------------------------- autopilot
+    #: Otopilot koşu kayıtlarının (fikir, hafıza, tur istatistikleri — secret
+    #: içermez) diske yazılacağı klasör. Boşsa kayıtlar yalnız bellekte tutulur
+    #: ve süreç yeniden başlayınca kaybolur. Render Free'de restart olağan
+    #: olduğu için kalıcı disk bağlandıysa burası verilmelidir; yarıda kalan
+    #: koşular `stopped` olarak geri yüklenir ve Telegram'da `/devam` ile aynı
+    #: Agent sohbetinde sürdürülebilir (`app/autopilot/manager.py`).
+    autopilot_state_dir: str = ""
+
     # ----------------------------------------------------------- validators
     @field_validator(
         "api_keys",
