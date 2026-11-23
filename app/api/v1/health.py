@@ -91,6 +91,21 @@ def _deployment_issues(
         ):
             issues.append("default_upstream_model_placeholder")
 
+    # `AUTOPILOT_STATE_DIR` verilmiş ama yazılamıyorsa koşular her deploy'da
+    # kaybolur; sessiz veri kaybı yerine açık kod döndürülür.
+    state_dir = (getattr(settings, "autopilot_state_dir", "") or "").strip()
+    if state_dir:
+        from pathlib import Path
+
+        path = Path(state_dir)
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            probe = path / ".readyz-probe"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink(missing_ok=True)
+        except OSError:
+            issues.append("autopilot_state_dir_not_writable")
+
     provider = settings.recaptcha_provider
     if provider == "browser" and not settings.recaptcha_site_key.strip():
         issues.append("recaptcha_site_key_missing")

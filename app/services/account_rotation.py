@@ -184,9 +184,19 @@ class AccountRotator:
         }
 
     # ------------------------------------------------------------------ karar
-    def _eligible_slots(self, lanes: list[Lane]) -> list[int]:
-        """Rotasyona girebilecek yuvalar (yapılandırılmış ve dışlanmamış)."""
+    def _eligible_slots(
+        self, lanes: list[Lane], allowed_slots: set[int] | None = None
+    ) -> list[int]:
+        """Rotasyona girebilecek yuvalar.
+
+        Üç süzgeç üst üste biner: **rol** (yalnız `max` yuvalar gündüz trafiğine
+        girer), `ACCOUNT_ROTATION_STRICT_SLOTS` ve `ACCOUNT_ROTATION_EXCLUDED_SLOTS`.
+        Rol süzgeci `allowed_slots` ile canlı gelir: `/rol 2 yedek` yazıldığı an
+        rotasyon 2. yuvayı aday listesinden çıkarır (yeniden başlatma gerekmez).
+        """
         slots = [lane.slot for lane in lanes if lane.account is not None]
+        if allowed_slots is not None:
+            slots = [slot for slot in slots if slot in allowed_slots]
         if self.strict_slots:
             slots = [slot for slot in slots if slot in self.strict_slots]
         if self.excluded_slots:
@@ -209,6 +219,7 @@ class AccountRotator:
         sticky_slot: int | None = None,
         message_key: str | None = None,
         agent_slot: int | None = None,
+        allowed_slots: set[int] | None = None,
     ) -> RotationDecision:
         """Sıradaki isteğin gideceği yuvayı seçer (yalnız karar, yan etki yok)."""
         if pinned_slot is not None:
@@ -223,7 +234,7 @@ class AccountRotator:
         # Agent işi Max hesabına düşmez: roller birbirini düşürmesin.
         agent_excluded = source == "agent"
 
-        eligible = self._eligible_slots(lanes)
+        eligible = self._eligible_slots(lanes, allowed_slots)
         if agent_excluded and agent_slot is not None:
             eligible = [slot for slot in eligible if slot != agent_slot]
         if not eligible:

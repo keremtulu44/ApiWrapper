@@ -313,3 +313,64 @@ def test_put_curl2_writes_only_slot_two_lines(tmp_path) -> None:
     assert "TARGET_DOMAIN_2=yeni.test" in text
     assert "eski-deger" not in text  # 2. yuva güncellendi
     assert set(replaced) == {"UPSTREAM_CURL_2", "TARGET_DOMAIN_2"}
+
+
+# ------------------------------------------------- yedek gerçekten devreye girer
+def test_spare_takes_over_when_no_max_lane_is_healthy() -> None:
+    """İki `max` hesabı da düşerse **yedek devreye girer**; istek boşa dönmez."""
+    roles = SlotRoles(roles={1: ROLE_MAX, 2: ROLE_MAX, 3: ROLE_SPARE}, enabled=True)
+    lanes = LaneSet(build_lanes(3), failover=True, cooldown=lambda s: 0.0, roles=roles)
+    assert {lanes.choose("o").slot for _ in range(6)} == {1, 2}
+    assert lanes.promoted_spares() == []  # sağlıklı max varken yedek uyur
+
+    # İki max hesabı arızalanır (401 gibi kalıcı hata).
+    for slot in (1, 2):
+        lanes.get(slot).health.record_failure("http_401")
+    assert [lane.slot for lane in lanes.promoted_spares()] == [3]
+    assert {lanes.choose("o").slot for _ in range(4)} == {3}
+
+    # Bir max hesabı toparlanınca yedek yeniden uykuya döner (trafik ondan çekilir).
+    lanes.get(1).health.reset()
+    assert lanes.promoted_spares() == []
+    assert {lanes.choose("o").slot for _ in range(4)} == {1}
+
+
+def test_spare_does_not_take_over_while_agent_slot_is_healthy() -> None:
+    """`agent` yuvası çalışıyor olsa bile yedek gündüz trafiğine girmez."""
+    roles = SlotRoles(roles={1: ROLE_MAX, 2: ROLE_AGENT, 3: ROLE_SPARE}, enabled=True)
+    lanes = LaneSet(build_lanes(3), failover=True, cooldown=lambda s: 0.0, roles=roles)
+    lanes.get(1).health.record_failure("http_401")
+    # max yuvası yok ama agent yuvası da max trafiği almaz → yedek devreye girer,
+    # agent yuvası **asla** gündüz trafiği almaz.
+    assert [lane.slot for lane in lanes.promoted_spares()] == [3]
+    assert {lanes.choose("o").slot for _ in range(4)} == {3}
+
+
+def test_rotation_skips_non_max_roles_live() -> None:
+    """Rol ile rotasyon çelişmez: rotasyon yalnız `max` yuvaları döndürür."""
+    from app.services.account_rotation import AccountRotator
+
+    roles = SlotRoles(roles={1: ROLE_MAX, 2: ROLE_MAX, 3: ROLE_SPARE}, enabled=True)
+    lanes = LaneSet(build_lanes(3), failover=True, cooldown=lambda s: 0.0, roles=roles)
+    lanes.rotation = AccountRotator.from_settings(
+        make_settings(account_rotation_enabled=True, account_rotation_mode="round_robin")
+    )
+
+    seen = [lanes.choose("o", rotation_message_key=f"m{i}").slot for i in range(6)]
+    assert set(seen) == {1, 2}, f"yedek yuva rotasyona girmemeli: {seen}"
+    assert lanes.last_decision.get("slot") != 3
+
+    # Rol canlı değişir: 2. yuva yedeğe çekilince rotasyon da onu bırakır.
+    roles.set_role(2, "spare")
+    seen_after = [lanes.choose("o", rotation_message_key=f"n{i}").slot for i in range(6)]
+    assert set(seen_after) == {1}, f"rol değişimi rotasyona yansımalı: {seen_after}"
+
+
+def test_describe_marks_roles_without_leaking_secrets() -> None:
+    """Operatör satırı rolü söyler; cURL/çerez/token içermez."""
+    roles = SlotRoles(roles={1: ROLE_MAX, 2: ROLE_SPARE, 3: ROLE_AGENT}, enabled=True)
+    lanes = LaneSet(build_lanes(3), failover=True, cooldown=lambda s: 0.0, roles=roles)
+    line = lanes.describe()
+    assert "[yedek·bekliyor]" in line
+    assert "[agent]" in line
+    assert "cookie" not in line.lower()

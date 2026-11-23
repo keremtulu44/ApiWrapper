@@ -133,3 +133,33 @@ def test_telegram_worker_dockerfile_starts_bot_without_a_start_command():
     assert 'CMD ["python", "-m", "app.telegram.bot"]' in dockerfile
     assert "uvicorn" not in dockerfile
     assert "playwright install" not in dockerfile
+
+
+def test_unwritable_state_dir_is_reported_instead_of_silent_data_loss(tmp_path):
+    """`AUTOPILOT_STATE_DIR` yazılamıyorsa `/readyz` sessiz kalmaz."""
+    from app.api.v1.health import _deployment_issues
+
+    blocker = tmp_path / "dosya"
+    blocker.write_text("x", encoding="utf-8")  # klasör yerine dosya: mkdir patlar
+    settings = make_settings(
+        recaptcha_provider="static",
+        recaptcha_static_token="t",
+        autopilot_state_dir=str(blocker / "alt"),
+    )
+    account = AccountPool(settings)
+    issues = _deployment_issues(settings, ModelRegistry([]), account)
+    assert "autopilot_state_dir_not_writable" in issues
+
+
+def test_writable_state_dir_is_accepted(tmp_path):
+    from app.api.v1.health import _deployment_issues
+
+    target = tmp_path / "runs"
+    settings = make_settings(
+        recaptcha_provider="static",
+        recaptcha_static_token="t",
+        autopilot_state_dir=str(target),
+    )
+    issues = _deployment_issues(settings, ModelRegistry([]), AccountPool(settings))
+    assert "autopilot_state_dir_not_writable" not in issues
+    assert target.is_dir()  # kalıcılık klasörü hazır

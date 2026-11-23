@@ -181,6 +181,11 @@ TURN_LIMIT_AUTO_EXTEND = 3
 #: görünmediği için süreç anlaşılmıyordu.
 TURN_HEARTBEAT_SECONDS = 600.0
 
+#: Agent'tan bu kadar süre **tek olay** gelmezse "hâlâ bekliyorum" notu düşer.
+#: Bu bir süre **sınırı değildir**: tur kesilmez, yalnız sessizlik bildirilir
+#: (kullanıcı sözleşmesi: "tur süreyle bitmez, ama sessiz de kalmaz").
+SILENT_TURN_NOTICE_SECONDS = 1200.0
+
 
 @dataclass(slots=True)
 class AutopilotConfig:
@@ -412,6 +417,9 @@ class AutopilotOrchestrator:
         self._last_heartbeat = 0.0
         self._turn_started_at = 0.0
         self._turn_activity = ""
+        #: Agent'tan en son **herhangi bir olay** (metin/araç) geldiği an.
+        self._last_agent_signal = 0.0
+        self._last_silent_notice = 0.0
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self._sleep_fn = sleep_fn
         self._execution_semaphore = execution_semaphore
@@ -655,6 +663,7 @@ class AutopilotOrchestrator:
 
     def _note_agent_activity(self, delta: Any) -> None:
         """Akıştan gelen olayla 'şu an ne yapılıyor' satırını tazeler."""
+        self._last_agent_signal = time.monotonic()
         kind = getattr(delta, "kind", "")
         if kind == "tool_input" or kind == "tool_output":
             tool = getattr(delta, "tool_name", "") or "araç"
@@ -679,23 +688,58 @@ class AutopilotOrchestrator:
             if elapsed_min > TURN_BUDGET_MINUTES
             else ""
         )
+        done = len(self.state.turns)
+        planned = self.state.planned_turns or self.config.max_turns
+        next_step = self._next_step_line()
+        tail = f" · Sıradaki: {_summarize_one_line(next_step, 90)}" if next_step else ""
         return (
-            f"⏳ Tur {self.state.current_turn}: {elapsed_min:.0f} dk geçti · "
-            f"{self._turn_activity or 'çalışıyor'}{over}"
+            f"⏳ Tur {self.state.current_turn}: {elapsed_min:.0f} dk geçti"
+            f" ({done}/{planned} bitti · tavan {self.config.max_turns}) · "
+            f"{self._turn_activity or 'çalışıyor'}{tail}{over}"
         )
 
-    async def _maybe_heartbeat(self) -> None:
-        """Uzun turda Telegram'a periyodik durum satırı düşer (sessizlik = kaygı)."""
-        if TURN_HEARTBEAT_SECONDS <= 0 or not self._turn_started_at:
-            return
+    async def _heartbeat_tick(self) -> bool:
+        """Bir kalp atışı vakti geldiyse satırı yayınlar; yayınladıysa ``True``.
+
+        Neden ayrı: tur bekleyişi tek bir `await` içinde olduğu için "60 dakikadır
+        ses yok" durumu fark edilmiyordu. Hem hatırlatmayı hem **sessizlik
+        nöbetçisini** bu tek noktadan yayınlıyoruz.
+        """
+        if not self._turn_started_at:
+            return False
         now = time.monotonic()
-        if now - self._last_heartbeat < TURN_HEARTBEAT_SECONDS:
-            return
-        self._last_heartbeat = now
+        silent = now - self._last_agent_signal
         line = self._turn_status_line()
-        if line:
+        if not line:
+            return False
+        # Sıra önemli: kalp atışı (10 dk) sessizlikten (20 dk) **önce** tetiklenir;
+        # önce kalp atışına bakılsaydı sessizlik notu hiçbir zaman yayınlanmazdı.
+        if (
+            SILENT_TURN_NOTICE_SECONDS > 0
+            and silent >= SILENT_TURN_NOTICE_SECONDS
+            and now - self._last_silent_notice >= SILENT_TURN_NOTICE_SECONDS
+        ):
+            self._last_heartbeat = now
+            self._last_silent_notice = now
+            text = (
+                f"😴 Tur {self.state.current_turn}: {silent / 60:.0f} dk'dır Agent'tan "
+                "yeni olay gelmedi (hâlâ çalışıyor olabilir).\n"
+                "Sistem bekliyor, turu **kesmiyor**. İstersen `/durdur` ile "
+                "durdurup `/devam` ile kaldığı yerden sürdürebilirsin."
+            )
+            self._emit_progress(line)
+            await self._notify_telegram(text)
+            return True
+        if TURN_HEARTBEAT_SECONDS > 0 and now - self._last_heartbeat >= TURN_HEARTBEAT_SECONDS:
+            self._last_heartbeat = now
             self._emit_progress(line)
             await self._notify_telegram(line)
+            return True
+        return False
+
+    async def _maybe_heartbeat(self) -> None:
+        """Ana döngüden çağrılan kalp atışı (bekleyiş yoksa da çalışır)."""
+        await self._heartbeat_tick()
 
     async def _send_turn_with_retries(
         self, outgoing: str, *, turn: int | None = None
@@ -715,19 +759,18 @@ class AutopilotOrchestrator:
                     self.on_agent_delta(delta)
                 # Heartbeat uyandırıcıyı ana döngüde bırakmak yerine buradan
                 # tetiklemek yeterli: tur bekleyişi tek bir await içinde.
-                if (
-                    TURN_HEARTBEAT_SECONDS > 0
-                    and time.monotonic() - self._last_heartbeat
-                    >= TURN_HEARTBEAT_SECONDS
-                ):
-                    self._last_heartbeat = time.monotonic()
-                    line = self._turn_status_line()
-                    if line:
-                        self._emit_progress(line)
-                        with contextlib.suppress(RuntimeError):
-                            asyncio.get_running_loop().create_task(
-                                self._notify_telegram(line)
-                            )
+                now = time.monotonic()
+                due = TURN_HEARTBEAT_SECONDS > 0 and (
+                    now - self._last_heartbeat >= TURN_HEARTBEAT_SECONDS
+                )
+                silent_due = (
+                    SILENT_TURN_NOTICE_SECONDS > 0
+                    and now - self._last_agent_signal >= SILENT_TURN_NOTICE_SECONDS
+                    and now - self._last_silent_notice >= SILENT_TURN_NOTICE_SECONDS
+                )
+                if due or silent_due:
+                    with contextlib.suppress(RuntimeError):
+                        asyncio.get_running_loop().create_task(self._heartbeat_tick())
 
             try:
                 return await self.agent.send_and_wait(
@@ -1515,6 +1558,9 @@ class AutopilotOrchestrator:
 
                 t0 = time.monotonic()
                 self._turn_started_at = t0
+                # Sessizlik nöbetçisi tur başında sıfırlanır: yeni tur "yeni sinyal".
+                self._last_agent_signal = t0
+                self._last_silent_notice = 0.0
                 self._turn_activity = "talimat gönderildi"
                 self._emit_progress(
                     f"Tur {turn}/{self.config.max_turns} [{self.state.current_phase}]: "

@@ -617,3 +617,55 @@ adı. `cf_clearance` yoksa uyarır (403 riski).
 Render'da: Environment → `UPSTREAM_CURL_2` alanına cURL'ün tamamını yapıştırın
 (tek satır olması gerekmez). Doğrulama: deploy sonrası Telegram'da `/hesaplar` →
 `Yuva 2: 🟢 Sağlıklı` ve `🎭 Roller` satırı.
+
+
+---
+
+## 14. Sistematiğin kapanışı (23 Kasım 2026, ikinci geçiş)
+
+§13'teki "bilinen açık noktalar" listesinin tamamı bu geçişte kapatıldı. Artık
+sistematiğin her parçası **tek bir doğru kaynaktan** yönetiliyor: yuva rolü.
+
+### 14.1 Kapatılan açıklar
+
+| Açık ( §13.3 ) | Kapatılış | Kanıt |
+|---|---|---|
+| Yedek yuva hiç devreye girmiyordu | `promoted_spares()`: iki `max` yuvası da düşerse `spare` **otomatik** trafiğe girer, biri toparlanınca çekilir | `test_spare_takes_over_when_no_max_lane_is_healthy` |
+| Rotasyon `spare`/`agent` yuvasını döndürebiliyordu | `choose_slot(..., allowed_slots=...)` — rol tablosu **canlı** süzgeç; `/rol 2 yedek` anında rotasyona yansır | `test_rotation_skips_non_max_roles_live` |
+| Sessizce takılan tur | `_heartbeat_tick()` + `SILENT_TURN_NOTICE_SECONDS=1200`: 20 dk olay yoksa "bekliyorum, kesmiyorum" notu (10 dk kalp atışıyla birlikte, spam'siz) | `test_silent_turn_notice_never_cuts_the_turn`, `test_agent_signal_resets_silence_clock` |
+| Operatör satırı rolü göstermiyordu | `LaneSet.describe()` → `[yedek·bekliyor]`, `[yedek·ÖNE ALINDI]`, `[agent]`; arıza notuna "bu hesap gündüz trafiğine girmiyordu" satırı | `test_describe_marks_roles_without_leaking_secrets` |
+| `/rol` Telegram testi yoktu | 3 test: rol değişimi + hesabın açık kalması, kullanım/wrapper hatası, `/hesaplar` rol+rotasyon çıktısı | `test_rol_command_*`, `test_hesaplar_shows_roles_*` |
+| `AUTOPILOT_STATE_DIR` yazılamazsa sessiz kayıp | `/readyz` → `autopilot_state_dir_not_writable` (503, sır içermez) | `test_unwritable_state_dir_is_reported...` |
+
+### 14.2 Tur satırı artık dört ölçülebilir bilgi taşıyor
+
+```
+⏳ Tur 3: 42 dk geçti (2/6 bitti · tavan 8) · dosya düzenliyor · Sıradaki: API testlerini yaz
+```
+
+Bitmiş iş tekrar istenmez (`_next_step_line` yalnız `[ ]` maddesini seçer), tur
+süreyle kesilmez (`turn_timeout=None`), süre aşımı yalnız **bilgi** olarak yazılır.
+
+### 14.3 Üç hesabın varsayılan düzeni
+
+```env
+ACCOUNT_SLOT_ROLES=1:max,2:max,3:agent
+# iki Max + bir Agent; üç hesap da açık, hiçbiri silinmez
+# yedek gerekiyorsa: ACCOUNT_SLOT_ROLES=1:max,2:max,3:spare
+# ikisini birlikte kullanmak için 4. yuvayı boş bırakın (MAX_ACCOUNT_SLOTS)
+```
+
+| Durum | 1. yuva | 2. yuva | 3. yuva |
+|---|---|---|---|
+| Gündüz normal | max (trafik) | max (trafik) | agent (Agent projesi) |
+| Birincil tükeniyor | max | max | **spare** → öne alınır |
+| Agent gecesi | max | max | agent (keepalive yok) |
+| Hepsi tükenirse | — | — | istek hata dönmez; sıra bekler, sonra tekrar dener |
+
+### 14.4 Ölçüm
+
+| Ölçüm | §13 sonu | §14 sonu |
+|---|---|---|
+| Test | 896 passed | **907 passed** |
+| ruff (`app`+`tests`+`scripts`) | temiz | temiz |
+| Kalan açık nokta | 5 | **0** (davranışsal), 1 operasyonel (2. cURL canlı doğrulaması) |

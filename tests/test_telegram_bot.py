@@ -1136,3 +1136,151 @@ async def test_one_hour_agent_timeout_and_telegram_devam_resume_flow() -> None:
 
 
 
+
+
+# ---------------------------------------------------- /rol, /hesaplar, /rotasyon
+@pytest.mark.asyncio
+async def test_rol_command_changes_role_and_keeps_account_open():
+    """`/rol 3 agent`: hesap kapatılmaz; yanıt bunu açıkça söyler."""
+    sent: list[str] = []
+    posted: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["text"])
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/autopilot/upstream-slots/3/role"
+        posted.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json={
+                "slot": 3,
+                "role": "agent",
+                "keepalive_allowed": False,
+                "note": "Hesap açık kaldı; yalnız görevi değişti.",
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/rol 3 agent"})
+
+    assert posted == [{"role": "agent"}]
+    assert "Yuva 3 rolü: agent" in sent[-1]
+    assert "kapatılmadı" in sent[-1]
+    assert "/rol 3 max" in sent[-1]  # geri alma yolu gösteriliyor
+
+
+@pytest.mark.asyncio
+async def test_rol_command_validates_usage_and_reports_wrapper_errors():
+    """Eksik argüman ve wrapper hatası kısa/anlaşılır mesajla döner."""
+    sent: list[str] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["text"])
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={"error": {"message": "Yuva 3'te yapılandırılmış hesap yok."}},
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/rol 3"})
+        assert "Kullanım: /rol <yuva> <max|yedek|agent>" in sent[-1]
+
+        await bot.handle_message({"chat": {"id": 42}, "text": "/rol 3 agent"})
+        assert "hesap yok" in sent[-1]
+
+
+@pytest.mark.asyncio
+async def test_hesaplar_shows_roles_and_rotation_without_secrets():
+    """`/hesaplar` üç yuvanın rolünü ve rotasyon kuralını tek bakışta gösterir."""
+    sent: list[str] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content)["text"])
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/v1/autopilot/upstream-slots"
+        return httpx.Response(
+            200,
+            json={
+                "multi_lane": True,
+                "active_autopilot_runs": 1,
+                "slots": [
+                    {
+                        "slot": 1,
+                        "configured": True,
+                        "usable": True,
+                        "identity_fingerprint": "fp_1",
+                        "keepalive_running": True,
+                        "messages_in_window": 3,
+                        "effective_budget": 100,
+                        "queue_waiting": 0,
+                    },
+                    {
+                        "slot": 2,
+                        "configured": True,
+                        "usable": True,
+                        "identity_fingerprint": "fp_2",
+                        "keepalive_running": True,
+                        "messages_in_window": 1,
+                        "effective_budget": 100,
+                        "queue_waiting": 0,
+                    },
+                    {
+                        "slot": 3,
+                        "configured": True,
+                        "usable": False,
+                        "identity_fingerprint": "fp_3",
+                        "keepalive_running": False,
+                        "messages_in_window": 0,
+                        "effective_budget": 100,
+                        "queue_waiting": 0,
+                    },
+                ],
+                "slot_roles": {
+                    "enabled": True,
+                    "roles": {"1": "max", "2": "max", "3": "agent"},
+                    "agent_slots": [3],
+                    "spare_slots": [],
+                },
+                "rotation": {"enabled": True, "mode": "round_robin", "last_slot": 2},
+            },
+        )
+
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(make_settings(), telegram, wrapper)
+        await bot.handle_message({"chat": {"id": 42}, "text": "/hesaplar"})
+
+    text = sent[-1]
+    assert "🎭 Roller:" in text
+    assert "yuva 3 = Agent projesi" in text
+    assert "(hepsi açık)" in text
+    assert "🔁 Rotasyon:" in text
+    assert "sırayla" in text  # round_robin açıklaması
+    # Sır sızmıyor: çerez/token/cURL metni yok.
+    assert "cookie" not in text.lower() and "cf_clearance" not in text

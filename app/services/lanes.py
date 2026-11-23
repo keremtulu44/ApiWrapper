@@ -198,16 +198,48 @@ class LaneSet:
             return 0.0
         return max(0.0, float(self._cooldown(lane.slot)))
 
+    def _healthy(self, lane: Lane) -> bool:
+        """Hesabın kendisi iş alabilir mi (rolüne bakmadan): arıza yok, kota beklemiyor."""
+        return not lane.health.failing and self.cooling(lane) <= 0
+
+    def promoted_spares(self) -> list[Lane]:
+        """Devreye alınmış **yedek** yuvalar: hiçbir `max` yuvası çalışmıyorsa.
+
+        Kural: yedek normalde trafik almaz (birincil hesaplar tükenmesin), ama
+        iki `max` hesabı da arızalıysa/uykudaysa **otomatik devreye girer**. Böylece
+        "ikinci hesap bitti" durumunda istek hata dönmez, üçüncü hesap işi üstlenir
+        — hiçbir hesap kapatılmadan.
+        """
+        roles = self.roles
+        if roles is None or not roles.enabled:
+            return []
+        max_lanes = [lane for lane in self.lanes if roles.is_max(lane.slot)]
+        if any(self._healthy(lane) for lane in max_lanes):
+            return []
+        return [
+            lane
+            for lane in self.lanes
+            if roles.role_of(lane.slot) == "spare" and self._healthy(lane)
+        ]
+
     def usable(self, lane: Lane) -> bool:
         """Hat yeni iş alabilir mi?
 
-        Üç koşul: bilinen arızası yok, hesap dinlenmiyor ve **rolü `max`**
-        (`agent` rolündeki yuva gündüz `max` trafiği almaz — hesap açık kalır,
-        yalnız o pencere Agent projesine ayrılır).
+        Rol kuralı:
+        * ``max``   → arızası yoksa ve beklemiyorsa iş alır.
+        * ``spare`` → **normalde almaz**; yalnız hiçbir ``max`` yuvası çalışmıyorsa
+          devreye girer (bkz. `promoted_spares`).
+        * ``agent`` → gündüz `max` trafiği almaz (o pencere Agent projesinin).
         """
-        if self.roles is not None and not self.roles.is_max(lane.slot):
-            return False
-        return not lane.health.failing and self.cooling(lane) <= 0
+        roles = self.roles
+        if roles is None or not roles.enabled:
+            return self._healthy(lane)
+        role = roles.role_of(lane.slot)
+        if role == "max":
+            return self._healthy(lane)
+        if role == "spare":
+            return any(candidate is lane for candidate in self.promoted_spares())
+        return False
 
     def others_usable(self, lane: Lane) -> bool:
         """Bu hattın dışında iş alabilecek bir hat var mı?"""
@@ -339,12 +371,18 @@ class LaneSet:
             return None
         # Agent koşusunun kendi yuvası (varsa) Max isteklerinden dışlanır.
         agent_slot = getattr(rotator, "agent_slot", None) if source == "agent" else None
+        # Rol süzgeci **canlı**: `/rol 2 yedek` yazıldığı an 2. yuva rotasyondan
+        # çıkar; rol ile rotasyon birbirini ezmez (tek doğru kaynak: rol tablosu).
+        allowed = None
+        if self.roles is not None and self.roles.enabled:
+            allowed = {lane.slot for lane in self.lanes if self.roles.is_max(lane.slot)}
         decision = rotator.choose_slot(
             self.lanes,
             source=source,
             sticky_slot=sticky_slot,
             message_key=message_key,
             agent_slot=agent_slot,
+            allowed_slots=allowed,
         )
         self.last_decision = decision.as_dict()
         return decision.slot if decision.applied else None
@@ -459,6 +497,14 @@ class LaneSet:
                 f"birlikte tazeleyin.{waiting}"
             )
         notes.append(self.describe())
+        # Arıza hangi role düştü? Operatör "bu hesap sıcak yedekti, gündüz trafiği
+        # almıyordu" bilgisini mesajda görsün (yoksa gereksiz panik olur).
+        role = self.role_of(lane)
+        if role != "max":
+            notes.append(
+                f"Rol: bu hesap `{role}` — gündüz `max` trafiğine girmiyordu; "
+                "arıza gündüz isteklerini etkilemez."
+            )
         return tuple(notes)
 
     # ------------------------------------------------------- gözlemlenebilirlik
@@ -478,7 +524,14 @@ class LaneSet:
                 state = f"ARIZALI [{lane.health.code or 'bilinmiyor'}]"
             else:
                 state = "dinleniyor (kota)"
-            parts.append(f"{lane.label or 'hesap'} {state}")
+            role = self.role_of(lane)
+            if role == "spare":
+                action = "ÖNE ALINDI" if self.usable(lane) else "bekliyor"
+                parts.append(f"{lane.label or 'hesap'} [yedek·{action}] {state}")
+            elif role == "agent":
+                parts.append(f"{lane.label or 'hesap'} [agent] kullanımda (max trafiği almaz)")
+            else:
+                parts.append(f"{lane.label or 'hesap'} {state}")
         return "Hesaplar: " + " · ".join(parts)
 
     def snapshot(self) -> list[dict[str, Any]]:

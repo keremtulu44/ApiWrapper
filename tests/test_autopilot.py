@@ -2239,3 +2239,77 @@ def test_strict_plan_mode_is_opt_in_only() -> None:
     assert "kilit değil" in loose
     assert "kilit değil" not in strict
     assert "- tek madde" in strict
+
+
+@pytest.mark.anyio
+async def test_silent_turn_notice_never_cuts_the_turn() -> None:
+    """Agent 20 dk'dır sessizse operatöre not düşer; tur **kesilmez**.
+
+    Kullanıcı sözleşmesi: "tur süreyle bitmez, ama sessiz de kalmaz". Bu test
+    ikisini birlikte korur: nöbetçi yalnız *bilgi* yayınlar, `stop`/iptal yok.
+    """
+    import time as _time
+
+    from app.autopilot import orchestrator as orch_mod
+
+    sent: list[str] = []
+
+    class _Alerter:
+        enabled = True
+
+        async def send(self, text: str, label: str = "") -> None:
+            sent.append(text)
+
+    orch = AutopilotOrchestrator(
+        config=AutopilotConfig(
+            project_idea="Sessizlik nöbetçisi",
+            max_turns=2,
+            gap_min_seconds=0.0,
+            gap_max_seconds=0.0,
+        ),
+        agent=SimpleNamespace(config=SimpleNamespace(target_domain="t.test", chat_id="c1")),
+        max_bridge=SimpleNamespace(),
+        alerter=_Alerter(),  # type: ignore[arg-type]
+    )
+    orch.state.status = "running"
+    orch.state.current_turn = 3
+    orch._turn_started_at = _time.monotonic() - 25 * 60
+    orch._last_agent_signal = _time.monotonic() - 21 * 60
+    orch._last_heartbeat = _time.monotonic() - 11 * 60
+    orch._last_silent_notice = 0.0
+
+    published = await orch._heartbeat_tick()
+
+    assert published is True
+    assert any("dk'dır Agent'tan yeni olay gelmedi" in line for line in sent)
+    assert any("kesmiyor" in line for line in sent)
+    # Tur gerçekten sürüyor: hiçbir durum değişikliği/iptal yok.
+    assert orch.state.status == "running"
+    assert orch._stop_requested is False
+    assert orch_mod.SILENT_TURN_NOTICE_SECONDS > 0  # nöbetçi açık
+
+    # Aynı dakika içinde ikinci kez spam yapmaz.
+    orch._last_agent_signal = _time.monotonic() - 21 * 60
+    assert await orch._heartbeat_tick() is False
+
+
+@pytest.mark.anyio
+async def test_agent_signal_resets_silence_clock() -> None:
+    """Agent'tan tek bir olay gelmesi sessizlik saatini sıfırlar (yanlış alarm yok)."""
+    import time as _time
+
+    from app.autopilot.orchestrator import AutopilotOrchestrator as _Orch
+
+    orch = _Orch(
+        config=AutopilotConfig(project_idea="x", max_turns=1),
+        agent=SimpleNamespace(config=SimpleNamespace(target_domain="t.test", chat_id="c1")),
+        max_bridge=SimpleNamespace(),
+    )
+    orch._turn_started_at = _time.monotonic() - 30 * 60
+    orch._last_agent_signal = _time.monotonic() - 30 * 60
+    orch._last_heartbeat = _time.monotonic()  # kalp atışı susuyor
+
+    orch._note_agent_activity(SimpleNamespace(kind="text"))
+    assert _time.monotonic() - orch._last_agent_signal < 1.0
+    # Sinyal tazelendiği için sessizlik notu çıkmaz.
+    assert await orch._heartbeat_tick() is False
