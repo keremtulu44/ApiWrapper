@@ -383,13 +383,86 @@ class Settings(BaseSettings):
     #: Bir upstream sohbeti en fazla bu kadar saniye kullanılsın. 0 = yaş sınırı yok.
     session_rotate_after_seconds: float = 0.0
 
+    # ------------------------------------------------------------ rotasyon
+    #: Hesap rotasyonu: isteğin **hangi hesaba** gideceğini yük dengesi yerine
+    #: sıra belirler. Varsayılan kapalı → davranış eskisiyle birebir aynıdır.
+    #: Açıkken upstream istek biçimi (gövde/başlık/akış) **değişmez**; yalnız
+    #: hesap seçimi değişir (bkz. `app/services/account_rotation.py`).
+    account_rotation_enabled: bool = False
+    #: "round_robin" (sıra) | "weighted" (ağırlıklı) | "least_loaded" (eski yük dengesi)
+    account_rotation_mode: str = "round_robin"
+    #: Rotasyona katılacak yuvalar (boş = tümü). Örn. "1,2": yedek yuva (3)
+    #: gündüz trafiğine karışmaz, "birinci hesap tamamen bitmesin" korunur.
+    account_rotation_strict_slots: Annotated[list[int], NoDecode] = Field(
+        default_factory=list
+    )
+    #: Hiçbir Max isteği almayacak yuvalar. Örn. "3": gece Agent hesabı.
+    account_rotation_excluded_slots: Annotated[list[int], NoDecode] = Field(
+        default_factory=list
+    )
+    #: Gece Agent projesinin yuvası; bu yuva Max isteklerinden dışlanır.
+    account_rotation_agent_slot: int = 0
+    #: Ağırlıklar: "1:2,2:1" → 1. yuva iki katı iş alır (mode="weighted").
+    account_rotation_weights: str = ""
+
+    # --------------------------------------------------------------- roller
+    #: Yuva rolleri: `"1:max,2:max,3:agent"`. Hesap **kapatılmaz**; yalnız o
+    #: yuvanın ne iş yapacağı belirlenir:
+    #: `max`   = gündüz `max` trafiği (rotasyona katılır)
+    #: `spare` = açık ve sıcak bekler, gündüz trafiği almaz (acil yedek)
+    #: `agent` = Agent Mode projesinin hesabı; `max` trafiği almaz, keepalive
+    #:           yapılmaz (o pencere Agent'ın hakkı). cURL yuvada kalır.
+    #: Boş = rol sistemi kapalı, tüm yuvalar eşit (eski davranış).
+    account_slot_roles: str = ""
+
     # --------------------------------------------------------------- models
     models_file: str = "config/models.yaml"
 
     # -------------------------------------------------------------- metrics
     metrics_enabled: bool = True
 
+    # ------------------------------------------------------------- autopilot
+    #: Otopilot koşu kayıtlarının (fikir, hafıza, tur istatistikleri — secret
+    #: içermez) diske yazılacağı klasör. Boşsa kayıtlar yalnız bellekte tutulur
+    #: ve süreç yeniden başlayınca kaybolur. Render Free'de restart olağan
+    #: olduğu için kalıcı disk bağlandıysa burası verilmelidir; yarıda kalan
+    #: koşular `stopped` olarak geri yüklenir ve Telegram'da `/devam` ile aynı
+    #: Agent sohbetinde sürdürülebilir (`app/autopilot/manager.py`).
+    autopilot_state_dir: str = ""
+
     # ----------------------------------------------------------- validators
+    @field_validator(
+        "account_rotation_strict_slots",
+        "account_rotation_excluded_slots",
+        mode="before",
+    )
+    @classmethod
+    def _parse_slot_list(cls, v: object) -> object:
+        """`"1,2"` / `[1,2]` / `""` → `[1, 2]` (NoDecode olduğu için elle).
+
+        Bozuk değer **rotasyonu kapatmaz**: ayıklanır ve loglanabilir hale gelir;
+        aksi halde tek yazım hatası tüm rotasyonu sessizce öldürürdü.
+        """
+        if v is None or v == "":
+            return []
+        if isinstance(v, str):
+            items: list[object] = [
+                part for part in v.replace(" ", "").split(",") if part
+            ]
+        elif isinstance(v, (list, tuple)):
+            items = list(v)
+        else:
+            return []
+        out: list[int] = []
+        for item in items:
+            # `object` → int dönüşümü mypy'de dar değil; `str()` ile açıkça
+            # int'e çevrilebilir metne indirgenir, sonra ayıklanır.
+            try:
+                out.append(int(str(item).strip()))
+            except (TypeError, ValueError):
+                continue
+        return out
+
     @field_validator(
         "api_keys",
         "ask_api_keys",

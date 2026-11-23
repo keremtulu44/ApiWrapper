@@ -160,6 +160,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.registry = registry
     app.state.accounts = accounts
     app.state.lanes = lanes
+    #: Hesap rotasyon motoru (kapalıysa `None`): `/v1/admin/accounts` ve
+    #: Telegram `/hesaplar` buradan "hangi kural işliyor" bilgisini okur.
+    app.state.rotation = lanes.rotation
     # İlk hattın sırası ve sağlık kaydı: tek hesaplı kurulumda "sıra" ve "upstream
     # durumu" tam olarak bunlardır.
     app.state.queue = queue

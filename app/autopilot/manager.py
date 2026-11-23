@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import os
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal
 
 from app.autopilot.agent_client import AgentSessionClient
@@ -20,6 +23,8 @@ from app.autopilot.max_bridge import (
     MaxBridge,
 )
 from app.autopilot.orchestrator import (
+    TURN_GAP_MAX_SECONDS,
+    TURN_GAP_MIN_SECONDS,
     AutopilotConfig,
     AutopilotOrchestrator,
     AutopilotRunState,
@@ -29,6 +34,7 @@ from app.core.logging import get_logger
 from app.services.alerting import TelegramAlerter
 from app.services.completion_service import CompletionService
 from app.upstream.client import error_excerpt
+from app.utils.ids import random_suffix
 
 logger = get_logger(__name__)
 
@@ -43,14 +49,73 @@ class ManagedRun:
 class AutopilotManager:
     """API üzerinden başlatılan otopilot koşularını izler ve yönetir."""
 
-    def __init__(self, *, max_concurrent_runs: int = 10) -> None:
+    def __init__(
+        self,
+        *,
+        max_concurrent_runs: int = 10,
+        state_dir: Path | str | None = None,
+    ) -> None:
         self.max_concurrent_runs = max(1, max_concurrent_runs)
         self._runs: dict[str, ManagedRun] = {}
         self._order: list[str] = []
+        #: Süreç yeniden başladığında da yaşayan koşu kayıtları (secret içermez:
+        #: `AutopilotRunState` yalnız fikir, hafıza ve tur istatistikleri tutar).
+        #: Render Free'de restart/uyku olağan olduğu için bu şart: aksi halde
+        #: `/devam` "run bulunamadı" derdi.
+        self.state_dir: Path | None = self._resolve_state_dir(state_dir)
+        self._archived: dict[str, AutopilotRunState] = {}
+        self._load_archived()
         # Gece sırasına bırakılan projelerin 22:00'de aynı saniyede Max'a yüklenmemesi
         # için sıralı yürütme kilidi (biri bitince sıradaki başlar).
         self._night_semaphore = asyncio.Semaphore(1)
         self._morning_tasks: dict[str, asyncio.Task[None]] = {}
+
+    # ------------------------------------------------------------ kalıcılık
+    @staticmethod
+    def _resolve_state_dir(value: Path | str | None) -> Path | None:
+        # Öncelik: açık argüman > `AUTOPILOT_STATE_DIR` ortam değişkeni
+        # (`Settings.autopilot_state_dir` aynı env'i okur; API katmanı buradan geçirir).
+        raw = value if value is not None else os.environ.get("AUTOPILOT_STATE_DIR", "")
+        if isinstance(value, Path):
+            raw = value
+        text = str(raw or "").strip()
+        if not text:
+            return None
+        return Path(text)
+
+    def _state_path(self, run_id: str) -> Path | None:
+        if self.state_dir is None or not run_id:
+            return None
+        return self.state_dir / f"{run_id}.json"
+
+    def _load_archived(self) -> None:
+        """Diskteki koşu kayıtlarını yükler; yarıda kalanları `stopped` sayar."""
+        if self.state_dir is None or not self.state_dir.is_dir():
+            return
+        for path in sorted(self.state_dir.glob("*.json")):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+                state = AutopilotRunState.from_dict(data)
+            except (OSError, ValueError, TypeError):
+                logger.warning("autopilot_state_file_unreadable", path=path.name)
+                continue
+            if state.status in {"starting", "running", "waiting_window"}:
+                # Süreç yeniden başladı: ajan tarafındaki tur bitmiş olabilir.
+                state.status = "stopped"
+                state.stop_reason = (
+                    "Süreç yeniden başladı (deploy/uyku). /devam ile aynı Agent "
+                    "sohbetinde kaldığı yerden sürdürülebilir."
+                )
+            self._archived[state.run_id] = state
+        if self._archived:
+            logger.info("autopilot_runs_restored", count=len(self._archived))
+
+    def get_state(self, run_id: str) -> AutopilotRunState | None:
+        """Canlı ya da diskten yüklenmiş koşunun durumunu döndürür."""
+        item = self._runs.get(run_id)
+        if item is not None:
+            return item.orchestrator.state
+        return self._archived.get(run_id)
 
     def active_count(self) -> int:
         return sum(1 for item in self._runs.values() if not item.task.done())
@@ -72,13 +137,37 @@ class AutopilotManager:
     def get(self, run_id: str) -> ManagedRun | None:
         return self._runs.get(run_id)
 
+    def has_run(self, run_id: str) -> bool:
+        """Koşu canlı bellekte ya da diskten yüklenen arşivde var mı."""
+        return run_id in self._runs or run_id in self._archived
+
+    def _archive_finished(self, rid: str) -> None:
+        """Bitmiş/duraklamış koşuyu arşive taşır (bellek şişmesin, durum kalsın)."""
+        item = self._runs.get(rid)
+        if item is None:
+            return
+        state = item.orchestrator.state
+        self._archived[rid] = state
+        if rid not in self._order:
+            self._order.append(rid)
+        # Dosyaya son hâli yaz (orchestrator kendi `state_file`'ını zaten tutar;
+        # burada arşiv kopyası güncel kalsın).
+        path = self._state_path(rid)
+        if path is not None:
+            with contextlib.suppress(OSError):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    json.dumps(state.to_dict(), ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+
     def list_runs(self) -> list[dict[str, object]]:
         out: list[dict[str, object]] = []
         for rid in reversed(self._order[-50:]):
             item = self._runs.get(rid)
-            if item is None:
+            st = item.orchestrator.state if item is not None else self._archived.get(rid)
+            if st is None:
                 continue
-            st = item.orchestrator.state
             idea_flat = " ".join(st.project_idea.split())
             if len(idea_flat) > 120:
                 idea_flat = idea_flat[:119].rstrip() + "…"
@@ -98,7 +187,9 @@ class AutopilotManager:
                     "has_handoff_report": bool(st.handoff_report.strip()),
                     "morning_report_pending": rid in self._morning_tasks,
                     "current_phase": st.current_phase,
-                    "last_note": item.last_note,
+                    "last_note": (
+                        item.last_note if item is not None else "Süreç yeniden başladı"
+                    ),
                     "stop_reason": st.stop_reason,
                     "error_detail": (
                         error_excerpt(st.error_detail, limit=200)
@@ -123,8 +214,8 @@ class AutopilotManager:
         respect_night_window: bool = False,
         night_start_hour: int = 22,
         night_end_hour: int = 7,
-        gap_min_seconds: float = 15.0,
-        gap_max_seconds: float = 30.0,
+        gap_min_seconds: float = TURN_GAP_MIN_SECONDS,
+        gap_max_seconds: float = TURN_GAP_MAX_SECONDS,
         agent_turn_timeout: float | None = None,
         max_mode: Literal["in_process", "external_http", "direct_curl"] = "in_process",
         in_process_service: CompletionService | None = None,
@@ -160,6 +251,7 @@ class AutopilotManager:
                 raise ValueError("Süreç içi CompletionService hazır değil.")
             bridge = InProcessMaxBridge(in_process_service)
 
+        run_id = f"auto_{random_suffix(12)}"
         cfg = AutopilotConfig(
             project_idea=project_idea,
             max_turns=max_turns,
@@ -169,6 +261,8 @@ class AutopilotManager:
             night_end_hour=night_end_hour,
             gap_min_seconds=gap_min_seconds,
             gap_max_seconds=gap_max_seconds,
+            run_id=run_id,
+            state_file=self._state_path(run_id),
         )
 
         holder: dict[str, ManagedRun] = {}
@@ -219,7 +313,9 @@ class AutopilotManager:
 
         async def _runner() -> AutopilotRunState:
             try:
-                return await orch.run()
+                result = await orch.run()
+                self._archive_finished(orch.state.run_id)
+                return result
             except asyncio.CancelledError:
                 logger.info(
                     "autopilot_background_run_cancelled",
@@ -256,14 +352,17 @@ class AutopilotManager:
         taze Agent cURL'üyle hafıza ve tur geçmişini koruyarak kaldığı yerden sürdürür.
         """
         existing = self._runs.get(run_id)
-        if existing is None:
-            return None
-        if not existing.task.done():
+        if existing is not None and not existing.task.done():
             raise ValueError(
                 f"'{run_id}' zaten çalışıyor veya gece sırasında bekliyor."
             )
-        prev_orch = existing.orchestrator
-        prev_state = prev_orch.state
+
+        prev_orch = existing.orchestrator if existing is not None else None
+        prev_state = (
+            prev_orch.state if prev_orch is not None else self._archived.get(run_id)
+        )
+        if prev_state is None:
+            return None
         if prev_state.status == "completed":
             raise ValueError(f"'{run_id}' zaten tamamlanmış durumda.")
         if self.active_count() >= self.max_concurrent_runs:
@@ -285,10 +384,20 @@ class AutopilotManager:
 
         if in_process_service is not None:
             bridge: MaxBridge = InProcessMaxBridge(in_process_service)
-        else:
+        elif prev_orch is not None:
             bridge = prev_orch.max_bridge
+        else:
+            raise ValueError(
+                "Koşu diskten geri yüklendi (süreç yeniden başlamış); sürdürmek için "
+                "süreç içi `max` servisi gerekli."
+            )
 
-        prev_cfg = prev_orch.config
+        prev_cfg = prev_orch.config if prev_orch is not None else AutopilotConfig(
+            project_idea=prev_state.project_idea,
+            max_turns=prev_state.max_turns,
+            auto_turns=prev_state.auto_turns,
+            respect_night_window=prev_state.respect_night_window,
+        )
         eff_max_turns = max_turns if max_turns is not None else prev_cfg.max_turns
         eff_night = (
             respect_night_window
@@ -305,13 +414,21 @@ class AutopilotManager:
             night_end_hour=prev_cfg.night_end_hour,
             gap_min_seconds=prev_cfg.gap_min_seconds,
             gap_max_seconds=prev_cfg.gap_max_seconds,
+            max_stuck_recoveries=prev_cfg.max_stuck_recoveries,
+            max_transient_turn_retries=prev_cfg.max_transient_turn_retries,
+            turn_extensions=prev_state.turn_extensions,
             run_id=prev_state.run_id,
+            state_file=self._state_path(prev_state.run_id),
         )
 
         prev_state.status = "starting"
         prev_state.stop_reason = ""
         prev_state.error_detail = ""
-        eff_alerter = alerter if alerter is not None else prev_orch.alerter
+        eff_alerter = (
+            alerter
+            if alerter is not None
+            else (prev_orch.alerter if prev_orch is not None else None)
+        )
 
         holder: dict[str, ManagedRun] = {}
 
@@ -361,7 +478,9 @@ class AutopilotManager:
 
         async def _runner() -> AutopilotRunState:
             try:
-                return await orch.run()
+                result = await orch.run()
+                self._archive_finished(orch.state.run_id)
+                return result
             except asyncio.CancelledError:
                 logger.info("autopilot_background_run_cancelled", run_id=orch.state.run_id)
                 return orch.state
@@ -381,7 +500,30 @@ class AutopilotManager:
         )
         holder["item"] = managed
         self._runs[prev_state.run_id] = managed
+        self._archived.pop(prev_state.run_id, None)
         return orch.state
+
+    def extend_run_turns(self, run_id: str, extra_turns: int) -> AutopilotRunState | None:
+        """Koşu tavanını canlı olarak uzatır (aynı Agent sohbeti, aynı dosyalar).
+
+        `max_turns_reached` artık kalıcı son değildir: bitmemiş bir gece çalışması
+        bu çağrıyla kapatılmadan sürdürülebilir.
+        """
+        item = self._runs.get(run_id)
+        if item is None:
+            state = self._archived.get(run_id)
+            if state is None:
+                return None
+            raise ValueError(
+                f"'{run_id}' şu an bellekte çalışmıyor; önce /devam ile sürdürün."
+            )
+        new_limit = item.orchestrator.config.extend_turns(extra_turns)
+        item.orchestrator.state.turn_extensions = (
+            item.orchestrator.config.turn_extensions
+        )
+        item.orchestrator._persist_state()
+        item.last_note = f"Tur tavanı {new_limit} olarak uzatıldı."
+        return item.orchestrator.state
 
     def stop_run(
         self,

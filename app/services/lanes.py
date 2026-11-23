@@ -102,6 +102,8 @@ class LaneSet:
         cooldown: Callable[[int], float] | None = None,
         retry_failing_after: float = 0.0,
         sticky_size: int = 1024,
+        rotation: Any | None = None,
+        roles: Any | None = None,
     ) -> None:
         self.lanes: list[Lane] = list(lanes)
         if not self.lanes:
@@ -114,6 +116,16 @@ class LaneSet:
         self._sequence = 0
         self._sticky: OrderedDict[str, int] = OrderedDict()
         self._sticky_size = max(1, int(sticky_size))
+        #: Hesap rotasyon motoru (`app/services/account_rotation.py`). `None` ise
+        #: davranış **tam olarak** eski yük dengesidir; rotasyon yalnız açıkken
+        #: devreye girer (varsayılan kapalı).
+        self.rotation = rotation
+        #: Yuva rolleri (`app/services/slot_roles.py`). `None`/kapalıyken her yuva
+        #: eşittir (eski davranış). Roller hesabı **kapatmaz**: yalnız o yuvanın
+        #: gündüz `max` trafiği alıp almayacağını belirler.
+        self.roles = roles
+        #: Son rotasyon kararı (gözlemlenebilirlik; secret içermez).
+        self.last_decision: dict[str, Any] = {}
 
     @classmethod
     def from_settings(cls, settings: Settings, accounts: AccountPool) -> LaneSet:
@@ -142,11 +154,23 @@ class LaneSet:
                 for index, account in enumerate(configured)
             ]
         probes = settings.upstream_keepalive_interval_seconds > 0
+        # Rotasyon motoru yalnız açıksa kurulur; kapalıyken `None` kalır ve
+        # `choose` tamamen eski yük dengesiyle çalışır (davranış değişmez).
+        rotation = None
+        if getattr(settings, "account_rotation_enabled", False):
+            from app.services.account_rotation import AccountRotator
+
+            rotation = AccountRotator.from_settings(settings)
+        from app.services.slot_roles import SlotRoles
+
+        roles = SlotRoles.from_settings(settings)
         return cls(
             lanes,
             failover=settings.account_failover,
             cooldown=accounts.cooldown_remaining,
             retry_failing_after=0.0 if probes else RETRY_FAILING_WITHOUT_PROBE_SECONDS,
+            rotation=rotation,
+            roles=roles,
         )
 
     # ------------------------------------------------------------- durum
@@ -174,9 +198,48 @@ class LaneSet:
             return 0.0
         return max(0.0, float(self._cooldown(lane.slot)))
 
-    def usable(self, lane: Lane) -> bool:
-        """Hat yeni iş alabilir mi? (Bilinen arızası yok, hesap dinlenmiyor.)"""
+    def _healthy(self, lane: Lane) -> bool:
+        """Hesabın kendisi iş alabilir mi (rolüne bakmadan): arıza yok, kota beklemiyor."""
         return not lane.health.failing and self.cooling(lane) <= 0
+
+    def promoted_spares(self) -> list[Lane]:
+        """Devreye alınmış **yedek** yuvalar: hiçbir `max` yuvası çalışmıyorsa.
+
+        Kural: yedek normalde trafik almaz (birincil hesaplar tükenmesin), ama
+        iki `max` hesabı da arızalıysa/uykudaysa **otomatik devreye girer**. Böylece
+        "ikinci hesap bitti" durumunda istek hata dönmez, üçüncü hesap işi üstlenir
+        — hiçbir hesap kapatılmadan.
+        """
+        roles = self.roles
+        if roles is None or not roles.enabled:
+            return []
+        max_lanes = [lane for lane in self.lanes if roles.is_max(lane.slot)]
+        if any(self._healthy(lane) for lane in max_lanes):
+            return []
+        return [
+            lane
+            for lane in self.lanes
+            if roles.role_of(lane.slot) == "spare" and self._healthy(lane)
+        ]
+
+    def usable(self, lane: Lane) -> bool:
+        """Hat yeni iş alabilir mi?
+
+        Rol kuralı:
+        * ``max``   → arızası yoksa ve beklemiyorsa iş alır.
+        * ``spare`` → **normalde almaz**; yalnız hiçbir ``max`` yuvası çalışmıyorsa
+          devreye girer (bkz. `promoted_spares`).
+        * ``agent`` → gündüz `max` trafiği almaz (o pencere Agent projesinin).
+        """
+        roles = self.roles
+        if roles is None or not roles.enabled:
+            return self._healthy(lane)
+        role = roles.role_of(lane.slot)
+        if role == "max":
+            return self._healthy(lane)
+        if role == "spare":
+            return any(candidate is lane for candidate in self.promoted_spares())
+        return False
 
     def others_usable(self, lane: Lane) -> bool:
         """Bu hattın dışında iş alabilecek bir hat var mı?"""
@@ -197,6 +260,8 @@ class LaneSet:
         respect_hold: bool = False,
         pinned_slot: int | None = None,
         sticky_key: str | None = None,
+        rotation_source: str = "api",
+        rotation_message_key: str | None = None,
     ) -> Lane:
         """İsteğin gideceği hattı seçer ve atamayı kaydeder.
 
@@ -213,14 +278,28 @@ class LaneSet:
             pinned = self.get(pinned_slot)
             if pinned is None:
                 raise LookupError(pinned_slot)
+            self.last_decision = {
+                "applied": False,
+                "rule": "pinned",
+                "slot": pinned_slot,
+                "reason": "istek yuvaya sabitlendi",
+            }
             return pinned
 
         lanes = self.lanes
+        rotation_slot = self._rotation_slot(
+            rotation_source,
+            sticky_key=sticky_key,
+            sticky_slot=self._sticky.get(sticky_key, None) if sticky_key else None,
+            message_key=rotation_message_key,
+        )
         if not self.failover and len(lanes) > 1:
             # Katı bölüşüm: sağlığa bakılmaz, her hat yalnız kendi payını işler.
             # Atama, istek geri çevrilse de sayılır: arızalı hat kendi payını
             # "harcar", sıradaki istek öbür hatta gider (yoksa hepsi ona yığılırdı).
-            lane = self._assign(self._pick(lanes, sticky_key), sticky_key)
+            lane = self._assign(
+                self._pick(lanes, sticky_key, preferred_slot=rotation_slot), sticky_key
+            )
             if respect_hold:
                 hold = lane.health.admit(owner)
                 if hold is not None:
@@ -232,7 +311,10 @@ class LaneSet:
             candidates = usable + [
                 lane for lane in lanes if lane not in usable and self._retry_due(lane)
             ]
-            return self._assign(self._pick(candidates or lanes, sticky_key), sticky_key)
+            return self._assign(
+                self._pick(candidates or lanes, sticky_key, preferred_slot=rotation_slot),
+                sticky_key,
+            )
 
         # Arızalı hatlardan denemeye açık olanlar: bekletmesi dolmuş, denemesi
         # sürmüyor, hesabı dinlenmiyor. Çalışan hat varken yalnız "probe yok ve
@@ -249,7 +331,7 @@ class LaneSet:
         if not candidates:
             hold, blocked = self._soonest_hold(owner)
             raise LaneUnavailable(hold, blocked)
-        lane = self._pick(candidates, sticky_key)
+        lane = self._pick(candidates, sticky_key, preferred_slot=rotation_slot)
         if lane.health.failing:
             lane.health.admit(owner)  # deneme hakkını al: aynı anda tek deneme
         return self._assign(lane, sticky_key)
@@ -270,7 +352,54 @@ class LaneSet:
             return None
         return self._assign(self._pick(candidates, None), None)
 
-    def _pick(self, candidates: list[Lane], sticky_key: str | None) -> Lane:
+    def _rotation_slot(
+        self,
+        source: str,
+        *,
+        sticky_key: str | None,
+        sticky_slot: int | None,
+        message_key: str | None,
+    ) -> int | None:
+        """Rotasyon motorundan yuvayı ister; motor yoksa/kapalıysa ``None``.
+
+        Yalnız **hangi hesap** sorusunu yanıtlar; isteğin gövdesine/başlığına
+        dokunmaz. Sağlık ve kota kontrolleri yine dağıtıcıda kalır: rotasyon
+        arızalı bir hesabı zorla seçmez, uygun değilse yük dengesine döner.
+        """
+        rotator = self.rotation
+        if rotator is None:
+            return None
+        # Agent koşusunun kendi yuvası (varsa) Max isteklerinden dışlanır.
+        agent_slot = getattr(rotator, "agent_slot", None) if source == "agent" else None
+        # Rol süzgeci **canlı**: `/rol 2 yedek` yazıldığı an 2. yuva rotasyondan
+        # çıkar; rol ile rotasyon birbirini ezmez (tek doğru kaynak: rol tablosu).
+        allowed = None
+        if self.roles is not None and self.roles.enabled:
+            allowed = {lane.slot for lane in self.lanes if self.roles.is_max(lane.slot)}
+        decision = rotator.choose_slot(
+            self.lanes,
+            source=source,
+            sticky_slot=sticky_slot,
+            message_key=message_key,
+            agent_slot=agent_slot,
+            allowed_slots=allowed,
+        )
+        self.last_decision = decision.as_dict()
+        return decision.slot if decision.applied else None
+
+    def _pick(
+        self,
+        candidates: list[Lane],
+        sticky_key: str | None,
+        *,
+        preferred_slot: int | None = None,
+    ) -> Lane:
+        # Rotasyonun seçtiği yuva adaylar arasında varsa ona gidilir; yoksa
+        # (arızalı/dinleniyor) aşağıdaki yük dengesi devreye girer.
+        if preferred_slot is not None:
+            for lane in candidates:
+                if lane.slot == preferred_slot:
+                    return lane
         if sticky_key:
             slot = self._sticky.get(sticky_key)
             if slot is not None:
@@ -368,20 +497,50 @@ class LaneSet:
                 f"birlikte tazeleyin.{waiting}"
             )
         notes.append(self.describe())
+        # Arıza hangi role düştü? Operatör "bu hesap sıcak yedekti, gündüz trafiği
+        # almıyordu" bilgisini mesajda görsün (yoksa gereksiz panik olur).
+        role = self.role_of(lane)
+        if role != "max":
+            notes.append(
+                f"Rol: bu hesap `{role}` — gündüz `max` trafiğine girmiyordu; "
+                "arıza gündüz isteklerini etkilemez."
+            )
         return tuple(notes)
 
     # ------------------------------------------------------- gözlemlenebilirlik
+    def role_of(self, lane: Lane) -> str:
+        """Hattın rolü (`max` / `spare` / `agent`). Rol sistemi kapalıysa `max`."""
+        if self.roles is None:
+            return "max"
+        return self.roles.role_of(lane.slot)
+
     def describe(self) -> str:
         """Hesapların tek satırlık durumu (operatör bildirimleri için)."""
         parts: list[str] = []
         for lane in self.lanes:
+            role = self.role_of(lane)
+            if lane.health.failing:
+                health = f"ARIZALI [{lane.health.code or 'bilinmiyor'}]"
+            elif self.cooling(lane) > 0:
+                health = "dinleniyor (kota)"
+            else:
+                health = "sağlıklı"
             if self.usable(lane):
                 state = "çalışıyor"
-            elif lane.health.failing:
-                state = f"ARIZALI [{lane.health.code or 'bilinmiyor'}]"
+            elif role == "spare" and not lane.health.failing:
+                # Sağlıklı ama rol gereği trafik almıyor: "kota" demek yanıltıcı.
+                state = "beklemede (rol gereği trafik almıyor)"
+            elif role == "agent" and not lane.health.failing:
+                state = "kullanımda (Agent projesi; max trafiği almaz)"
             else:
-                state = "dinleniyor (kota)"
-            parts.append(f"{lane.label or 'hesap'} {state}")
+                state = health
+            name = lane.label or "hesap"
+            if role == "max":
+                parts.append(f"{name} {state}")
+            elif role == "agent":
+                parts.append(f"{name} [agent] {state}")
+            else:
+                parts.append(f"{name} [yedek] {state}")
         return "Hesaplar: " + " · ".join(parts)
 
     def snapshot(self) -> list[dict[str, Any]]:
@@ -390,6 +549,12 @@ class LaneSet:
                 "account": lane.label or None,
                 "slot": lane.slot or None,
                 "usable": self.usable(lane),
+                "role": self.role_of(lane),
+                "keepalive": (
+                    self.roles.keepalive_allowed(lane.slot)
+                    if self.roles is not None
+                    else True
+                ),
                 "assigned_total": lane.assigned,
                 "cooldown_remaining_seconds": round(self.cooling(lane), 1),
                 "queue": lane.queue.snapshot(),

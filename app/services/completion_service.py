@@ -92,6 +92,33 @@ class Reroute:
     moved_to: str
 
 
+#: `Admission.label` → rotasyon kaynağı. `autopilot` Agent tarafıdır: Max
+#: isteği değildir, Agent yuvasını dışlar.
+_ROTATION_SOURCES = {
+    "autopilot": "agent",
+    "agent": "agent",
+    "ask": "ask",
+    "keepalive": "keepalive",
+}
+
+
+def _rotation_source(label: str) -> str:
+    return _ROTATION_SOURCES.get((label or "").strip().lower(), "api")
+
+
+def _message_key(request: Any) -> str | None:
+    """İsteğin içerik parmak izi (rotasyonun 'aynı metin mi?' sorusu için)."""
+    try:
+        from app.services.account_rotation import logical_message_key
+
+        return logical_message_key(
+            messages=getattr(request, "messages", None),
+            model=getattr(request, "model", None),
+        )
+    except Exception:  # pragma: no cover - parmak izi asla isteği düşürmez
+        return None
+
+
 @dataclass(slots=True)
 class Admission:
     """Bir isteğin sıraya giriş koşulları ve (çıkışta) ölçülen süreleri."""
@@ -381,7 +408,13 @@ class CompletionService:
             return None
         return self.sessions.base_key(request.conversation_id, client_identity)
 
-    async def _admit(self, admission: Admission, sticky_key: str | None = None) -> Turn:
+    async def _admit(
+        self,
+        admission: Admission,
+        sticky_key: str | None = None,
+        *,
+        rotation_message_key: str | None = None,
+    ) -> Turn:
         """İsteği bir hesabın hattına atar; sırası (ve istekler arası bekleme) gelince döner.
 
         Sıra hataları API hatasına çevrilir. Hiçbir hesap isteği kabul etmiyorsa
@@ -395,6 +428,10 @@ class CompletionService:
                     respect_hold=admission.respect_hold,
                     pinned_slot=admission.account_slot,
                     sticky_key=sticky_key,
+                    # Rotasyon yalnız "hangi hesap" kararını etkiler; isteğin
+                    # gövdesi/başlıkları değişmez.
+                    rotation_source=_rotation_source(admission.label),
+                    rotation_message_key=rotation_message_key,
                 )
             except LookupError as exc:
                 raise InvalidRequestError(
@@ -852,7 +889,11 @@ class CompletionService:
         # Geçersiz istek sıraya hiç girmesin: ne sırayı ne aralığı harcasın.
         self.registry.resolve(request.model)
         validate_request(request, self.settings)
-        turn = await self._admit(admission, self._sticky_key(request, client_identity))
+        turn = await self._admit(
+            admission,
+            self._sticky_key(request, client_identity),
+            rotation_message_key=_message_key(request),
+        )
         try:
             response = await self._within_deadline(
                 self._create_completion(request, client_identity, turn),
@@ -1004,7 +1045,11 @@ class CompletionService:
             try:
                 # Geçersiz istek sırayı beklemeden reddedilsin.
                 validate_request(request, self.settings)
-                turn = await self._admit(admission, self._sticky_key(request, client_identity))
+                turn = await self._admit(
+            admission,
+            self._sticky_key(request, client_identity),
+            rotation_message_key=_message_key(request),
+        )
                 events = self._events(request, client_identity=client_identity, turn=turn)
                 async for event in events:
                     if is_disconnected is not None and await is_disconnected():

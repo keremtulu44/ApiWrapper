@@ -28,19 +28,45 @@ Render üzerinde yeniden deploy atmadan (1. hesabın çalışan oturumunu sıfı
 
 ---
 
+## 1.5 Süreklilik ilkesi (2026-11 güncellemesi)
+
+Koşu artık **tek bir kötü turda ölmez**:
+
+| Durum | Eski davranış | Yeni davranış |
+|---|---|---|
+| `TAKILDI` | koşu `failed` | 1 kurtarma turu, sonra `stopped` (`/devam` ile sürer) |
+| Ağ/timeout hatası | koşu `failed` | 30 + 60 sn sonra 2 kez yeniden dene; olmazsa `stopped` |
+| 401 / kota | koşu `failed` | yeniden denenmez (kilidi uzatır), `stopped` + Telegram bildirimi |
+| Tur tavanı | koşu kapanır | otomatik +3 tur; `/extend` ile istenirse daha fazla |
+| Süreç restart | koşu bellekten silinir | `AUTOPILOT_STATE_DIR` ile diskten yüklenir, `/devam`a açık |
+| Gece penceresi | varsayılan açık (22:00'e kadar bekleme) | varsayılan kapalı; `/gece` ile opt-in |
+| Tur aralığı | 15–30 sn × 2 | 0–3 sn (nazik aralık tel üstünde `REQUEST_GAP_*`) |
+
+> **Sohbet sözleşmesi korunur:** `max` her turda **yeni** (durumsuz) sohbet açar; Agent aynı
+> sohbet üzerinde ilerler. Bu davranış `prompts.py` ve testlerle kilitlidir.
+
+---
+
 ## 2. Telegram Komut Özeti
 
 ### Canlı Hesap & cURL Komutları
 - `/upstream_curl` + cURL yapıştır + `/bitir` — 1. ana `max` hesabını canlı güncelle
 - `/upstream_curl2` + cURL yapıştır + `/bitir` — 2. `max` hesabını canlı ekle/güncelle
-- `/upstream_curl2 kapat` — 2. `max` hesabının bağlantısını, çerezlerini ve keepalive görevini kökten kapat
-- `/hesaplar` — Yuva 1 ve Yuva 2'nin sağlık, sıra, keepalive ve bağlantı durumunu görüntüle
+- `/upstream_curl3` + cURL yapıştır + `/bitir` — 3. hesabı (yedek / gece Agent hesabı) canlı ekle
+- `/upstream_curl2 kapat` — 2. (veya `3 kapat` ile 3.) `max` hesabını kökten serbest bırak
+- `/rotasyon [a b]` — İki yuva arasında **hesapları takas et** (varsayılan `1 2`); üç hesabın
+  hiçbiri tamamen tükenmesin diye rolleri dönüşümlü tut (`yuva 1` ana, `yuva 2` ikinci, `yuva 3` yedek/Agent)
+- `/hesaplar` — Tüm yuvaların sağlık, sıra, keepalive, bağlantı durumu **ve rol görünümü**
+  (`roles.max_primary` / `max_secondary` / `max_spare`)
 
 ### Otopilot (Agent Mode) Komutları
 - `/agent_curl` (veya `/curl`) + cURL yapıştır + `/bitir` — Parçalı Agent `/input` cURL'ünü birleştir, çerez bütünlüğünü ve canlı oturum sağlığını doğrula
 - `/agent_test` — Bellekteki doğrulanmış Agent cURL oturumunun canlı (`200 OK` / `401`) durumunu tekrar yokla
 - `/tur oto` | `/tur <1-25>` — Otomatik tur (varsayılan) veya sabit tur tavanı
-- `/gece` | `/simdi [run_id]` — `22:00–07:00` gece modu (varsayılan) veya beklemeden hemen çalıştır
+- `/gece` | `/gece kapat` | `/simdi [run_id]` — Gece penceresi artık **opt-in** (varsayılan:
+  gönderildiği an başla). `/gece` 22:00–07:00 penceresini açar; `/gece kapat` geri alır.
+- `/devam [run_id] [simdi]` — `stopped` / `failed` / `max_turns_reached` koşuyu aynı Agent
+  sohbetinde sürdür (tur geçmişi + hafıza korunur)
 - `/projeler` | `/durum [run_id]` — Tüm projelerin anlık durumu, hata özeti ve Agent linkleri
 - `/rapor [run_id]` — Akşam başlangıç planı ve Agent sabah teslim raporunu görüntüle
 - `/durdur [run_id | zorla <run_id> | hepsi]` — Çalışan/bekleyen projeyi güvenli veya anında (`zorla` / `hepsi`) durdur
@@ -68,14 +94,20 @@ python -m app.autopilot run \
 
 ## 4. HTTP API Uçları (`/v1/autopilot/*`, `Authorization: Bearer <API_KEYS>`)
 
-- `GET  /v1/autopilot/upstream-slots` — Canlı Yuva 1 & Yuva 2 durum özeti (secret içermez)
-- `POST /v1/autopilot/upstream-slots/{slot}` — Yuva 1 veya 2 `max` cURL canlı güncelleme
-- `POST /v1/autopilot/upstream-slots/2/close` — Yuva 2'yi kökten kapatma
+- `GET  /v1/autopilot/upstream-slots` — Tüm yuvaların (1..4) durumu + rol görünümü (secret içermez)
+- `POST /v1/autopilot/upstream-slots/{slot}` — Yuva 1..4 `max` cURL canlı güncelleme
+- `POST /v1/autopilot/upstream-slots/{slot}/close` — Yuva 2..4'ü kökten serbest bırakma
+  (`1. yuva bırakılamaz`; eski `/2/close` yolu korunur)
+- `POST /v1/autopilot/upstream-slots/swap` — `{"slot_a": 1, "slot_b": 3}` iki yuvanın hesabını
+  **atomik** takas eder (aynı hesap iki yuvaya düşerse reddedilir)
 - `POST /v1/autopilot/inspect-curl` — Agent cURL doğrulaması, çerez parça sağlığı, `verify_live` canlı oturum testi ve yuva bazlı çakışma kontrolü (`conflict_slots`)
 - `POST /v1/autopilot/runs` — Yeni otopilot koşusu başlatma (`auto_turns`, `respect_night_window` destekli)
 - `GET  /v1/autopilot/runs` — Koşuları listeleme
 - `GET  /v1/autopilot/runs/{run_id}` — Detay, hafıza defteri, akşam planı ve sabah teslim raporu
+  (süreç yeniden başladıysa kayıt diskten yüklenir; `restored_from_disk: true`)
 - `POST /v1/autopilot/runs/{run_id}/start-now` — Gece sırasındaki koşuyu derhal uyandırma
+- `POST /v1/autopilot/runs/{run_id}/extend` — `{"extra_turns": 4}` tur tavanını uzat; `max_turns_reached`
+  artık koşunun ölümü değil, kaldığı Agent sohbetinde devam eder (ömür boyu tavan: 48 ek tur)
 - `POST /v1/autopilot/runs/{run_id}/stop?force=false|true` — Tek koşuyu güvenli veya anında durdurma
 - `POST /v1/autopilot/runs/stop-all` — Tüm aktif/bekleyen koşuları topluca durdurma
 - `POST /v1/autopilot/runs/clear` — Aktif/bekleyen/bitmiş otopilot koşularını durdurup bellekten temizleme

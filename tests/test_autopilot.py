@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
@@ -1308,7 +1309,9 @@ async def test_night_window_queue_auto_turns_and_every_turn_no_ask_guardrail(
 
     # Akşam 22:05'te başlayan iş bittiğinde sabah 07:00'ye (8 sa 55 dk = 32100 sn) planlanmalı!
     assert seconds_until_morning_hour(datetime(2026, 11, 21, 1, 0, tzinfo=TR_TZ)) == 21600.0
-    assert any("🌆 Akşam Proje Planı Hazır" in msg for msg in immediate_alerts)
+    # Plan başlığı sadeleşti (mesaj artık "tek bakışta anlaşılır" biçimde).
+    assert any("🌆 Plan hazır" in msg for msg in immediate_alerts)
+    assert any("Ne yapacağız:" in msg for msg in immediate_alerts)
     assert len(scheduled_morning) == 1
     assert "🌅 Sabah Teslim Raporu" in scheduled_morning[0][1]
     assert "Tur 5 tamam." in scheduled_morning[0][1]
@@ -1477,8 +1480,14 @@ async def test_autopilot_waits_patiently_on_max_429_and_ask_problem_without_hamm
     from app.autopilot.max_bridge import MaxBridgeError
 
     default_cfg = AutopilotConfig(project_idea="Test")
-    assert (default_cfg.gap_min_seconds, default_cfg.gap_max_seconds) == (15.0, 30.0)
-    assert default_cfg.max_cooldown_schedule == (310.0, 600.0, 900.0)
+    # Zamanlama sözleşmesi (bilinçli değişiklik, 2026-11-23):
+    # * Orkestratörün tur aralığı 15-30 sn -> 0-3 sn: nazik aralık artık tele
+    #   giden yolda (`RequestQueue`, REQUEST_GAP_*) uygulanıyor; ikisi birlikte
+    #   tur başına ~45 sn saf bekleme üretiyordu (docs/DENGE_VE_3_HESAP_ANALIZ §2.2).
+    # * Soğuma 310/600/900 -> 60/180/420/900: 429 çoğu kez geçici; 5 dk beklemek
+    #   yerine 1 dk'da yoklamak daha çok tur kazandırıyor, son basamak yine sabırlı.
+    assert (default_cfg.gap_min_seconds, default_cfg.gap_max_seconds) == (0.0, 3.0)
+    assert default_cfg.max_cooldown_schedule == (60.0, 180.0, 420.0, 900.0)
 
     assert AutopilotOrchestrator._is_fatal_max_error(MaxBridgeError("HTTP 401 unauthorized"))
     assert AutopilotOrchestrator._is_fatal_max_error(MaxBridgeError("HTTP 409 refresh_required"))
@@ -1497,6 +1506,9 @@ async def test_autopilot_waits_patiently_on_max_429_and_ask_problem_without_hamm
 
         async def shutdown(self) -> None:
             return None
+
+        async def connect(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(last_assistant_message=None, has_pending_turn=False)
 
         def account_identity(self) -> str:
             return "max-sub"
@@ -1851,3 +1863,453 @@ def test_lemur_eruda_curl_with_markdown_artifacts_and_vercel_connector_preserved
 
 
 
+
+
+# ---------------------------------------------------------------------------
+# 7. Süreklilik: tur tavanı uzatma, geçici hata yeniden denemesi, arşivden devam
+# ---------------------------------------------------------------------------
+
+
+class _FlakyAgent:
+    """İlk N turda geçici hata fırlatan, sonra normal yanıt veren sahte istemci."""
+
+    def __init__(self, failures: int) -> None:
+        from app.autopilot.events_parser import AgentMessage
+        from app.upstream.exceptions import UpstreamTimeout
+
+        self._message_cls = AgentMessage
+        self._timeout_cls = UpstreamTimeout
+        self.remaining = failures
+        self.calls = 0
+        self.config = SimpleNamespace(chat_id="chat-continuity", target_domain="proje.test")
+
+    def account_identity(self) -> str:
+        return "agent-flaky-sub"
+
+    async def startup(self) -> None:
+        return None
+
+    async def shutdown(self) -> None:
+        return None
+
+    async def connect(self, **kwargs: Any) -> Any:
+        return SimpleNamespace(last_assistant_message=None, has_pending_turn=False)
+
+    async def send_and_wait(self, text: str, *, on_delta: Any = None) -> Any:
+        self.calls += 1
+        if self.remaining > 0:
+            self.remaining -= 1
+            raise self._timeout_cls("olay akışı koptu", url="https://agent.test/stream")
+        return self._message_cls(
+            id=f"m{self.calls}",
+            role="assistant",
+            text="Sunucu 0.0.0.0:8000 üzerinde çalışıyor; GET / 200 döndü.",
+            tools=[],
+        )
+
+
+@pytest.mark.anyio
+async def test_transient_agent_error_is_retried_then_run_continues(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ağ hatası koşuyu öldürmemeli: tur yeniden denenip akış sürmeli."""
+    import app.autopilot.orchestrator as orch_mod
+
+    # Bekleme sürelerini testte gerçekten uyumayalım:
+    async def _no_wait(_self: Any, _seconds: float) -> bool:
+        return True
+
+    monkeypatch.setattr(AutopilotOrchestrator, "_sleep_interruptible", _no_wait)
+    assert orch_mod.MAX_TRANSIENT_TURN_RETRIES >= 1
+
+    bridge = _FakeMaxBridge(
+        [
+            # 1. tur talimatı
+            "<DURUM>DEVAM</DURUM><MESAJ>Sunucuyu kur ve çalıştır.</MESAJ>"
+            "<HAFIZA>Sunucu kuruldu.</HAFIZA>",
+            # 1. tur değerlendirmesi: bitmedi
+            "<DURUM>DEVAM</DURUM><MESAJ>Arayüzü ekle.</MESAJ><HAFIZA>Arayüz eklendi.</HAFIZA>",
+            "<DURUM>TAMAMLANDI</DURUM><DEGERLENDIRME>Bitti.</DEGERLENDIRME>",
+        ],
+        sub="max-flaky-sub",
+    )
+    agent = _FlakyAgent(failures=2)
+    cfg = AutopilotConfig(
+        project_idea="Geçici hata dayanıklılığı",
+        max_turns=2,
+        gap_min_seconds=0.0,
+        gap_max_seconds=0.0,
+        state_file=tmp_path / "flaky.json",
+    )
+    orch = AutopilotOrchestrator(config=cfg, agent=agent, max_bridge=bridge)  # type: ignore[arg-type]
+    state = await orch.run()
+
+    # 2 hata + 1 başarılı tur: yeniden deneme gerçekten devreye girdi.
+    assert agent.calls >= 3
+    assert state.status == "completed"
+    assert state.turns and state.turns[0].agent_reply_text
+
+
+@pytest.mark.anyio
+async def test_non_transient_error_pauses_instead_of_failing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Geçici **olmayan** hata (kimlik reddi) yeniden denenmez; koşu /devam'a açık kalır."""
+    from app.upstream.exceptions import UpstreamAuthRejected
+
+    class _AuthFailAgent:
+        config = SimpleNamespace(chat_id="chat-auth", target_domain="proje.test")
+        calls = 0
+
+        def account_identity(self) -> str:
+            return "agent-auth-sub"
+
+        async def startup(self) -> None:
+            return None
+
+        async def shutdown(self) -> None:
+            return None
+
+        async def connect(self, **kwargs: Any) -> Any:
+            return SimpleNamespace(last_assistant_message=None, has_pending_turn=False)
+
+        async def send_and_wait(self, text: str, *, on_delta: Any = None) -> Any:
+            type(self).calls += 1
+            raise UpstreamAuthRejected("401 yetkisiz", status_code=401)
+
+    async def _no_wait(_self: Any, _seconds: float) -> bool:
+        return True
+
+    monkeypatch.setattr(AutopilotOrchestrator, "_sleep_interruptible", _no_wait)
+
+    bridge = _FakeMaxBridge(
+        ["<DURUM>DEVAM</DURUM><MESAJ>Başla.</MESAJ><HAFIZA>Başladı.</HAFIZA>"],
+        sub="max-auth-sub",
+    )
+    cfg = AutopilotConfig(
+        project_idea="Kimlik hatası",
+        max_turns=2,
+        gap_min_seconds=0.0,
+        gap_max_seconds=0.0,
+        state_file=tmp_path / "auth.json",
+    )
+    orch = AutopilotOrchestrator(
+        config=cfg, agent=_AuthFailAgent(), max_bridge=bridge  # type: ignore[arg-type]
+    )
+    state = await orch.run()
+
+    assert _AuthFailAgent.calls == 1  # tek deneme, boşa dövme yok
+    assert state.status == "stopped"  # "failed" değil: /devam ile sürer
+    assert "/devam" in state.stop_reason
+
+
+def test_extend_turns_respects_lifetime_cap() -> None:
+    """Tur uzatma sınırsız değil: ömür boyu tavan aşılamaz (sonsuz döngü koruması)."""
+    from app.autopilot.orchestrator import MAX_TURN_EXTENSIONS
+
+    cfg = AutopilotConfig(project_idea="Uzatma", max_turns=4)
+    assert cfg.can_extend_turns() is True
+    grown = cfg.extend_turns(MAX_TURN_EXTENSIONS)
+    assert grown == 4 + MAX_TURN_EXTENSIONS
+    assert cfg.turn_extensions == MAX_TURN_EXTENSIONS
+    assert cfg.can_extend_turns() is False
+    assert cfg.extend_turns(2) == grown  # tavan aşılmıyor
+
+
+def test_autopilot_run_state_survives_disk_roundtrip(tmp_path: Path) -> None:
+    """Koşu durumu diske yazılıp geri okunabilmeli (süreç yeniden başlasa da sürsün)."""
+    state = AutopilotRunState(
+        run_id="run-persist",
+        chat_id="chat-persist",
+        project_idea="Kalıcılık",
+        max_turns=6,
+    )
+    state.status = "stopped"
+    state.turn_extensions = 2
+    state.stuck_recoveries = 1
+    state.memory_summary = "Sunucu ayakta."
+    path = tmp_path / "state.json"
+    path.write_text(json.dumps(state.to_dict(), ensure_ascii=False), encoding="utf-8")
+
+    restored = AutopilotRunState.from_dict(json.loads(path.read_text(encoding="utf-8")))
+    assert restored.run_id == "run-persist"
+    assert restored.turn_extensions == 2
+    assert restored.stuck_recoveries == 1
+    assert restored.memory_summary == "Sunucu ayakta."
+
+
+# ---------------------------------------------------------------------------
+# 8. Okunabilirlik + tekrar yasağı: 1.5 saatlik tur, "ne oldu / ne kaldı"
+# ---------------------------------------------------------------------------
+
+
+def _roadmap_memory() -> str:
+    return (
+        "- [x] iskelet kuruldu · test exit_code=0\n"
+        "- [x] bütçe grafiği · canlı 200\n"
+        "- [ ] hedef takibi ekranı · mobil uyumlu\n"
+        "- [ ] bildirimler · uçtan uca test"
+    )
+
+
+def test_turn_prompt_has_done_ledger_and_single_next_step() -> None:
+    """`max` durumsuz: biten işler açıkça yazılmalı ki aynı işi tekrar istemesin."""
+    prompt = build_turn_user_prompt(
+        project_idea="Kişisel finans",
+        turn=3,
+        max_turns=8,
+        current_phase="3_IMZA_OZELLIKLER",
+        memory_summary=_roadmap_memory(),
+        turn_digests=[],
+        last_sent_to_agent="Bütçe grafiği ekle",
+        agent_reply_text="Grafik hazır.",
+        sandbox_evidence="bash: npm test → exit_code=0",
+        completed_turns=2,
+        min_turns=4,
+        planned_turns=8,
+    )
+    assert "[ŞİMDİYE KADAR YAPILDI — TEKRAR İSTEME]" in prompt
+    assert "✓ iskelet kuruldu" in prompt
+    assert "✓ bütçe grafiği" in prompt
+    # Biten iş "sıradaki" bölümünde tekrar edilmemeli.
+    next_block = prompt.split("[SIRADAKİ", 1)[1].split("[SON TURLAR]", 1)[0]
+    assert "iskelet kuruldu" not in next_block
+    assert "hedef takibi ekranı" in next_block
+
+
+def test_turn_prompt_states_scale_without_hard_limit() -> None:
+    """Tur ölçeği yazılmalı ama **sınır** olarak değil (sistem sürekli olmalı)."""
+    from app.autopilot.prompts import TURN_BUDGET_MINUTES, TURN_BUDGET_SOFT_MINUTES
+
+    assert TURN_BUDGET_MINUTES == 90
+    assert TURN_BUDGET_SOFT_MINUTES < TURN_BUDGET_MINUTES
+    prompt = build_turn_user_prompt(
+        project_idea="Kişisel finans",
+        turn=2,
+        max_turns=8,
+        current_phase="2_TEMEL",
+        memory_summary=_roadmap_memory(),
+        turn_digests=[],
+        last_sent_to_agent="x",
+        agent_reply_text="y",
+        sandbox_evidence="z",
+        completed_turns=1,
+        min_turns=4,
+        planned_turns=8,
+    )
+    assert "TUR ÖLÇEĞİ" in prompt
+    assert "60-90 dk" in prompt
+    assert "üst sınır değil" in prompt
+    assert "böl" in prompt  # büyük işi parçalama ÖNERİSİ
+    assert "turu uzat, kesme" in prompt
+
+
+def test_kickoff_plan_is_forced_to_five_named_lines() -> None:
+    """Plan 5 etiketli satıra zorlanmalı: 'ne olacağım' tek bakışta anlaşılsın."""
+    kickoff = build_kickoff_user_prompt(project_idea="Kişisel finans", max_turns=8)
+    for token in ("AMAC:", "OZELLIK:", "MIMARI:", "ILK_TUR:", "TUR_SAYISI:"):
+        assert token in kickoff
+    assert "en fazla 4 madde" in kickoff
+    assert "- [ ] aşama adı · kabul ölçütü" in kickoff
+
+
+def test_compact_plan_limits_evening_plan_message() -> None:
+    """Uzun plan mesajı 6 satıra/620 karaktere indirilmeli."""
+    from app.autopilot.orchestrator import PLAN_MAX_LINES, _compact_plan
+
+    long_plan = "\n".join(f"SATIR {i} " + ("x" * 200) for i in range(20))
+    compact = _compact_plan(long_plan)
+    assert compact.count("\n") + 1 <= PLAN_MAX_LINES
+    assert len(compact) <= 700
+
+
+@pytest.mark.anyio
+async def test_turn_start_and_heartbeat_lines_explain_progress(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Tur başında ve sürerken 'ne oldu / ne kadar kaldı' satırı üretilmeli."""
+    import app.autopilot.orchestrator as orch_mod
+
+    alerts: list[str] = []
+
+    class _Alerter:
+        enabled = True
+
+        async def send(self, text: str, label: str = "") -> None:
+            alerts.append(text)
+
+    async def _no_wait(_self: Any, _seconds: float) -> bool:
+        return True
+
+    monkeypatch.setattr(AutopilotOrchestrator, "_sleep_interruptible", _no_wait)
+    # Heartbeat'i testte hemen tetikle:
+    monkeypatch.setattr(orch_mod, "TURN_HEARTBEAT_SECONDS", 0.0)
+
+    bridge = _FakeMaxBridge(
+        [
+            "<DURUM>DEVAM</DURUM><MESAJ>Sunucuyu kur.</MESAJ><HAFIZA>- [ ] sunucu</HAFIZA>",
+            "<DURUM>DEVAM</DURUM><MESAJ>Testi yaz.</MESAJ><HAFIZA>- [ ] test</HAFIZA>",
+            "<DURUM>TAMAMLANDI</DURUM><DEGERLENDIRME>Bitti.</DEGERLENDIRME>",
+        ],
+        sub="max-readable-sub",
+    )
+    agent = _FlakyAgent(failures=0)
+    cfg = AutopilotConfig(
+        project_idea="Okunabilirlik",
+        max_turns=2,
+        gap_min_seconds=0.0,
+        gap_max_seconds=0.0,
+        state_file=tmp_path / "readable.json",
+    )
+    orch = AutopilotOrchestrator(
+        config=cfg, agent=agent, max_bridge=bridge, alerter=_Alerter()  # type: ignore[arg-type]
+    )
+    st = await orch.run()
+
+    assert st.status == "completed"
+    joined = "\n".join(alerts)
+    assert "▶️ Tur 1 başladı" in joined
+    assert "🎯 Bu turun işi:" in joined
+    # Tur sürerken kalan süre bilgisi (heartbeat kapalıysa da başlangıç satırında var):
+    assert "dk'da bir durum güncellemesi" in joined or "kaldı" in joined
+
+
+# ---------------------------------------------------------------------------
+# 9. "Sınır koymayın" sözleşmesi: tur süreyle kesilmez, plan kilit değildir
+# ---------------------------------------------------------------------------
+
+
+def test_turn_budget_is_advisory_never_a_timeout() -> None:
+    """Tur ölçeği hiçbir yerde zaman aşımına dönüşmemeli.
+
+    Kullanıcı sözleşmesi: "o bir süre sınırı değil, değil mi? sistem sürekli
+    olmalı". Bu test, ileride birinin `turn_timeout`'u bu bütçeye bağlamasını
+    engeller (bağlanırsa tur 90. dakikada kesilir ve süreklilik ölür).
+    """
+    from app.autopilot.agent_client import AgentSessionClient
+    from app.autopilot.curl_parse import parse_agent_curl
+
+    curl = _build_windows_cmd_input_curl(sub="agent-timeout-contract")
+    client = AgentSessionClient.from_curl(curl)
+    assert client.turn_timeout is None
+    # Bütçe sabitleri yalnız metin/raporlama içindir; istemciye sızmamalı.
+    assert "turn_timeout" not in (AgentSessionClient.from_curl.__doc__ or "")
+    assert parse_agent_curl(curl) is not None
+
+
+def test_next_step_block_is_guidance_not_a_lock() -> None:
+    """Yol haritası maddesi kilit değil rehber olmalı; gerekçeli sapma serbest."""
+    prompt = build_turn_user_prompt(
+        project_idea="Kişisel finans",
+        turn=4,
+        max_turns=8,
+        current_phase="3_IMZA",
+        memory_summary="- [ ] hedef takibi\n- [ ] bildirim",
+        turn_digests=[],
+        last_sent_to_agent="x",
+        agent_reply_text="y",
+        sandbox_evidence="z",
+        completed_turns=3,
+        min_turns=4,
+        planned_turns=8,
+    )
+    block = prompt.split("[SIRADAKİ", 1)[1].split("[SON TURLAR]", 1)[0]
+    assert "rehber — daha iyisi varsa gerekçesiyle değiştir" in block
+    assert "kilit değil" in block
+    assert "gerekçesiz sapma yasak" in block  # serbest ama gerekçeli
+
+
+def test_strict_plan_mode_is_opt_in_only() -> None:
+    """Katı plan modu varsayılan KAPALI olmalı (yeni fikirlere yer kalsın)."""
+    common: dict[str, Any] = {
+        "project_idea": "X",
+        "turn": 2,
+        "max_turns": 8,
+        "current_phase": "2",
+        "memory_summary": "- [ ] tek madde",
+        "turn_digests": [],
+        "last_sent_to_agent": "a",
+        "agent_reply_text": "b",
+        "sandbox_evidence": "c",
+        "completed_turns": 1,
+        "min_turns": 4,
+    }
+    loose = build_turn_user_prompt(**common)
+    strict = build_turn_user_prompt(**common, strict_plan=True)
+    assert "kilit değil" in loose
+    assert "kilit değil" not in strict
+    assert "- tek madde" in strict
+
+
+@pytest.mark.anyio
+async def test_silent_turn_notice_never_cuts_the_turn() -> None:
+    """Agent 20 dk'dır sessizse operatöre not düşer; tur **kesilmez**.
+
+    Kullanıcı sözleşmesi: "tur süreyle bitmez, ama sessiz de kalmaz". Bu test
+    ikisini birlikte korur: nöbetçi yalnız *bilgi* yayınlar, `stop`/iptal yok.
+    """
+    import time as _time
+
+    from app.autopilot import orchestrator as orch_mod
+
+    sent: list[str] = []
+
+    class _Alerter:
+        enabled = True
+
+        async def send(self, text: str, label: str = "") -> None:
+            sent.append(text)
+
+    orch = AutopilotOrchestrator(
+        config=AutopilotConfig(
+            project_idea="Sessizlik nöbetçisi",
+            max_turns=2,
+            gap_min_seconds=0.0,
+            gap_max_seconds=0.0,
+        ),
+        agent=SimpleNamespace(config=SimpleNamespace(target_domain="t.test", chat_id="c1")),
+        max_bridge=SimpleNamespace(),
+        alerter=_Alerter(),  # type: ignore[arg-type]
+    )
+    orch.state.status = "running"
+    orch.state.current_turn = 3
+    orch._turn_started_at = _time.monotonic() - 25 * 60
+    orch._last_agent_signal = _time.monotonic() - 21 * 60
+    orch._last_heartbeat = _time.monotonic() - 11 * 60
+    orch._last_silent_notice = 0.0
+
+    published = await orch._heartbeat_tick()
+
+    assert published is True
+    assert any("dk'dır Agent'tan yeni olay gelmedi" in line for line in sent)
+    assert any("kesmiyor" in line for line in sent)
+    # Tur gerçekten sürüyor: hiçbir durum değişikliği/iptal yok.
+    assert orch.state.status == "running"
+    assert orch._stop_requested is False
+    assert orch_mod.SILENT_TURN_NOTICE_SECONDS > 0  # nöbetçi açık
+
+    # Aynı dakika içinde ikinci kez spam yapmaz.
+    orch._last_agent_signal = _time.monotonic() - 21 * 60
+    assert await orch._heartbeat_tick() is False
+
+
+@pytest.mark.anyio
+async def test_agent_signal_resets_silence_clock() -> None:
+    """Agent'tan tek bir olay gelmesi sessizlik saatini sıfırlar (yanlış alarm yok)."""
+    import time as _time
+
+    from app.autopilot.orchestrator import AutopilotOrchestrator as _Orch
+
+    orch = _Orch(
+        config=AutopilotConfig(project_idea="x", max_turns=1),
+        agent=SimpleNamespace(config=SimpleNamespace(target_domain="t.test", chat_id="c1")),
+        max_bridge=SimpleNamespace(),
+    )
+    orch._turn_started_at = _time.monotonic() - 30 * 60
+    orch._last_agent_signal = _time.monotonic() - 30 * 60
+    orch._last_heartbeat = _time.monotonic()  # kalp atışı susuyor
+
+    orch._note_agent_activity(SimpleNamespace(kind="text"))
+    assert _time.monotonic() - orch._last_agent_signal < 1.0
+    # Sinyal tazelendiği için sessizlik notu çıkmaz.
+    assert await orch._heartbeat_tick() is False
