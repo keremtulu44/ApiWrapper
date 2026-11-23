@@ -201,29 +201,34 @@ def _clip_head_tail(text: str, max_chars: int, *, head_ratio: float = 0.4) -> st
     return cleaned[:head].rstrip() + marker + cleaned[-tail:].lstrip()
 
 
-#: Bir turun hedef süresi (dk). Kullanıcı ölçümü: tur ~1.5 saate kadar uzuyordu.
-#: Tur süresi Max'in istem boyutuyla değil **istediği işin kapsamıyla** büyür;
-#: bu bütçe istemin içine somut sınır olarak yazılır ve aşılırsa bölünür.
+#: Bir turun **tipik** süresi (dk). Bu bir üst sınır DEĞİLDİR: hiçbir yerde turu
+#: kesmez, zaman aşımı üretmez (`AgentSessionClient.turn_timeout` varsayılanı
+#: `None`). Sadece Max'e "işi bu ölçekte tut" fikrini verir ve kullanıcıya
+#: ilerlemeyi anlatır. Tur uzarsa sistem bekler; süreklilik sınırlanmaz.
 TURN_BUDGET_MINUTES = 90
-#: Tur bütçesini aşan istekleri bölmek için kullanılan yumuşak sınır (dk).
+#: İşin bölünmeye başlaması gereken yumuşak eşik (dk). Aşılırsa tur **durmaz**;
+#: yalnız "bir sonraki turda makul bir parçaya böl" önerisi verilir.
 TURN_BUDGET_SOFT_MINUTES = 60
 
 
 def build_turn_budget_line(elapsed_minutes: float | None = None) -> str:
-    """Tur bütçesini tek satırda, ölçülebilir biçimde yazar.
+    """Tur büyüklüğünü **üst sınır olmadan** anlatan tek satır.
 
-    `elapsed_minutes` verilirse "ne kadar kaldı" bilgisi de eklenir; kullanıcının
-    şikâyeti tam olarak buydu: tur sürerken ne olduğu ve ne kadar kaldığı
-    görünmüyordu.
+    Önemli: bu metin bir süre sınırı koymaz. Kullanıcı geri bildirimi: "süre
+    sınırı değil, değil mi? sistem sürekli olmalı". Doğru — sistem turu asla
+    süreyle kesmez; satır yalnız yön gösterir ve ilerlemeyi görünür kılar.
     """
     line = (
-        f"⏱️ TUR BÜTÇESİ: bu tur ~{TURN_BUDGET_SOFT_MINUTES}-{TURN_BUDGET_MINUTES} dk sürmeli. "
-        "Tek turda bitmeyecek kadar büyük bir iş varsa böl: bu turda yalnız ilk "
-        "parçayı bitir ve kalanı hafızaya 'sıradaki' olarak yaz."
+        f"⏱️ TUR ÖLÇEĞİ (üst sınır değil, tur süreyle kesilmez): tipik tur "
+        f"~{TURN_BUDGET_SOFT_MINUTES}-{TURN_BUDGET_MINUTES} dk. İşin bütünü bu "
+        "turda bitmeyecekse yalnız ilk teslim edilebilir parçayı bitir; kalanı "
+        "hafızaya yaz. Parça bitmediyse turu uzat, kesme."
     )
     if elapsed_minutes is not None and elapsed_minutes > 0:
-        remaining = max(0.0, TURN_BUDGET_MINUTES - elapsed_minutes)
-        line += f" (Geçen: {elapsed_minutes:.0f} dk · Kalan: {remaining:.0f} dk)"
+        line += (
+            f" (Geçen: {elapsed_minutes:.0f} dk · ölçek: {TURN_BUDGET_MINUTES} dk — "
+            "aşılırsa tur devam eder, yalnız bölme önerilir)"
+        )
     return line
 
 
@@ -337,8 +342,15 @@ def build_turn_user_prompt(
     has_interactive_blocker: bool = False,
     early_exit_rejection_note: str = "",
     chained_next_line: str = "",
+    strict_plan: bool = False,
 ) -> str:
-    """Ara ve son turlarda durumsuz `max`'a verilen dengeli bağlam paketi."""
+    """Ara ve son turlarda durumsuz `max`'a verilen dengeli bağlam paketi.
+
+    `strict_plan=False` (varsayılan): yol haritası **rehberdir**, kilit değil.
+    Max daha değerli bir adım görürse (ör. fikir değişti, yeni bir gereksinim
+    çıktı) planı güncelleyip onu isteyebilir; gerekçesini hafızaya yazar.
+    `strict_plan=True`: yalnız sıradaki madde istenir (deney/gösteri modu).
+    """
     chained_next_line = chained_next_line.strip() or (
         "(Hafızadaki yol haritasından sıradaki eksik maddeyi seç; yeni kapsam açma.)"
     )
@@ -410,11 +422,20 @@ def build_turn_user_prompt(
         )
     else:
         done_block = "(Henüz bir şey bitmedi; bu ilk tur.)"
-    next_block = (
-        "\n".join(f"- {item}" for item in todo_items[:3])
-        if todo_items
-        else chained_next_line
-    )
+    plan_items = "\n".join(f"- {item}" for item in todo_items[:3])
+    if strict_plan:
+        next_block = plan_items or chained_next_line
+    else:
+        # ÖNEMLİ: "sıradaki" bir emir değil, öneridir. Aksi halde yol haritası
+        # projeyi kilitler ve yeni/iyi bir fikir üretilemez.
+        next_block = (
+            (plan_items or chained_next_line)
+            + "\n(Kural: bu liste rehberdir, kilit değil. Ajanın kanıtı ya da "
+            "projenin gidişatı daha değerli bir adımı gerektiriyorsa — yeni bir "
+            "gereksinim, tıkanma, yanlış varsayım — onu seç ve nedenini "
+            "<GUNCEL_HAFIZA>'ya tek satır yaz. Rehberin dışına çıkmak serbest; "
+            "gerekçesiz sapma yasak.)"
+        )
 
     # Dilim bütçeleri bilinçli olarak dengeli: ham sohbet dökümü değil, karar
     # vermeye yetecek kadar sinyal gönderilir (uzun istem = daha yavaş/dağınık karar).
@@ -441,7 +462,7 @@ def build_turn_user_prompt(
         # yaptırıyor". `max` durumsuz olduğu için önceki talimatı hatırlamaz;
         # aşağıdaki iki bölüm onu tekrar istemekten alıkoyar.
         f"[ŞİMDİYE KADAR YAPILDI — TEKRAR İSTEME]\n{done_block}",
-        f"[SIRADAKİ (yalnız bunu iste)]\n{next_block}",
+        f"[SIRADAKİ (rehber — daha iyisi varsa gerekçesiyle değiştir)]\n{next_block}",
         f"[SON TURLAR]\n{history_block}",
         f"[SON TALİMATIN]\n{clipped_last_msg}",
         f"[SANDBOX GERÇEK EYLEM KANITI]\n{clipped_evidence}",
@@ -466,8 +487,9 @@ def build_turn_user_prompt(
             "[KARAR]\n"
             f"{build_turn_budget_line()}\n"
             "Sandbox Kanıtını ve yol haritanı kontrol et; erken bitirme kilidi aktif "
-            "olduğu için <DURUM>DEVAM</DURUM> ver, yapılan işi tekrarlatmadan sıradaki "
-            "en değerli aşamayı <AJANA_MESAJ> içine yaz ve <GUNCEL_HAFIZA>'yı kısa tut."
+            "olduğu için <DURUM>DEVAM</DURUM> ver, yapılan işi tekrarlatmadan "
+            "**en değerli** sıradaki aşamayı (rehberdeki madde ya da gerekçeli daha "
+            "iyi bir adım) <AJANA_MESAJ> içine yaz ve <GUNCEL_HAFIZA>'yı kısa tut."
         )
     else:
         decision_task = (
@@ -476,7 +498,8 @@ def build_turn_user_prompt(
             "İmza özellikler, sıfır sahte kontrol, uçtan uca testler (exit_code=0) ve "
             "0.0.0.0 canlı sunucu HTTP doğrulaması kanıtla tamsa <DURUM>TAMAMLANDI</DURUM> "
             "ve <ASAMA>5_KABUL</ASAMA> ver; eksik varsa <DURUM>DEVAM</DURUM> ile net "
-            "sonraki adımı <AJANA_MESAJ> içine yaz."
+            "sonraki adımı <AJANA_MESAJ> içine yaz (rehber maddesi şart değil; daha "
+            "iyi bir adım varsa gerekçesini hafızaya yaz)."
         )
     sections.append(decision_task)
     return "\n\n".join(sections)

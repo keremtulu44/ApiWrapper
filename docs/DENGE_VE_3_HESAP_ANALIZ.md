@@ -452,3 +452,24 @@ kapsamında, (c) görünürlük eksikliğindeydi. Yapılanlar:
 
 Testler: `test_autopilot.py` +5 (defter/sıradaki, bütçe, 5 satırlı plan,
 `_compact_plan`, tur başlangıç+heartbeat satırları). Tam paket **857 passed**.
+
+### 11.1 Düzeltme: "sıradaki" rehberdir, süre **sınır değildir**
+
+Kullanıcı itirazı (haklı): *"sıradaki diye plandan gidersek yeni bir şeyi
+sınırlamış olmaz mıyız? 65 dk kaldı dediğin süre sınırı değil, değil mi? sistem
+sürekli olmalı."*
+
+| Endişe | Durum | Kanıt |
+|---|---|---|
+| "65 dk kaldı" bir sınır mı? | **Hayır.** Kodda turu kesen hiçbir süre yok | `AgentSessionClient.turn_timeout` varsayılanı `None`; `TURN_BUDGET_*` yalnız metin/rapor |
+| Süre aşılırsa ne olur? | Tur **devam eder**; satır "tur uzuyor — sistem bekler, kesmez" der | `orchestrator._turn_status_line` |
+| "Sıradaki" planı kilitler mi? | **Hayır** (varsayılan). Rehberdir; gerekçeli sapma serbest | `[SIRADAKİ (rehber — daha iyisi varsa gerekçesiyle değiştir)]` |
+| Katı plan istenirse? | `strict_plan=True` ile opt-in; varsayılan kapalı | `prompts.build_turn_user_prompt` |
+
+Yeni fikir koruması: Max, ajan kanıtı ya da projenin gidişatı daha değerli bir
+adımı gerektiriyorsa rehberin dışına çıkabilir — yalnız nedenini
+`<GUNCEL_HAFIZA>`'ya tek satır yazmak zorunda ("gerekçesiz sapma yasak").
+
+Testler: `test_turn_budget_is_advisory_never_a_timeout`,
+`test_next_step_block_is_guidance_not_a_lock`, `test_strict_plan_mode_is_opt_in_only`
+eklendi → tam paket **860 passed**.

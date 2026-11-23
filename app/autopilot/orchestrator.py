@@ -647,8 +647,9 @@ class AutopilotOrchestrator:
             [
                 f"▶️ Tur {turn} başladı ({done}/{planned} bitti · tavan {self.config.max_turns})",
                 f"🎯 Bu turun işi: {_summarize_one_line(next_step, 180)}",
-                f"⏱️ Hedef: {TURN_BUDGET_SOFT_MINUTES}-{TURN_BUDGET_MINUTES} dk · "
-                f"{TURN_HEARTBEAT_SECONDS / 60:.0f} dk'da bir durum güncellemesi gelecek",
+                f"⏱️ Tipik ölçek: {TURN_BUDGET_SOFT_MINUTES}-{TURN_BUDGET_MINUTES} dk "
+                "(tur süreyle kesilmez) · "
+                f"{TURN_HEARTBEAT_SECONDS / 60:.0f} dk'da bir durum güncellemesi",
             ]
         )
 
@@ -662,15 +663,25 @@ class AutopilotOrchestrator:
             self._turn_activity = "açıklama yazıyor"
 
     def _turn_status_line(self) -> str:
-        """Tur sürerken: geçen süre, kalan süre ve son görülen eylem."""
+        """Tur sürerken: geçen süre + ne yapıldığı.
+
+        Kullanıcı itirazı: "65 dk kaldı" bir **sınır** gibi okunuyordu. Değil:
+        `AgentSessionClient.turn_timeout` varsayılanı `None`, yani tur süreyle
+        kesilmez. Bu yüzden burada "kaldı" yerine **görece ölçek** yazıyoruz ve
+        süre aşımı bir uyarı değil, yalnız bilgi oluyor.
+        """
         if not self._turn_started_at:
             return ""
         elapsed_min = (time.monotonic() - self._turn_started_at) / 60.0
-        left = max(0.0, TURN_BUDGET_MINUTES - elapsed_min)
-        over = " · BÜTÇE AŞILDI, bir sonraki turda bölünecek" if left <= 0 else ""
+        over = (
+            f" · ölçeğin ({TURN_BUDGET_MINUTES} dk) üzerinde, tur uzuyor — "
+            "sistem bekler, kesmez"
+            if elapsed_min > TURN_BUDGET_MINUTES
+            else ""
+        )
         return (
             f"⏳ Tur {self.state.current_turn}: {elapsed_min:.0f} dk geçti · "
-            f"~{left:.0f} dk kaldı · {self._turn_activity or 'çalışıyor'}{over}"
+            f"{self._turn_activity or 'çalışıyor'}{over}"
         )
 
     async def _maybe_heartbeat(self) -> None:
@@ -1360,8 +1371,8 @@ class AutopilotOrchestrator:
                 plan_lines = [
                     "🌆 Plan hazır — geliştirme başlıyor",
                     *self._project_header_lines(),
-                    f"Hedef: {target_desc} · Tur bütçesi "
-                    f"{TURN_BUDGET_SOFT_MINUTES}-{TURN_BUDGET_MINUTES} dk",
+                    f"Hedef: {target_desc} · Tipik tur "
+                    f"{TURN_BUDGET_SOFT_MINUTES}-{TURN_BUDGET_MINUTES} dk (sınır değil)",
                 ]
                 if self.state.evening_plan:
                     # Plan metni artık 5 satıra zorlanıyor (AMAC/OZELLIK/MIMARI/

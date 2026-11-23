@@ -2072,13 +2072,13 @@ def test_turn_prompt_has_done_ledger_and_single_next_step() -> None:
     assert "✓ iskelet kuruldu" in prompt
     assert "✓ bütçe grafiği" in prompt
     # Biten iş "sıradaki" bölümünde tekrar edilmemeli.
-    next_block = prompt.split("[SIRADAKİ (yalnız bunu iste)]", 1)[1].split("[SON TURLAR]", 1)[0]
+    next_block = prompt.split("[SIRADAKİ", 1)[1].split("[SON TURLAR]", 1)[0]
     assert "iskelet kuruldu" not in next_block
     assert "hedef takibi ekranı" in next_block
 
 
-def test_turn_prompt_carries_1_5_hour_turn_budget() -> None:
-    """Tur bütçesi istemde somut sınır olarak yazılmalı (kullanıcı: maks 1.5 saat)."""
+def test_turn_prompt_states_scale_without_hard_limit() -> None:
+    """Tur ölçeği yazılmalı ama **sınır** olarak değil (sistem sürekli olmalı)."""
     from app.autopilot.prompts import TURN_BUDGET_MINUTES, TURN_BUDGET_SOFT_MINUTES
 
     assert TURN_BUDGET_MINUTES == 90
@@ -2097,9 +2097,11 @@ def test_turn_prompt_carries_1_5_hour_turn_budget() -> None:
         min_turns=4,
         planned_turns=8,
     )
-    assert "TUR BÜTÇESİ" in prompt
+    assert "TUR ÖLÇEĞİ" in prompt
     assert "60-90 dk" in prompt
-    assert "böl" in prompt  # büyük işi parçalama talimatı
+    assert "üst sınır değil" in prompt
+    assert "böl" in prompt  # büyük işi parçalama ÖNERİSİ
+    assert "turu uzat, kesme" in prompt
 
 
 def test_kickoff_plan_is_forced_to_five_named_lines() -> None:
@@ -2170,3 +2172,70 @@ async def test_turn_start_and_heartbeat_lines_explain_progress(
     assert "🎯 Bu turun işi:" in joined
     # Tur sürerken kalan süre bilgisi (heartbeat kapalıysa da başlangıç satırında var):
     assert "dk'da bir durum güncellemesi" in joined or "kaldı" in joined
+
+
+# ---------------------------------------------------------------------------
+# 9. "Sınır koymayın" sözleşmesi: tur süreyle kesilmez, plan kilit değildir
+# ---------------------------------------------------------------------------
+
+
+def test_turn_budget_is_advisory_never_a_timeout() -> None:
+    """Tur ölçeği hiçbir yerde zaman aşımına dönüşmemeli.
+
+    Kullanıcı sözleşmesi: "o bir süre sınırı değil, değil mi? sistem sürekli
+    olmalı". Bu test, ileride birinin `turn_timeout`'u bu bütçeye bağlamasını
+    engeller (bağlanırsa tur 90. dakikada kesilir ve süreklilik ölür).
+    """
+    from app.autopilot.agent_client import AgentSessionClient
+    from app.autopilot.curl_parse import parse_agent_curl
+
+    curl = _build_windows_cmd_input_curl(sub="agent-timeout-contract")
+    client = AgentSessionClient.from_curl(curl)
+    assert client.turn_timeout is None
+    # Bütçe sabitleri yalnız metin/raporlama içindir; istemciye sızmamalı.
+    assert "turn_timeout" not in (AgentSessionClient.from_curl.__doc__ or "")
+    assert parse_agent_curl(curl) is not None
+
+
+def test_next_step_block_is_guidance_not_a_lock() -> None:
+    """Yol haritası maddesi kilit değil rehber olmalı; gerekçeli sapma serbest."""
+    prompt = build_turn_user_prompt(
+        project_idea="Kişisel finans",
+        turn=4,
+        max_turns=8,
+        current_phase="3_IMZA",
+        memory_summary="- [ ] hedef takibi\n- [ ] bildirim",
+        turn_digests=[],
+        last_sent_to_agent="x",
+        agent_reply_text="y",
+        sandbox_evidence="z",
+        completed_turns=3,
+        min_turns=4,
+        planned_turns=8,
+    )
+    block = prompt.split("[SIRADAKİ", 1)[1].split("[SON TURLAR]", 1)[0]
+    assert "rehber — daha iyisi varsa gerekçesiyle değiştir" in block
+    assert "kilit değil" in block
+    assert "gerekçesiz sapma yasak" in block  # serbest ama gerekçeli
+
+
+def test_strict_plan_mode_is_opt_in_only() -> None:
+    """Katı plan modu varsayılan KAPALI olmalı (yeni fikirlere yer kalsın)."""
+    common: dict[str, Any] = {
+        "project_idea": "X",
+        "turn": 2,
+        "max_turns": 8,
+        "current_phase": "2",
+        "memory_summary": "- [ ] tek madde",
+        "turn_digests": [],
+        "last_sent_to_agent": "a",
+        "agent_reply_text": "b",
+        "sandbox_evidence": "c",
+        "completed_turns": 1,
+        "min_turns": 4,
+    }
+    loose = build_turn_user_prompt(**common)
+    strict = build_turn_user_prompt(**common, strict_plan=True)
+    assert "kilit değil" in loose
+    assert "kilit değil" not in strict
+    assert "- tek madde" in strict
