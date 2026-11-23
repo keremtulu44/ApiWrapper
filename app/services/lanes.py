@@ -518,20 +518,29 @@ class LaneSet:
         """Hesapların tek satırlık durumu (operatör bildirimleri için)."""
         parts: list[str] = []
         for lane in self.lanes:
+            role = self.role_of(lane)
+            if lane.health.failing:
+                health = f"ARIZALI [{lane.health.code or 'bilinmiyor'}]"
+            elif self.cooling(lane) > 0:
+                health = "dinleniyor (kota)"
+            else:
+                health = "sağlıklı"
             if self.usable(lane):
                 state = "çalışıyor"
-            elif lane.health.failing:
-                state = f"ARIZALI [{lane.health.code or 'bilinmiyor'}]"
+            elif role == "spare" and not lane.health.failing:
+                # Sağlıklı ama rol gereği trafik almıyor: "kota" demek yanıltıcı.
+                state = "beklemede (rol gereği trafik almıyor)"
+            elif role == "agent" and not lane.health.failing:
+                state = "kullanımda (Agent projesi; max trafiği almaz)"
             else:
-                state = "dinleniyor (kota)"
-            role = self.role_of(lane)
-            if role == "spare":
-                action = "ÖNE ALINDI" if self.usable(lane) else "bekliyor"
-                parts.append(f"{lane.label or 'hesap'} [yedek·{action}] {state}")
+                state = health
+            name = lane.label or "hesap"
+            if role == "max":
+                parts.append(f"{name} {state}")
             elif role == "agent":
-                parts.append(f"{lane.label or 'hesap'} [agent] kullanımda (max trafiği almaz)")
+                parts.append(f"{name} [agent] {state}")
             else:
-                parts.append(f"{lane.label or 'hesap'} {state}")
+                parts.append(f"{name} [yedek] {state}")
         return "Hesaplar: " + " · ".join(parts)
 
     def snapshot(self) -> list[dict[str, Any]]:

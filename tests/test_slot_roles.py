@@ -371,6 +371,6 @@ def test_describe_marks_roles_without_leaking_secrets() -> None:
     roles = SlotRoles(roles={1: ROLE_MAX, 2: ROLE_SPARE, 3: ROLE_AGENT}, enabled=True)
     lanes = LaneSet(build_lanes(3), failover=True, cooldown=lambda s: 0.0, roles=roles)
     line = lanes.describe()
-    assert "[yedek·bekliyor]" in line
-    assert "[agent]" in line
+    assert "[yedek] beklemede (rol gereği trafik almıyor)" in line
+    assert "[agent] kullanımda" in line
     assert "cookie" not in line.lower()
