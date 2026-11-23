@@ -100,10 +100,10 @@ def _rotation_line(view: dict[str, object]) -> str:
     rule = _ROTATION_RULES.get(mode, mode)
     parts = [f"açık · {rule}"]
     strict = view.get("strict_slots") or []
-    if strict:
+    if isinstance(strict, (list, tuple)) and strict:
         parts.append("yuvalar " + ",".join(str(s) for s in strict))
     excluded = view.get("excluded_slots") or []
-    if excluded:
+    if isinstance(excluded, (list, tuple)) and excluded:
         parts.append("dışlanan " + ",".join(str(s) for s in excluded))
     if view.get("agent_slot"):
         parts.append(f"Agent yuvası {view['agent_slot']} (Max isteği almaz)")

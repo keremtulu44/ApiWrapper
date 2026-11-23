@@ -146,15 +146,30 @@ class UpstreamSlotRuntimeManager:
         self._keepalive_multi_mode[slot_key] = lanes.multi
 
     def start_initial_keepalives(self) -> None:
-        """Uygulama açılışında yapılandırılmış hatlar için keepalive görevlerini başlatır."""
+        """Uygulama açılışında yapılandırılmış hatlar için keepalive görevlerini başlatır.
+
+        Rol süzgeci **burada da** uygulanır: `agent` yuvasına açılışta ısıtma
+        isteği gönderilmez (o pencere Agent projesinin hakkı). Süzgeç yalnız
+        yeniden uyumlamada olsaydı, her deploy'da Agent hesabına bir probe
+        giderdi — belgede "agent yuvasında keepalive yok" yazıyor.
+        """
         settings: Settings = self.app.state.settings
         lanes: LaneSet = self.app.state.lanes
         keepalive_interval = settings.upstream_keepalive_interval_seconds
         if keepalive_interval <= 0:
             return
-        stagger = min(60.0, keepalive_interval / len(lanes))
-        for lane in lanes.lanes:
-            self._spawn_keepalive_for_lane(lane, start_delay=lane.index * stagger)
+        roles = lanes.roles
+        eligible = [
+            lane
+            for lane in lanes.lanes
+            if roles is None or roles.keepalive_allowed(lane.slot)
+        ]
+        if not eligible:
+            logger.info("upstream_keepalive_skipped", reason="uygun rol yok (agent)")
+            return
+        stagger = min(60.0, keepalive_interval / len(eligible))
+        for position, lane in enumerate(eligible):
+            self._spawn_keepalive_for_lane(lane, start_delay=position * stagger)
 
     async def _cancel_keepalive(self, slot_key: int) -> bool:
         task = self._keepalive_tasks.pop(slot_key, None)

@@ -446,15 +446,19 @@ class Settings(BaseSettings):
         if v is None or v == "":
             return []
         if isinstance(v, str):
-            items: list[object] = [part for part in v.replace(" ", "").split(",") if part]
+            items: list[object] = [
+                part for part in v.replace(" ", "").split(",") if part
+            ]
         elif isinstance(v, (list, tuple)):
             items = list(v)
         else:
             return []
         out: list[int] = []
         for item in items:
+            # `object` → int dönüşümü mypy'de dar değil; `str()` ile açıkça
+            # int'e çevrilebilir metne indirgenir, sonra ayıklanır.
             try:
-                out.append(int(item))
+                out.append(int(str(item).strip()))
             except (TypeError, ValueError):
                 continue
         return out

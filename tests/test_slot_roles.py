@@ -374,3 +374,51 @@ def test_describe_marks_roles_without_leaking_secrets() -> None:
     assert "[yedek] beklemede (rol gereği trafik almıyor)" in line
     assert "[agent] kullanımda" in line
     assert "cookie" not in line.lower()
+
+
+def test_agent_slot_gets_no_keepalive_at_startup() -> None:
+    """Açılışta `agent` yuvasına ısıtma isteği **başlatılmaz** (kotası Agent'ın).
+
+    Regresyon: rol süzgeci yalnız `_reconcile_keepalives`'te vardı; her deploy'da
+    Agent hesabına bir keepalive probe'u gidiyordu.
+    """
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.test_upstream_slots import _build_realistic_max_curl
+
+    curls = {i: _build_realistic_max_curl(sub=f"hesap-{i}") for i in (1, 2, 3)}
+    settings = make_settings(
+        upstream_curl=curls[1],
+        upstream_curl_2=curls[2],
+        upstream_curl_3=curls[3],
+        account_slot_roles="1:max,2:max,3:agent",
+        upstream_keepalive_interval_seconds=3600,
+        upstream_keepalive_initial_delay_seconds=3600,
+    )
+    app = create_app(settings)
+    with TestClient(app):
+        tasks = sorted(app.state.slot_manager._keepalive_tasks)
+    assert tasks == [1, 2], "agent yuvası (3) için keepalive açılmamalı"
+
+
+def test_spare_slot_keeps_its_keepalive_at_startup() -> None:
+    """Yedek yuva **sıcak** kalmalı: açılışta keepalive açılır."""
+    from fastapi.testclient import TestClient
+
+    from app.main import create_app
+    from tests.test_upstream_slots import _build_realistic_max_curl
+
+    curls = {i: _build_realistic_max_curl(sub=f"hesap-{i}") for i in (1, 2, 3)}
+    settings = make_settings(
+        upstream_curl=curls[1],
+        upstream_curl_2=curls[2],
+        upstream_curl_3=curls[3],
+        account_slot_roles="1:max,2:max,3:spare",
+        upstream_keepalive_interval_seconds=3600,
+        upstream_keepalive_initial_delay_seconds=3600,
+    )
+    app = create_app(settings)
+    with TestClient(app):
+        tasks = sorted(app.state.slot_manager._keepalive_tasks)
+    assert tasks == [1, 2, 3]
