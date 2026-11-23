@@ -326,6 +326,8 @@ class UpstreamSlotRuntimeManager:
             "multi_lane": lanes.multi,
             "slots": slots_info,
             "roles": self.role_snapshot(slots_info),
+            # Hesap rotasyonu: "hangi hesap cevaplıyor" sorusunun tek kaynağı.
+            "rotation": self._rotation_snapshot(),
         }
 
     @staticmethod
@@ -564,6 +566,16 @@ class UpstreamSlotRuntimeManager:
                 "active_slots": snap["active_slots"],
                 "multi_lane": snap["multi_lane"],
             }
+
+    def _rotation_snapshot(self) -> dict[str, Any]:
+        """Rotasyon motorunun gizli değer içermeyen görünümü (kapalıysa `enabled: false`)."""
+        lanes = self.app.state.lanes
+        rotator = getattr(lanes, "rotation", None)
+        if rotator is None:
+            return {"enabled": False}
+        view = rotator.describe()
+        view["last_decision"] = getattr(lanes, "last_decision", {}) or {}
+        return view
 
     # ------------------------------------------------------------ rol takası
     async def swap_roles(

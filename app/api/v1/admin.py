@@ -52,8 +52,31 @@ async def account_status(
         "initial_budget": request.app.state.settings.account_msg_budget,
         "max_switches_per_request": request.app.state.settings.account_max_switches,
         "switches_total": metrics.counter_total("apiwrapper_account_switches_total"),
+        # Hesap rotasyonunun o anki kuralı (kapalıysa `enabled: false`).
+        "rotation": _rotation_view(request),
         "accounts": snapshot,
     }
+
+
+def _rotation_view(request: Request) -> dict[str, Any]:
+    """Rotasyon motorunun gizli değer içermeyen görünümü."""
+    rotator = getattr(getattr(request.app.state, "lanes", None), "rotation", None)
+    if rotator is None:
+        return {"enabled": False}
+    view = rotator.describe()
+    last = getattr(request.app.state.lanes, "last_decision", {}) or {}
+    view["last_decision"] = last
+    return view
+
+
+@router.get("/rotation", summary="Account rotation rule and last decision")
+async def rotation_status(request: Request) -> dict[str, Any]:
+    """Rotasyonun hangi kuralı uyguladığını ve son kararını gösterir.
+
+    "Hangi hesap cevapladı?" sorusunun denetim noktası: `last_decision.rule`
+    (`round_robin` / `sticky` / `pinned` …) ve seçilen yuva. Secret içermez.
+    """
+    return _rotation_view(request)
 
 
 @router.post("/accounts/{slot}/reset", summary="Clear an account's cooldown")

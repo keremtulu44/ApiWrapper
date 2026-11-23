@@ -62,6 +62,43 @@ _HELP = (
     "Diğer komutlar: /ping (wrapper health), /help."
 )
 
+#: Rotasyon kuralı → Türkçe açıklama (Telegram `/hesaplar` çıktısı).
+_ROTATION_RULES = {
+    "round_robin": "sırayla (1→2→1)",
+    "weighted": "ağırlıklı",
+    "sticky": "sohbet aynı hesapta",
+    "pinned": "elle sabitlendi",
+    "least_loaded": "yük dengesi",
+    "disabled": "kapalı (yük dengesi)",
+    "single_lane": "tek hesap",
+    "excluded": "uygun yuva yok",
+}
+
+
+def _rotation_line(view: dict[str, object]) -> str:
+    """Rotasyonun tek satırlık, anlaşılır özeti (secret içermez)."""
+    if not view or not view.get("enabled"):
+        return "kapalı — istekler yük dengesiyle bölünür"
+    mode = str(view.get("mode") or "round_robin")
+    rule = _ROTATION_RULES.get(mode, mode)
+    parts = [f"açık · {rule}"]
+    strict = view.get("strict_slots") or []
+    if strict:
+        parts.append("yuvalar " + ",".join(str(s) for s in strict))
+    excluded = view.get("excluded_slots") or []
+    if excluded:
+        parts.append("dışlanan " + ",".join(str(s) for s in excluded))
+    if view.get("agent_slot"):
+        parts.append(f"Agent yuvası {view['agent_slot']} (Max isteği almaz)")
+    decision = view.get("last_decision") or {}
+    if isinstance(decision, dict) and decision.get("slot"):
+        parts.append(
+            f"son karar: yuva {decision['slot']} "
+            f"({_ROTATION_RULES.get(str(decision.get('rule')), decision.get('rule'))})"
+        )
+    return " · ".join(parts)
+
+
 def _first_lines(text: object, count: int, limit: int) -> str:
     """Metnin ilk `count` dolu satırını `limit` karaktere kırparak döndürür."""
     raw = str(text or "").strip()
@@ -702,13 +739,17 @@ class TelegramBot:
         slots = data.get("slots") or []
         multi = bool(data.get("multi_lane"))
         active_ap = int(data.get("active_autopilot_runs") or 0)
-        mode_str = "Çift Hesap (50/50 Yük Paylaşımı)" if multi else "Tek Hesap"
+        rotation_view = data.get("rotation") or {}
+        if multi and rotation_view.get("enabled"):
+            mode_str = "Çok Hesap (rotasyonlu sıra)"
+        else:
+            mode_str = "Çift Hesap (50/50 Yük Paylaşımı)" if multi else "Tek Hesap"
         lines = [f"🔑 Canlı Max Hesap Yuvaları — {mode_str}"]
         for item in slots:
             if not isinstance(item, dict):
                 continue
             s_num = item.get("slot")
-            cmd_tag = "/upstream_curl" if s_num == 1 else "/upstream_curl2"
+            cmd_tag = "/upstream_curl" if s_num == 1 else f"/upstream_curl{s_num}"
             if not item.get("configured"):
                 lines.append(
                     f"\n• Yuva {s_num} ({cmd_tag}): ⚫ Kapalı "
@@ -728,7 +769,9 @@ class TelegramBot:
             )
             if item.get("failure_code"):
                 lines.append(f"  Son arıza kodu: {item['failure_code']}")
-        lines.append(f"\n🤖 Aktif/Gece Sırasındaki Agent Projesi: {active_ap}")
+        rotation = data.get("rotation") or {}
+        lines.append(f"\n🔁 Rotasyon: {_rotation_line(rotation)}")
+        lines.append(f"🤖 Aktif/Gece Sırasındaki Agent Projesi: {active_ap}")
         await self.send_text(chat_id, "\n".join(lines))
 
     async def _handle_curl_command(

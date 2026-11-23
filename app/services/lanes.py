@@ -102,6 +102,7 @@ class LaneSet:
         cooldown: Callable[[int], float] | None = None,
         retry_failing_after: float = 0.0,
         sticky_size: int = 1024,
+        rotation: Any | None = None,
     ) -> None:
         self.lanes: list[Lane] = list(lanes)
         if not self.lanes:
@@ -114,6 +115,12 @@ class LaneSet:
         self._sequence = 0
         self._sticky: OrderedDict[str, int] = OrderedDict()
         self._sticky_size = max(1, int(sticky_size))
+        #: Hesap rotasyon motoru (`app/services/account_rotation.py`). `None` ise
+        #: davranış **tam olarak** eski yük dengesidir; rotasyon yalnız açıkken
+        #: devreye girer (varsayılan kapalı).
+        self.rotation = rotation
+        #: Son rotasyon kararı (gözlemlenebilirlik; secret içermez).
+        self.last_decision: dict[str, Any] = {}
 
     @classmethod
     def from_settings(cls, settings: Settings, accounts: AccountPool) -> LaneSet:
@@ -142,11 +149,19 @@ class LaneSet:
                 for index, account in enumerate(configured)
             ]
         probes = settings.upstream_keepalive_interval_seconds > 0
+        # Rotasyon motoru yalnız açıksa kurulur; kapalıyken `None` kalır ve
+        # `choose` tamamen eski yük dengesiyle çalışır (davranış değişmez).
+        rotation = None
+        if getattr(settings, "account_rotation_enabled", False):
+            from app.services.account_rotation import AccountRotator
+
+            rotation = AccountRotator.from_settings(settings)
         return cls(
             lanes,
             failover=settings.account_failover,
             cooldown=accounts.cooldown_remaining,
             retry_failing_after=0.0 if probes else RETRY_FAILING_WITHOUT_PROBE_SECONDS,
+            rotation=rotation,
         )
 
     # ------------------------------------------------------------- durum
@@ -197,6 +212,8 @@ class LaneSet:
         respect_hold: bool = False,
         pinned_slot: int | None = None,
         sticky_key: str | None = None,
+        rotation_source: str = "api",
+        rotation_message_key: str | None = None,
     ) -> Lane:
         """İsteğin gideceği hattı seçer ve atamayı kaydeder.
 
@@ -213,14 +230,28 @@ class LaneSet:
             pinned = self.get(pinned_slot)
             if pinned is None:
                 raise LookupError(pinned_slot)
+            self.last_decision = {
+                "applied": False,
+                "rule": "pinned",
+                "slot": pinned_slot,
+                "reason": "istek yuvaya sabitlendi",
+            }
             return pinned
 
         lanes = self.lanes
+        rotation_slot = self._rotation_slot(
+            rotation_source,
+            sticky_key=sticky_key,
+            sticky_slot=self._sticky.get(sticky_key, None) if sticky_key else None,
+            message_key=rotation_message_key,
+        )
         if not self.failover and len(lanes) > 1:
             # Katı bölüşüm: sağlığa bakılmaz, her hat yalnız kendi payını işler.
             # Atama, istek geri çevrilse de sayılır: arızalı hat kendi payını
             # "harcar", sıradaki istek öbür hatta gider (yoksa hepsi ona yığılırdı).
-            lane = self._assign(self._pick(lanes, sticky_key), sticky_key)
+            lane = self._assign(
+                self._pick(lanes, sticky_key, preferred_slot=rotation_slot), sticky_key
+            )
             if respect_hold:
                 hold = lane.health.admit(owner)
                 if hold is not None:
@@ -232,7 +263,10 @@ class LaneSet:
             candidates = usable + [
                 lane for lane in lanes if lane not in usable and self._retry_due(lane)
             ]
-            return self._assign(self._pick(candidates or lanes, sticky_key), sticky_key)
+            return self._assign(
+                self._pick(candidates or lanes, sticky_key, preferred_slot=rotation_slot),
+                sticky_key,
+            )
 
         # Arızalı hatlardan denemeye açık olanlar: bekletmesi dolmuş, denemesi
         # sürmüyor, hesabı dinlenmiyor. Çalışan hat varken yalnız "probe yok ve
@@ -249,7 +283,7 @@ class LaneSet:
         if not candidates:
             hold, blocked = self._soonest_hold(owner)
             raise LaneUnavailable(hold, blocked)
-        lane = self._pick(candidates, sticky_key)
+        lane = self._pick(candidates, sticky_key, preferred_slot=rotation_slot)
         if lane.health.failing:
             lane.health.admit(owner)  # deneme hakkını al: aynı anda tek deneme
         return self._assign(lane, sticky_key)
@@ -270,7 +304,48 @@ class LaneSet:
             return None
         return self._assign(self._pick(candidates, None), None)
 
-    def _pick(self, candidates: list[Lane], sticky_key: str | None) -> Lane:
+    def _rotation_slot(
+        self,
+        source: str,
+        *,
+        sticky_key: str | None,
+        sticky_slot: int | None,
+        message_key: str | None,
+    ) -> int | None:
+        """Rotasyon motorundan yuvayı ister; motor yoksa/kapalıysa ``None``.
+
+        Yalnız **hangi hesap** sorusunu yanıtlar; isteğin gövdesine/başlığına
+        dokunmaz. Sağlık ve kota kontrolleri yine dağıtıcıda kalır: rotasyon
+        arızalı bir hesabı zorla seçmez, uygun değilse yük dengesine döner.
+        """
+        rotator = self.rotation
+        if rotator is None:
+            return None
+        # Agent koşusunun kendi yuvası (varsa) Max isteklerinden dışlanır.
+        agent_slot = getattr(rotator, "agent_slot", None) if source == "agent" else None
+        decision = rotator.choose_slot(
+            self.lanes,
+            source=source,
+            sticky_slot=sticky_slot,
+            message_key=message_key,
+            agent_slot=agent_slot,
+        )
+        self.last_decision = decision.as_dict()
+        return decision.slot if decision.applied else None
+
+    def _pick(
+        self,
+        candidates: list[Lane],
+        sticky_key: str | None,
+        *,
+        preferred_slot: int | None = None,
+    ) -> Lane:
+        # Rotasyonun seçtiği yuva adaylar arasında varsa ona gidilir; yoksa
+        # (arızalı/dinleniyor) aşağıdaki yük dengesi devreye girer.
+        if preferred_slot is not None:
+            for lane in candidates:
+                if lane.slot == preferred_slot:
+                    return lane
         if sticky_key:
             slot = self._sticky.get(sticky_key)
             if slot is not None:

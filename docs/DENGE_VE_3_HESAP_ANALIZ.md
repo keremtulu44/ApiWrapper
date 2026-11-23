@@ -473,3 +473,51 @@ adımı gerektiriyorsa rehberin dışına çıkabilir — yalnız nedenini
 Testler: `test_turn_budget_is_advisory_never_a_timeout`,
 `test_next_step_block_is_guidance_not_a_lock`, `test_strict_plan_mode_is_opt_in_only`
 eklendi → tam paket **860 passed**.
+
+---
+
+## 12. Hesap rotasyon sistemi (isteğe bağlı, format-nötr)
+
+Kullanıcı isteği: *"2 hesap Max + 1 Agent modu aynı anda aktif olsun; dışarıdan
+istek gelince biri siteye biri ajana çalışsın; 40 dk önce ajana verilen metni
+1. Max yazdıysa şimdi 2. yazsın — ama **max'ın ve agent'in istek gönderme
+formatına asla dokunma**."*
+
+### Ne yapar, ne yapmaz
+
+| | |
+|---|---|
+| **Değişen** | Yalnız *hangi hesap* sorusu: sıra (`round_robin`), ağırlık (`weighted`) veya eski yük dengesi (`least_loaded`) |
+| **DEĞİŞMEYEN** | Upstream istek gövdesi, başlıkları, `create-evaluation` biçimi, SSE akışı, Agent `/input` + `/events` protokolü, yeniden deneme/arıza mantığı |
+
+Format garantisi testle kilitli: `test_rotation_does_not_change_upstream_request_shape`
+aynı isteği rotasyon kapalı/açık gönderip başlık+gövdeyi (sohbet kimliği
+maskelenerek) **birebir** karşılaştırır.
+
+### Kurallar (öncelik sırası)
+
+1. **pinned** — `x-apiwrapper-account`, keepalive probe'u, elle sınama: rotasyon ezilir.
+2. **agent** — Agent işi kendi yuvasını Max tarafında kullanmaz (`ACCOUNT_ROTATION_AGENT_SLOT`).
+3. **sticky** — aynı `conversation_id` daha önce bir hesaba düştüyse yine oraya (sohbet ikiye bölünmesin).
+4. **strict** — yalnız `ACCOUNT_ROTATION_STRICT_SLOTS` (ör. `1,2`): yedek yuva gündüz trafiğine girmez → *"birinci hesap tamamen bitmesin"*.
+5. **round_robin** — **tek global sıra**: 1 → 2 → 1 → 2 (anahtar başına sayaç olsaydı her yeni mesaj hep 1. yuvadan başlar, rotasyon hiç dönmezdi).
+6. **aynı mesaj kuralı** — içerik parmak izi (`logical_message_key`, yalnız hash) aynıysa ve sıradaki yuva öncekiyle aynıysa **öbür** yuva seçilir: *"1. Max yazdıysa şimdi 2. yazsın"*.
+7. **sağlık/kota** — rotasyon arızalı veya dinlenen hesabı zorlamaz; uygun değilse yük dengesine döner.
+
+### Açma
+
+```env
+ACCOUNT_ROTATION_ENABLED=true
+ACCOUNT_ROTATION_MODE=round_robin
+ACCOUNT_ROTATION_STRICT_SLOTS=1,2      # gündüz Max tarafı
+ACCOUNT_ROTATION_EXCLUDED_SLOTS=3      # gece Agent hesabı Max isteği almasın
+ACCOUNT_ROTATION_AGENT_SLOT=3
+# ACCOUNT_ROTATION_WEIGHTS=1:2,2:1    # mode=weighted ise
+```
+
+Görünürlük: `GET /v1/admin/rotation` (kural + **son karar**), `/v1/admin/accounts`
+içinde `rotation`, Telegram `/hesaplar` çıkışında `🔁 Rotasyon: açık · sırayla (1→2→1) · son karar: yuva 2 (round_robin)`.
+
+Testler: `tests/test_rotation_engine.py` → 21 test (sıra, aynı-metin kuralı,
+strict/excluded/agent yuvası, ağırlık, sticky, pinned, sağlık düşüşü, üç rolün
+aynı gün çakışmadan çalışması, format-nötrlüğü). Tam paket **879 passed**.
