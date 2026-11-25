@@ -8,6 +8,8 @@ değerleri ne yanıtlara ne de loglara yazılır.
 
 from __future__ import annotations
 
+import asyncio
+import time
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Query, Request
@@ -240,6 +242,131 @@ async def inspect_agent_curl_endpoint(
             )
 
     return result
+
+
+#: Canlı yoklamada Agent sohbetine gönderilen ileti. Kısa ve tek kelimelik
+#: cevap ister: kota maliyeti en düşükte tutulur, sohbet geçmişine tek satır eklenir.
+AGENT_PROBE_TEXT = "Bana sadece 'tamam' yaz. Başka hiçbir şey yazma, açıklama ekleme."
+
+#: Yoklama yanıtından döndürülen alıntı uzunluğu (yanıtın tamamı değil).
+AGENT_PROBE_EXCERPT_CHARS = 300
+
+
+class AgentProbeRequest(BaseModel):
+    """Agent sohbetine gerçek bir ileti gönderip cevabın geldiğini doğrular."""
+
+    agent_curl: str = Field(..., min_length=10)
+    chat_id: str | None = None
+    #: Cevap için en çok beklenecek süre (sn). Aşılırsa ileti gönderilmiş sayılır
+    #: ama sonuç `timeout` döner (kota yine harcanmış olabilir).
+    timeout_seconds: float = Field(default=180.0, ge=30.0, le=300.0)
+
+
+@router.post("/autopilot/agent-probe")
+async def probe_agent_chat(
+    body: AgentProbeRequest, request: Request
+) -> dict[str, Any]:
+    """Agent sohbetine yoklama iletisi gönderir, cevabın geldiğini kanıtlar.
+
+    `inspect-curl` yalnız oturumu *okuyarak* yoklar; bu uç gerçekten *yazıp*
+    cevabı bekler. Sohbet meşgulse (süren tur varsa) kuyruğa girmez, `busy`
+    döner; aynı-hesap çakışması varsa `conflict` döner. İleti gönderildiği
+    için sohbet geçmişine bir satır eklenir ve kota harcanır.
+    """
+    try:
+        cfg = parse_agent_curl(body.agent_curl, chat_id_override=body.chat_id)
+    except ValueError as exc:
+        raise InvalidRequestError(str(exc), param="agent_curl") from exc
+
+    if _is_synthetic_test_domain(cfg.target_domain):
+        raise InvalidRequestError(
+            "Synthetic test domains cannot be probed live.", param="agent_curl"
+        )
+
+    settings = getattr(request.app.state, "settings", None)
+    slot_subs = extract_max_slot_identities(settings) if settings is not None else {}
+    agent_sub = cfg.account_identity()
+    conflict_slots = (
+        sorted(slot for slot, sub in slot_subs.items() if sub == agent_sub)
+        if agent_sub
+        else []
+    )
+    if conflict_slots:
+        return {
+            "ok": False,
+            "reason": "conflict",
+            "conflict_slots": conflict_slots,
+            "chat_id": cfg.chat_id,
+            "detail": (
+                "Agent cURL'ü bir Max yuvasıyla aynı hesaba ait; "
+                "oturumları düşürmemek için yoklama gönderilmedi."
+            ),
+        }
+
+    started = time.monotonic()
+    try:
+        async with AgentSessionClient(
+            cfg, connect_timeout=10.0, read_timeout=15.0
+        ) as probe_client:
+            pre_state = await probe_client.fetch_state(recover_run=False)
+            if pre_state.has_pending_turn:
+                return {
+                    "ok": False,
+                    "reason": "busy",
+                    "chat_id": cfg.chat_id,
+                    "detail": (
+                        "Sohbette süren bir tur var; yoklama kuyruğa girmedi. "
+                        "Tur bitince tekrar deneyin."
+                    ),
+                }
+            reply = await asyncio.wait_for(
+                probe_client.send_and_wait(AGENT_PROBE_TEXT),
+                timeout=float(body.timeout_seconds),
+            )
+    except (asyncio.TimeoutError, TimeoutError):
+        return {
+            "ok": False,
+            "reason": "timeout",
+            "chat_id": cfg.chat_id,
+            "elapsed_seconds": round(time.monotonic() - started, 1),
+            "detail": (
+                f"Cevap {body.timeout_seconds:.0f} sn içinde gelmedi. İleti "
+                "gönderilmiş olabilir; sohbeti tarayıcıdan kontrol edin."
+            ),
+        }
+    except (
+        UpstreamAuthRejected,
+        RecaptchaRejected,
+        UpstreamQuotaExceeded,
+        UpstreamRefreshRequired,
+        UpstreamHTTPError,
+    ) as exc:
+        return {
+            "ok": False,
+            "reason": "rejected",
+            "chat_id": cfg.chat_id,
+            "status_code": exc.status_code,
+            "error_type": type(exc).__name__,
+            "detail": error_excerpt(str(exc), limit=220),
+        }
+    except (UpstreamTimeout, UpstreamNetworkError) as exc:
+        return {
+            "ok": False,
+            "reason": "network",
+            "chat_id": cfg.chat_id,
+            "error_type": type(exc).__name__,
+            "detail": error_excerpt(str(exc), limit=180),
+        }
+
+    text = (reply.text or "").strip()
+    return {
+        "ok": True,
+        "reason": "answered",
+        "chat_id": cfg.chat_id,
+        "reply_excerpt": text[:AGENT_PROBE_EXCERPT_CHARS],
+        "reply_chars": len(text),
+        "elapsed_seconds": round(time.monotonic() - started, 1),
+    }
 
 
 @router.post("/autopilot/runs")
