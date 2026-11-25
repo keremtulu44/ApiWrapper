@@ -1284,3 +1284,82 @@ async def test_hesaplar_shows_roles_and_rotation_without_secrets():
     assert "sırayla" in text  # round_robin açıklaması
     # Sır sızmıyor: çerez/token/cURL metni yok.
     assert "cookie" not in text.lower() and "cf_clearance" not in text
+
+
+@pytest.mark.asyncio
+async def test_agent_test_canli_proves_reply_arrival() -> None:
+    """`/agent_test canlı` yoklama ucunu çağırır, cevabı alıntıyla kanıtlar."""
+    sent: list[dict[str, Any]] = []
+    probe_calls: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/autopilot/agent-probe":
+            probe_calls.append(json.loads(request.content))
+            return httpx.Response(
+                200,
+                json={
+                    "ok": True,
+                    "reason": "answered",
+                    "chat_id": "chat-1",
+                    "reply_excerpt": "tamam",
+                    "reply_chars": 5,
+                    "elapsed_seconds": 12.5,
+                },
+            )
+        return httpx.Response(404, json={"error": {"message": "not found"}})
+
+    settings = make_settings()
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(settings, telegram, wrapper)
+        bot._session(42).validated_curl = "curl 'https://live.io/api/chat/x/input'"
+        await bot.handle_message({"chat": {"id": 42}, "text": "/agent_test canlı"})
+
+    assert len(probe_calls) == 1
+    assert probe_calls[0]["timeout_seconds"] == 180.0
+    assert "CEVAP VERDİ" in sent[-1]["text"]
+    assert "tamam" in sent[-1]["text"]
+
+
+@pytest.mark.asyncio
+async def test_agent_test_canli_reports_busy_without_queueing() -> None:
+    """Meşgul sohbette `/agent_test canlı` kuyruğa girmez, Türkçe açıklar."""
+    sent: list[dict[str, Any]] = []
+
+    def telegram_handler(request: httpx.Request) -> httpx.Response:
+        sent.append(json.loads(request.content))
+        return ok_telegram(request)
+
+    def wrapper_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "ok": False,
+                "reason": "busy",
+                "chat_id": "chat-1",
+                "detail": "Sohbette süren bir tur var.",
+            },
+        )
+
+    settings = make_settings()
+    async with (
+        httpx.AsyncClient(transport=httpx.MockTransport(telegram_handler)) as telegram,
+        httpx.AsyncClient(
+            base_url="https://wrapper.test",
+            transport=httpx.MockTransport(wrapper_handler),
+        ) as wrapper,
+    ):
+        bot = TelegramBot(settings, telegram, wrapper)
+        bot._session(42).validated_curl = "curl 'https://live.io/api/chat/x/input'"
+        await bot.handle_message({"chat": {"id": 42}, "text": "/agent_test canlı"})
+
+    assert "meşgul" in sent[-1]["text"]

@@ -2171,7 +2171,7 @@ async def test_turn_start_and_heartbeat_lines_explain_progress(
     assert "▶️ Tur 1 başladı" in joined
     assert "🎯 Bu turun işi:" in joined
     # Tur sürerken kalan süre bilgisi (heartbeat kapalıysa da başlangıç satırında var):
-    assert "dk'da bir durum güncellemesi" in joined or "kaldı" in joined
+    assert "durum güncellemesi" in joined or "kaldı" in joined
 
 
 # ---------------------------------------------------------------------------
@@ -2276,7 +2276,8 @@ async def test_silent_turn_notice_never_cuts_the_turn() -> None:
     orch._turn_started_at = _time.monotonic() - 25 * 60
     orch._last_agent_signal = _time.monotonic() - 21 * 60
     orch._last_heartbeat = _time.monotonic() - 11 * 60
-    orch._last_silent_notice = 0.0
+    # Soğuma baştan dolu: makinenin önyükleme saatine (monotonic) bağlı kalmayalım.
+    orch._last_silent_notice = _time.monotonic() - 20 * 60 - 1
 
     published = await orch._heartbeat_tick()
 
@@ -2313,3 +2314,261 @@ async def test_agent_signal_resets_silence_clock() -> None:
     assert _time.monotonic() - orch._last_agent_signal < 1.0
     # Sinyal tazelendiği için sessizlik notu çıkmaz.
     assert await orch._heartbeat_tick() is False
+
+
+# ---------------------------------------------------------------------------
+# 10. Akıllı kalp atışı: aynı ilerleme tekrarlanmaz, sessizlik notu turda 3'ü geçmez
+# ---------------------------------------------------------------------------
+def _quiet_orchestrator(**overrides: Any) -> AutopilotOrchestrator:
+    """Bildirimleri listeye yazan en küçük orkestracı."""
+    import time as _time
+
+    sent: list[str] = overrides.pop("sent")
+
+    class _Alerter:
+        enabled = True
+
+        async def send(self, text: str, label: str = "") -> None:
+            sent.append(text)
+
+    orch = AutopilotOrchestrator(
+        config=AutopilotConfig(project_idea="sessizlik", max_turns=2),
+        agent=SimpleNamespace(
+            config=SimpleNamespace(target_domain="t.test", chat_id="c1")
+        ),
+        max_bridge=SimpleNamespace(),
+        alerter=_Alerter(),  # type: ignore[arg-type]
+    )
+    orch.state.status = "running"
+    orch.state.current_turn = 1
+    orch._turn_started_at = _time.monotonic() - 11 * 60
+    orch._last_agent_signal = _time.monotonic()  # sessiz değil
+    orch._last_heartbeat = _time.monotonic() - 11 * 60  # kalp atışı vadesi geldi
+    orch._turn_activity = "açıklama yazıyor"
+    return orch
+
+
+@pytest.mark.anyio
+async def test_heartbeat_skips_unchanged_progress() -> None:
+    """Aynı ilerleme 10 dk'da bir tekrarlanmaz (gereksiz mesaj yok)."""
+    sent: list[str] = []
+    orch = _quiet_orchestrator(sent=sent)
+
+    assert await orch._heartbeat_tick() is True  # ilk: imza boş, yayınlanır
+    assert len(sent) == 1
+
+    import time as _time
+
+    # 10 dk daha geçti ama hiçbir şey değişmedi (aynı tur, aynı etkinlik).
+    orch._last_heartbeat = _time.monotonic() - 11 * 60
+    assert await orch._heartbeat_tick() is False
+    assert len(sent) == 1  # ikinci mesaj YOK
+
+
+@pytest.mark.anyio
+async def test_heartbeat_publishes_on_progress_change() -> None:
+    """İlerleme değiştiyse (yeni etkinlik) kalp atışı yayınlanır."""
+    sent: list[str] = []
+    orch = _quiet_orchestrator(sent=sent)
+
+    assert await orch._heartbeat_tick() is True
+
+    import time as _time
+
+    orch._last_heartbeat = _time.monotonic() - 11 * 60
+    orch._turn_activity = "araç çalıştırıyor"  # etkinlik değişti
+    assert await orch._heartbeat_tick() is True
+    assert len(sent) == 2
+
+
+@pytest.mark.anyio
+async def test_heartbeat_forces_hourly_liveness_line() -> None:
+    """Hiçbir şey değişmese bile saatte bir canlılık satırı çıkar."""
+    sent: list[str] = []
+    orch = _quiet_orchestrator(sent=sent)
+
+    assert await orch._heartbeat_tick() is True
+
+    import time as _time
+
+    orch._last_heartbeat = _time.monotonic() - 61 * 60  # 61 dk sustuk
+    assert await orch._heartbeat_tick() is True  # zorunlu satır
+    assert len(sent) == 2
+
+
+@pytest.mark.anyio
+async def test_silence_notice_capped_per_turn_but_never_cuts() -> None:
+    """Sessizlik notu turda en çok 3 kez çıkar; tur yine de kesilmez."""
+    import time as _time
+
+    from app.autopilot import orchestrator as orch_mod
+
+    sent: list[str] = []
+
+    class _Alerter:
+        enabled = True
+
+        async def send(self, text: str, label: str = "") -> None:
+            sent.append(text)
+
+    orch = AutopilotOrchestrator(
+        config=AutopilotConfig(project_idea="tavan", max_turns=2),
+        agent=SimpleNamespace(
+            config=SimpleNamespace(target_domain="t.test", chat_id="c1")
+        ),
+        max_bridge=SimpleNamespace(),
+        alerter=_Alerter(),  # type: ignore[arg-type]
+    )
+    orch.state.status = "running"
+    orch.state.current_turn = 1
+    orch._turn_started_at = _time.monotonic() - 200 * 60
+    # Soğuma baştan dolu: makinenin önyükleme saatine (monotonic) bağlı kalmayalım.
+    orch._last_silent_notice = _time.monotonic() - 20 * 60 - 1
+
+    notices = 0
+    for minutes_silent in (21, 41, 61, 81, 101):
+        orch._last_agent_signal = _time.monotonic() - minutes_silent * 60
+        # Soğuma dolsun diye son notu 20 dk geriye al (ilk turda 0.0 zaten eski).
+        if orch._silence_notices_this_turn:
+            orch._last_silent_notice = _time.monotonic() - 20 * 60 - 1
+        published = await orch._heartbeat_tick()
+        notices += 1 if published else 0
+
+    assert notices == 3, f"turda 3'ten çok sessizlik notu çıkmamalı ({notices})"
+    assert orch_mod.SILENT_NOTICE_MAX_PER_TURN == 3
+    assert orch.state.status == "running"  # tur kesilmedi
+    assert orch._stop_requested is False
+    assert "başka sessizlik notu yazmayacağım" in sent[-1]
+
+
+# ---------------------------------------------------------------------------
+# 11. `/v1/autopilot/agent-probe`: gerçek ileti + cevap kanıtı
+# ---------------------------------------------------------------------------
+def _probe_app(monkeypatch: Any, client_cls: Any):
+    """`AgentSessionClient`'ı sahtesiyle değiştirip uygulamayı kurar."""
+    import app.api.v1.autopilot as ap_mod
+    from app.core.config import Settings as _Settings
+    from app.main import create_app as _create_app
+
+    monkeypatch.setattr(ap_mod, "AgentSessionClient", client_cls)
+    settings = _Settings(_env_file=None, api_keys=["sk-probe"], target_domain="t.test")
+    return _create_app(settings)
+
+
+class _ProbeOkClient:
+    """Yoklamayı anında cevaplayan sahte Agent istemcisi."""
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        pass
+
+    async def __aenter__(self) -> _ProbeOkClient:
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        return None
+
+    async def fetch_state(self, **kwargs: Any) -> Any:
+        return SimpleNamespace(has_pending_turn=False)
+
+    async def send_and_wait(self, text: str, **kwargs: Any) -> Any:
+        assert "tamam" in text  # yoklama metni kısa ve tek kelimelik cevap ister
+        return SimpleNamespace(text="tamam", id="asst-1")
+
+
+def test_agent_probe_returns_reply_proof(monkeypatch: Any) -> None:
+    """Canlı cevap alıntı + süreyle döner (ağa çıkılmadan, sahte istemciyle)."""
+    app = _probe_app(monkeypatch, _ProbeOkClient)
+    # Sentetik alan adları canlı yoklanamaz (uç bilinçli reddeder); gerçekçi alan adı kullan.
+    curl = _build_windows_cmd_input_curl(sub="probe-ok-account").replace(
+        "arena.example.test", "live-upstream.io"
+    )
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/autopilot/agent-probe",
+            headers={"Authorization": "Bearer sk-probe"},
+            json={"agent_curl": curl, "timeout_seconds": 60.0},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["reason"] == "answered"
+    assert data["reply_excerpt"] == "tamam"
+    assert data["reply_chars"] == 5
+    assert data["elapsed_seconds"] >= 0
+
+
+class _ProbeBusyClient(_ProbeOkClient):
+    async def fetch_state(self, **kwargs: Any) -> Any:
+        return SimpleNamespace(has_pending_turn=True)
+
+    async def send_and_wait(self, text: str, **kwargs: Any) -> Any:  # pragma: no cover
+        raise AssertionError("meşgul sohbete ileti gönderilmemeli")
+
+
+def test_agent_probe_refuses_busy_chat_without_sending(monkeypatch: Any) -> None:
+    """Süren tur varsa kuyruğa girmez, `busy` döner, ileti gönderilmez."""
+    app = _probe_app(monkeypatch, _ProbeBusyClient)
+    curl = _build_windows_cmd_input_curl(sub="probe-busy-account").replace(
+        "arena.example.test", "live-upstream.io"
+    )
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/autopilot/agent-probe",
+            headers={"Authorization": "Bearer sk-probe"},
+            json={"agent_curl": curl},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is False
+    assert data["reason"] == "busy"
+
+
+def test_agent_probe_refuses_same_account_conflict(monkeypatch: Any) -> None:
+    """Max yuvasıyla aynı hesapsa `conflict` döner, ileti gönderilmez."""
+    import app.api.v1.autopilot as ap_mod
+    from app.core.config import Settings as _Settings
+    from app.main import create_app as _create_app
+
+    class _NeverClient:  # pragma: no cover
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            raise AssertionError("çakışmada istemci açılmamalı")
+
+    monkeypatch.setattr(ap_mod, "AgentSessionClient", _NeverClient)
+    from tests.test_upstream_slots import _build_realistic_max_curl
+
+    max_curl = _build_realistic_max_curl(sub="shared-sub-conflict")
+    agent_curl = _build_windows_cmd_input_curl(sub="shared-sub-conflict").replace(
+        "arena.example.test", "live-upstream.io"
+    )
+    settings = _Settings(
+        _env_file=None,
+        api_keys=["sk-probe"],
+        target_domain="target.example",
+        recaptcha_provider="static",
+        recaptcha_static_token="t",
+        upstream_curl=max_curl,
+    )
+    app = _create_app(settings)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/autopilot/agent-probe",
+            headers={"Authorization": "Bearer sk-probe"},
+            json={"agent_curl": agent_curl},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is False
+    assert data["reason"] == "conflict"
+    assert 1 in data["conflict_slots"]
+
+
+def test_agent_probe_rejects_garbage_curl(monkeypatch: Any) -> None:
+    """Bozuk cURL 400 döndürür (ileti denenmez)."""
+    app = _probe_app(monkeypatch, _ProbeOkClient)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/autopilot/agent-probe",
+            headers={"Authorization": "Bearer sk-probe"},
+            json={"agent_curl": "bu bir curl değil"},
+        )
+    assert resp.status_code == 400

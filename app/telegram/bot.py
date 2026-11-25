@@ -49,6 +49,7 @@ _HELP = (
     "🤖 Otopilot (Model A — Agent Mode Proje):\n"
     "• /agent_curl (veya /curl) — Agent Mode '/input' cURL'ünü yapıştır (+ /bitir)\n"
     "• /agent_test — Bellekteki Agent cURL oturumunun canlı sağlığını tekrar test et\n"
+    "• /agent_test canlı — Sohbete gerçek yoklama gönder, cevabı kanıtla (kota harcar)\n"
     "• /bitir — Yapıştırılan (Telegram'ın böldüğü) tüm cURL parçalarını birleştir ve doğrula\n"
     "• /tur oto | /tur <1-25> — Otomatik tur (Max projeye göre seçer) veya sabit tavan\n"
     "• /gece — Yalnız 22:00–07:00 (TR) arasında çalıştır (artık isteğe bağlı)\n"
@@ -551,7 +552,7 @@ class TelegramBot:
                 await self._handle_curl_command(chat_id, sess, arg=arg, raw_arg=raw_arg)
                 return
             if command == "/agent_test":
-                await self._handle_agent_test(chat_id, sess)
+                await self._handle_agent_test(chat_id, sess, arg)
                 return
             if command in {"/bitir", "/curl_bitir", "/curlbitir", "/tamam"}:
                 await self._finish_curl_collection(chat_id, sess)
@@ -1072,7 +1073,11 @@ class TelegramBot:
         self,
         chat_id: int,
         sess: _ChatAutopilotSession,
+        arg: str = "",
     ) -> None:
+        if arg.strip().lower() == "canlı":
+            await self._handle_agent_probe(chat_id, sess)
+            return
         if not sess.validated_curl:
             await self.send_text(
                 chat_id,
@@ -1118,6 +1123,77 @@ class TelegramBot:
             f"(auth parçaları: {diag.get('auth_chunk_indices', [])})",
             disable_preview=True,
         )
+
+    async def _handle_agent_probe(
+        self,
+        chat_id: int,
+        sess: _ChatAutopilotSession,
+    ) -> None:
+        """`/agent_test canlı` — sohbete gerçek ileti gönder, cevabı bekle.
+
+        Salt-okunur `/agent_test`'ten farkı: oturumu okumakla kalmaz, "Bana
+        sadece 'tamam' yaz" iletisini gönderip cevabın geldiğini kanıtlar.
+        Sohbete bir satır eklenir ve kota harcanır; o yüzden yalnız açıkça
+        `canlı` yazılınca çalışır.
+        """
+        if not sess.validated_curl:
+            await self.send_text(
+                chat_id,
+                "ℹ️ Bellekte yoklanacak hazır bir Agent cURL yok.\n"
+                "Önce /agent_curl yazıp cURL'ü yapıştırın ve /bitir ile doğrulayın.",
+            )
+            return
+        await self.send_text(
+            chat_id,
+            "📡 Canlı yoklama gönderiliyor (3 dk içinde cevap bekleniyor)...\n"
+            "Sohbete tek satır eklenecek ve kota harcanacak.",
+        )
+        try:
+            response = await self.wrapper.post(
+                "/v1/autopilot/agent-probe",
+                json={
+                    "agent_curl": sess.validated_curl,
+                    "timeout_seconds": 180.0,
+                },
+                timeout=240.0,
+            )
+        except httpx.HTTPError:
+            await self.send_text(
+                chat_id,
+                "Wrapper /v1/autopilot/agent-probe ucuna ulaşılamadı.",
+            )
+            return
+        if response.status_code != 200:
+            await self.send_text(
+                chat_id,
+                f"❌ Agent yoklaması başarısız: {_autopilot_error_message(response)}",
+            )
+            return
+        data = response.json()
+        if data.get("ok"):
+            excerpt = str(data.get("reply_excerpt") or "").strip() or "(boş cevap)"
+            await self.send_text(
+                chat_id,
+                "🟢 Agent sohbeti CEVAP VERDİ!\n"
+                f"• Sohbet: {data.get('chat_id', '-')}\n"
+                f"• Süre: {data.get('elapsed_seconds', '?')} sn\n"
+                f"• Cevap ({data.get('reply_chars', '?')} karakter): {excerpt}",
+                disable_preview=True,
+            )
+            return
+        reason = str(data.get("reason") or "error")
+        detail = str(data.get("detail") or "").strip()
+        headline = {
+            "busy": "🟡 Sohbet meşgul — yoklama kuyruğa girmedi.",
+            "conflict": "⛔ Hesap çakışması — yoklama gönderilmedi.",
+            "timeout": "🔴 Cevap zamanında gelmedi.",
+            "rejected": "🔴 Hedef yoklamayı reddetti.",
+            "network": "🔴 Ağ hatası.",
+        }.get(reason, "🔴 Yoklama başarısız.")
+        lines = [headline, f"• Sohbet: {data.get('chat_id', '-')}"]
+        if detail:
+            lines.append(f"• Detay: {detail}")
+        await self.send_text(chat_id, "\n".join(lines), disable_preview=True)
 
     async def _finish_upstream_slot_curl(
         self,

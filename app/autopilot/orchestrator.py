@@ -186,6 +186,13 @@ TURN_HEARTBEAT_SECONDS = 600.0
 #: (kullanıcı sözleşmesi: "tur süreyle bitmez, ama sessiz de kalmaz").
 SILENT_TURN_NOTICE_SECONDS = 1200.0
 
+#: Kalp atışı aynı ilerlemeyi tekrarlamaz; ama canlılık kanıtı tamamen de
+#: susmaz: değişiklik olmasa bile en geç bu sürede bir satır yayınlanır.
+TURN_HEARTBEAT_MAX_GAP_SECONDS = 3600.0
+#: Tur başına en çok sessizlik notu (20/40/60. dk). Son notta "bundan sonra
+#: sessizce bekliyorum" denir; tur yine de kesilmez, `/durum` her an bakılabilir.
+SILENT_NOTICE_MAX_PER_TURN = 3
+
 
 @dataclass(slots=True)
 class AutopilotConfig:
@@ -420,6 +427,11 @@ class AutopilotOrchestrator:
         #: Agent'tan en son **herhangi bir olay** (metin/araç) geldiği an.
         self._last_agent_signal = 0.0
         self._last_silent_notice = 0.0
+        #: Tur başına yayınlanan sessizlik notu sayısı (tavan: `SILENT_NOTICE_MAX_PER_TURN`).
+        self._silence_notices_this_turn = 0
+        #: Son kalp atışındaki ilerleme imzası (tur, biten sayısı, etkinlik).
+        #: Aynı imza tekrar yayınlanmaz ("gereksiz mesaj" şikâyetinin çözümü).
+        self._last_heartbeat_signature: tuple[int, int, str] | None = None
         self._now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self._sleep_fn = sleep_fn
         self._execution_semaphore = execution_semaphore
@@ -656,8 +668,8 @@ class AutopilotOrchestrator:
                 f"▶️ Tur {turn} başladı ({done}/{planned} bitti · tavan {self.config.max_turns})",
                 f"🎯 Bu turun işi: {_summarize_one_line(next_step, 180)}",
                 f"⏱️ Tipik ölçek: {TURN_BUDGET_SOFT_MINUTES}-{TURN_BUDGET_MINUTES} dk "
-                "(tur süreyle kesilmez) · "
-                f"{TURN_HEARTBEAT_SECONDS / 60:.0f} dk'da bir durum güncellemesi",
+                "(tur süreyle kesilmez) · ilerleme oldukça durum güncellemesi "
+                "(aynısı tekrarlanmaz)",
             ]
         )
 
@@ -704,6 +716,10 @@ class AutopilotOrchestrator:
         Neden ayrı: tur bekleyişi tek bir `await` içinde olduğu için "60 dakikadır
         ses yok" durumu fark edilmiyordu. Hem hatırlatmayı hem **sessizlik
         nöbetçisini** bu tek noktadan yayınlıyoruz.
+
+        Gereksiz tekrar yok: kalp atışı, ilerleme imzası (tur, biten sayısı,
+        etkinlik) değişmedikçe atlanır; sessizlik notu tur başına en çok
+        `SILENT_NOTICE_MAX_PER_TURN` kez çıkar. Tur hiçbir koşulda kesilmez.
         """
         if not self._turn_started_at:
             return False
@@ -718,23 +734,47 @@ class AutopilotOrchestrator:
             SILENT_TURN_NOTICE_SECONDS > 0
             and silent >= SILENT_TURN_NOTICE_SECONDS
             and now - self._last_silent_notice >= SILENT_TURN_NOTICE_SECONDS
+            and self._silence_notices_this_turn < SILENT_NOTICE_MAX_PER_TURN
         ):
             self._last_heartbeat = now
             self._last_silent_notice = now
+            self._silence_notices_this_turn += 1
+            quiet_after = (
+                self._silence_notices_this_turn >= SILENT_NOTICE_MAX_PER_TURN
+            )
             text = (
                 f"😴 Tur {self.state.current_turn}: {silent / 60:.0f} dk'dır Agent'tan "
                 "yeni olay gelmedi (hâlâ çalışıyor olabilir).\n"
                 "Sistem bekliyor, turu **kesmiyor**. İstersen `/durdur` ile "
                 "durdurup `/devam` ile kaldığı yerden sürdürebilirsin."
             )
+            if quiet_after:
+                text += (
+                    "\nBu turda başka sessizlik notu yazmayacağım; "
+                    "`/durum` ile her an bakabilirsin."
+                )
             self._emit_progress(line)
             await self._notify_telegram(text)
             return True
-        if TURN_HEARTBEAT_SECONDS > 0 and now - self._last_heartbeat >= TURN_HEARTBEAT_SECONDS:
-            self._last_heartbeat = now
-            self._emit_progress(line)
-            await self._notify_telegram(line)
-            return True
+        if (
+            TURN_HEARTBEAT_SECONDS > 0
+            and now - self._last_heartbeat >= TURN_HEARTBEAT_SECONDS
+        ):
+            signature = (
+                self.state.current_turn,
+                len(self.state.turns),
+                self._turn_activity,
+            )
+            forced = now - self._last_heartbeat >= TURN_HEARTBEAT_MAX_GAP_SECONDS
+            if signature != self._last_heartbeat_signature or forced:
+                self._last_heartbeat = now
+                self._last_heartbeat_signature = signature
+                self._emit_progress(line)
+                await self._notify_telegram(line)
+                return True
+            # Aynı ilerleme: atla. `_last_heartbeat` korunur; böylece zorunlu
+            # aralık (`TURN_HEARTBEAT_MAX_GAP_SECONDS`) dolunca yine yayınlanır.
+            return False
         return False
 
     async def _maybe_heartbeat(self) -> None:
@@ -767,6 +807,7 @@ class AutopilotOrchestrator:
                     SILENT_TURN_NOTICE_SECONDS > 0
                     and now - self._last_agent_signal >= SILENT_TURN_NOTICE_SECONDS
                     and now - self._last_silent_notice >= SILENT_TURN_NOTICE_SECONDS
+                    and self._silence_notices_this_turn < SILENT_NOTICE_MAX_PER_TURN
                 )
                 if due or silent_due:
                     with contextlib.suppress(RuntimeError):
@@ -1559,8 +1600,15 @@ class AutopilotOrchestrator:
                 t0 = time.monotonic()
                 self._turn_started_at = t0
                 # Sessizlik nöbetçisi tur başında sıfırlanır: yeni tur "yeni sinyal".
+                # Saatler `t0`'a kurulur (0.0'a değil): 0.0 "önyükleme anı" demekti;
+                # makine 20 dk'dan yeniyse ilk sessizlik notu yutuluyor, 10 dk'dan
+                # yeniyse ilk kalp atışı tur satırının hemen ardından (çift mesaj)
+                # çıkıyordu. Tur sayaçları tura göre işlemeli.
                 self._last_agent_signal = t0
-                self._last_silent_notice = 0.0
+                self._last_silent_notice = t0
+                self._last_heartbeat = t0
+                self._silence_notices_this_turn = 0
+                self._last_heartbeat_signature = None
                 self._turn_activity = "talimat gönderildi"
                 self._emit_progress(
                     f"Tur {turn}/{self.config.max_turns} [{self.state.current_phase}]: "
