@@ -224,6 +224,7 @@ class AutopilotManager:
         external_endpoint_mode: Literal["chat", "ask"] = "chat",
         direct_max_curl: str = "",
         alerter: TelegramAlerter | None = None,
+        allow_same_account_agent_max: bool = False,
     ) -> AutopilotRunState:
         if self.active_count() >= self.max_concurrent_runs:
             raise ValueError(
@@ -263,6 +264,7 @@ class AutopilotManager:
             gap_max_seconds=gap_max_seconds,
             run_id=run_id,
             state_file=self._state_path(run_id),
+            allow_same_account_agent_max=allow_same_account_agent_max,
         )
 
         holder: dict[str, ManagedRun] = {}
@@ -347,6 +349,7 @@ class AutopilotManager:
         agent_turn_timeout: float | None = None,
         in_process_service: CompletionService | None = None,
         alerter: TelegramAlerter | None = None,
+        allow_same_account_agent_max: bool | None = None,
     ) -> AutopilotRunState | None:
         """Yarıda kalmış (`failed` / `stopped` / `max_turns_reached`) bir koşuyu
         taze Agent cURL'üyle hafıza ve tur geçmişini koruyarak kaldığı yerden sürdürür.
@@ -419,6 +422,11 @@ class AutopilotManager:
             turn_extensions=prev_state.turn_extensions,
             run_id=prev_state.run_id,
             state_file=self._state_path(prev_state.run_id),
+            allow_same_account_agent_max=(
+                allow_same_account_agent_max
+                if allow_same_account_agent_max is not None
+                else prev_cfg.allow_same_account_agent_max
+            ),
         )
 
         prev_state.status = "starting"

@@ -429,6 +429,13 @@ class Settings(BaseSettings):
     #: koşular `stopped` olarak geri yüklenir ve Telegram'da `/devam` ile aynı
     #: Agent sohbetinde sürdürülebilir (`app/autopilot/manager.py`).
     autopilot_state_dir: str = ""
+    #: DENEY ANAHTARI (varsayılan kapalı): `true` ise Max↔Agent aynı-hesap
+    #: koruması engellemek yerine uyarıya dönüşür. Etkilenen 4 nokta:
+    #: `inspect-curl` (`same_account_conflict`), `agent-probe` (`conflict`),
+    #: koşu başlatma/sürdürme (`SameAccountError`) ve Max yuvası yazma/takas
+    #: ("Otopilot Agent projesinde"). Aynı Google hesabı iki modda birden
+    #: kullanılınca oturumlar birbirini düşürebilir; deney bitince kaldırın.
+    allow_same_account_agent_max: bool = False
 
     # ----------------------------------------------------------- validators
     @field_validator(

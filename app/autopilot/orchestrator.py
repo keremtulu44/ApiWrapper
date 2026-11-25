@@ -216,6 +216,9 @@ class AutopilotConfig:
     max_transient_turn_retries: int = MAX_TRANSIENT_TURN_RETRIES
     #: Kaç kez tur uzatıldığı (kalıcı durumda saklanır; yeniden başlatmada korunur).
     turn_extensions: int = 0
+    #: True ise aynı-hesap koruması engellemez, yalnız uyarır
+    #: (`Settings.allow_same_account_agent_max` deney anahtarından gelir).
+    allow_same_account_agent_max: bool = False
 
     @property
     def effective_min_turns(self) -> int:
@@ -540,6 +543,16 @@ class AutopilotOrchestrator:
         agent_sub = self.agent.account_identity()
         max_subs = self.max_bridge.account_identities()
         if agent_sub and max_subs and agent_sub in max_subs:
+            if self.config.allow_same_account_agent_max:
+                logger.warning(
+                    "autopilot_same_account_guard_disabled",
+                    run_id=self.state.run_id,
+                    detail=(
+                        "Agent ve Max aynı Google hesabını kullanıyor; "
+                        "koruma deney anahtarıyla (ALLOW_SAME_ACCOUNT_AGENT_MAX) kapalı."
+                    ),
+                )
+                return
             raise SameAccountError(
                 "Agent cURL'ü ile Max cURL'ü AYNI Google hesabına (aynı oturum kimliğine) "
                 "ait! Aynı hesabı iki modda birden kullanmak oturumları düşürür. "

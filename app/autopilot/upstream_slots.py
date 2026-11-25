@@ -484,12 +484,19 @@ class UpstreamSlotRuntimeManager:
                 active_agents = autopilot_manager.active_agent_identities()
                 if new_sub in active_agents:
                     conflict_run = active_agents[new_sub]
-                    raise ValueError(
-                        f"Hesap Çakışması: Bu Google hesabı şu anda aktif/gece sırasındaki "
-                        f"'{conflict_run}' Otopilot Agent projesinde kullanılıyor! "
-                        f"İki oturumun birbirini düşürmemesi için önce Agent projesinin "
-                        f"tamamlanmasını bekleyin veya '/durdur {conflict_run}' yazın."
-                    )
+                    if updated.allow_same_account_agent_max:
+                        logger.warning(
+                            "upstream_slot_same_account_guard_disabled",
+                            slot=int(slot),
+                            run_id=conflict_run,
+                        )
+                    else:
+                        raise ValueError(
+                            f"Hesap Çakışması: Bu Google hesabı şu anda aktif/gece sırasındaki "
+                            f"'{conflict_run}' Otopilot Agent projesinde kullanılıyor! "
+                            f"İki oturumun birbirini düşürmemesi için önce Agent projesinin "
+                            f"tamamlanmasını bekleyin veya '/durdur {conflict_run}' yazın."
+                        )
 
             self._propagate_settings(updated)
 
@@ -696,6 +703,13 @@ class UpstreamSlotRuntimeManager:
                 active_agents = autopilot_manager.active_agent_identities()
                 for sub, label in ((sub_a, acc_a.label), (sub_b, acc_b.label)):
                     if sub in active_agents:
+                        if current.allow_same_account_agent_max:
+                            logger.warning(
+                                "upstream_slot_swap_same_account_guard_disabled",
+                                label=label,
+                                run_id=active_agents[sub],
+                            )
+                            continue
                         raise ValueError(
                             f"Hesap Çakışması: '{label}' şu anda "
                             f"'{active_agents[sub]}' Otopilot projesinde. Takas için "
