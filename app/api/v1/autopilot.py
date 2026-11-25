@@ -30,6 +30,7 @@ from app.autopilot.orchestrator import (
 from app.autopilot.upstream_slots import UpstreamSlotRuntimeManager
 from app.core.config import MAX_ACCOUNT_SLOTS
 from app.core.errors import InvalidRequestError, ModelNotFoundError
+from app.core.logging import get_logger
 from app.core.security import api_key_dependency
 from app.upstream.client import error_excerpt
 from app.upstream.exceptions import (
@@ -43,6 +44,13 @@ from app.upstream.exceptions import (
 )
 
 router = APIRouter(tags=["autopilot"], dependencies=[Depends(api_key_dependency)])
+
+logger = get_logger(__name__)
+
+
+def _same_account_guard_disabled(settings: object | None) -> bool:
+    """Deney anahtarı (`ALLOW_SAME_ACCOUNT_AGENT_MAX`) açık mı?"""
+    return bool(getattr(settings, "allow_same_account_agent_max", False))
 
 _SYNTHETIC_TEST_TLDS: tuple[str, ...] = (
     ".example",
@@ -162,6 +170,23 @@ async def inspect_agent_curl_endpoint(
         else []
     )
     same_conflict = bool(conflict_slots)
+    # Deney anahtarı açıksa çakışma ENGEL değil UYARI'dır: `conflict_slots`
+    # gerçeği söylemeye devam eder, `same_account_conflict` yalnız etkin engeli
+    # bildirir (bot buna bakıp reddeder).
+    guard_disabled = _same_account_guard_disabled(settings)
+    if same_conflict and guard_disabled:
+        logger.warning(
+            "autopilot_inspect_same_account_guard_disabled",
+            conflict_slots=conflict_slots,
+        )
+    effective_conflict = same_conflict and not guard_disabled
+    inspect_warnings = list(cfg.warnings)
+    if same_conflict and guard_disabled:
+        inspect_warnings.append(
+            "Aynı-hesap koruması kapalı (ALLOW_SAME_ACCOUNT_AGENT_MAX=true): "
+            f"bu Agent cURL'ü Max yuvasıyla ({', '.join(str(s) for s in conflict_slots)}) "
+            "aynı Google hesabına ait; iki oturum birbirini düşürebilir."
+        )
 
     result: dict[str, Any] = {
         "valid": True,
@@ -174,17 +199,18 @@ async def inspect_agent_curl_endpoint(
         "has_cx": bool(cfg.cx),
         "has_last_user_message_id": bool(cfg.last_user_message_id),
         "has_account_identity": bool(agent_sub),
-        "same_account_conflict": same_conflict,
+        "same_account_conflict": effective_conflict,
         "conflict_slots": conflict_slots,
+        "same_account_guard_disabled": guard_disabled,
         "cookie_diagnostics": cookie_health,
         "live_checked": False,
         "live_ok": None,
-        "warnings": cfg.warnings,
+        "warnings": inspect_warnings,
     }
 
     if (
         body.verify_live
-        and not same_conflict
+        and not effective_conflict
         and not _is_synthetic_test_domain(cfg.target_domain)
     ):
         try:
@@ -291,7 +317,7 @@ async def probe_agent_chat(
         if agent_sub
         else []
     )
-    if conflict_slots:
+    if conflict_slots and not _same_account_guard_disabled(settings):
         return {
             "ok": False,
             "reason": "conflict",
@@ -302,6 +328,12 @@ async def probe_agent_chat(
                 "oturumları düşürmemek için yoklama gönderilmedi."
             ),
         }
+    if conflict_slots:
+        logger.warning(
+            "autopilot_probe_same_account_guard_disabled",
+            conflict_slots=conflict_slots,
+            chat_id=cfg.chat_id,
+        )
 
     started = time.monotonic()
     try:
@@ -399,6 +431,9 @@ async def start_autopilot_run(
             external_endpoint_mode=body.max_endpoint_mode,
             direct_max_curl=body.max_curl,
             alerter=alerter,
+            allow_same_account_agent_max=_same_account_guard_disabled(
+                getattr(request.app.state, "settings", None)
+            ),
         )
     except SameAccountError as exc:
         raise InvalidRequestError(str(exc), param="agent_curl") from exc
@@ -552,6 +587,9 @@ async def resume_autopilot_run(
             agent_turn_timeout=body.agent_turn_timeout,
             in_process_service=completion_service,
             alerter=alerter,
+            allow_same_account_agent_max=_same_account_guard_disabled(
+                getattr(request.app.state, "settings", None)
+            ),
         )
     except SameAccountError as exc:
         raise InvalidRequestError(str(exc), param="agent_curl") from exc

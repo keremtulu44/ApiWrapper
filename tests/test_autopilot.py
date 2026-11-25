@@ -2572,3 +2572,226 @@ def test_agent_probe_rejects_garbage_curl(monkeypatch: Any) -> None:
             json={"agent_curl": "bu bir curl değil"},
         )
     assert resp.status_code == 400
+
+
+# ---------------------------------------------------------------------------
+# 7. Aynı-hesap koruma anahtarı (`ALLOW_SAME_ACCOUNT_AGENT_MAX` deney modu)
+# ---------------------------------------------------------------------------
+
+
+def test_orchestrator_allows_same_account_when_guard_disabled() -> None:
+    """Deney anahtarı açıkken aynı hesap ENGEL değil UYARI'dır (koşu sürer)."""
+    same_sub = "shared-google-sub-999"
+    raw_curl = _build_windows_cmd_input_curl(sub=same_sub)
+    agent = AgentSessionClient.from_curl(raw_curl)
+    bridge = _FakeMaxBridge(["<DURUM>TAMAMLANDI</DURUM>"], sub=same_sub)
+
+    default_cfg = AutopilotConfig(project_idea="Test projesi", max_turns=3)
+    default_orch = AutopilotOrchestrator(
+        config=default_cfg, agent=agent, max_bridge=bridge
+    )
+    with pytest.raises(SameAccountError):
+        default_orch._verify_separate_accounts()
+
+    bypass_cfg = AutopilotConfig(
+        project_idea="Test projesi",
+        max_turns=3,
+        allow_same_account_agent_max=True,
+    )
+    bypass_orch = AutopilotOrchestrator(
+        config=bypass_cfg, agent=agent, max_bridge=bridge
+    )
+    bypass_orch._verify_separate_accounts()  # fırlatmamalı
+
+
+def test_inspect_curl_bypassed_conflict_when_guard_disabled() -> None:
+    """Anahtar açıkken `inspect-curl` engellemez; gerçeği + uyarıyı döndürür."""
+    max_cookie = _make_fake_supabase_cookie("max-server-account")
+    settings = Settings(  # type: ignore[call-arg]
+        _env_file=None,
+        api_keys="sk-test-bypass",  # type: ignore[arg-type]
+        target_domain="arena.example.test",
+        upstream_cookie=max_cookie,
+        session_warmup_on_startup=False,
+        keepalive_enabled=False,
+        models_config_path="config/models.yaml",
+        allow_same_account_agent_max=True,
+    )
+    app = create_app(settings)
+    same_curl = _build_windows_cmd_input_curl(sub="max-server-account")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/autopilot/inspect-curl",
+            headers={"Authorization": "Bearer sk-test-bypass"},
+            json={"agent_curl": same_curl},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["same_account_conflict"] is False  # etkin engel yok
+    assert data["conflict_slots"] == [1]  # ama gerçek gizlenmez
+    assert data["same_account_guard_disabled"] is True
+    assert any("koruması kapalı" in str(w) for w in data["warnings"])
+
+
+def test_agent_probe_proceeds_on_conflict_when_guard_disabled(monkeypatch: Any) -> None:
+    """Anahtar açıkken yoklama `conflict` ile durmaz, gerçekten gönderilir."""
+    import app.api.v1.autopilot as ap_mod
+    from app.core.config import Settings as _Settings
+    from app.main import create_app as _create_app
+
+    monkeypatch.setattr(ap_mod, "AgentSessionClient", _ProbeOkClient)
+    from tests.test_upstream_slots import _build_realistic_max_curl
+
+    max_curl = _build_realistic_max_curl(sub="shared-sub-bypass")
+    agent_curl = _build_windows_cmd_input_curl(sub="shared-sub-bypass").replace(
+        "arena.example.test", "live-upstream.io"
+    )
+    settings = _Settings(
+        _env_file=None,
+        api_keys=["sk-probe"],
+        target_domain="target.example",
+        recaptcha_provider="static",
+        recaptcha_static_token="t",
+        upstream_curl=max_curl,
+        allow_same_account_agent_max=True,
+    )
+    app = _create_app(settings)
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/autopilot/agent-probe",
+            headers={"Authorization": "Bearer sk-probe"},
+            json={"agent_curl": agent_curl, "timeout_seconds": 60.0},
+        )
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["reason"] == "answered"
+    assert data["reply_excerpt"] == "tamam"
+
+
+def test_start_run_rejects_same_account_by_default() -> None:
+    """Varsayılan koruma: aynı hesapla koşu 400 alır, görev açılmadı."""
+    max_cookie = _make_fake_supabase_cookie("slot1-keeper")
+    max_curl_1 = (
+        "curl 'https://target.example/nextjs-api/stream/create-evaluation' "
+        f"-H 'cookie: {max_cookie}' "
+        "-H 'referer: https://target.example/c/1' "
+        "--data-raw '{\"id\":\"1\",\"mode\":\"direct\",\"modelAId\":\"m1\","
+        "\"userMessage\":\"hi\",\"recaptchaV3Token\":\"rc-slot1\"}'"
+    )
+    settings = Settings(api_keys=["sk-test-key"], upstream_curl=max_curl_1)
+    app = create_app(settings)
+    headers = {"Authorization": "Bearer sk-test-key"}
+    agent_curl = _build_windows_cmd_input_curl(sub="slot1-keeper")
+    with TestClient(app) as client:
+        resp = client.post(
+            "/v1/autopilot/runs",
+            headers=headers,
+            json={
+                "project_idea": "Aynı hesap deneme projesi",
+                "agent_curl": agent_curl,
+            },
+        )
+        assert resp.status_code == 400
+        assert "AYNI Google hesabına" in resp.text
+        runs = client.get("/v1/autopilot/runs", headers=headers).json()
+        assert runs["runs"] == []
+        assert runs["active_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_start_run_allows_same_account_when_guard_disabled() -> None:
+    """Anahtar açıkken aynı hesapla koşu açılır (gece sırasında bekler, ağa çıkmaz)."""
+    max_cookie = _make_fake_supabase_cookie("slot1-keeper")
+    max_curl_1 = (
+        "curl 'https://target.example/nextjs-api/stream/create-evaluation' "
+        f"-H 'cookie: {max_cookie}' "
+        "-H 'referer: https://target.example/c/1' "
+        "--data-raw '{\"id\":\"1\",\"mode\":\"direct\",\"modelAId\":\"m1\","
+        "\"userMessage\":\"hi\",\"recaptchaV3Token\":\"rc-slot1\"}'"
+    )
+    settings = Settings(
+        api_keys=["sk-test-key"],
+        upstream_curl=max_curl_1,
+        allow_same_account_agent_max=True,
+    )
+    app = create_app(settings)
+    headers = {"Authorization": "Bearer sk-test-key"}
+    agent_curl = _build_windows_cmd_input_curl(sub="slot1-keeper")
+
+    async with (
+        app.router.lifespan_context(app),
+        httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app),
+            base_url="http://wrapper.local",
+        ) as client,
+    ):
+        start_resp = await client.post(
+            "/v1/autopilot/runs",
+            headers=headers,
+            json={
+                "project_idea": "Aynı hesap deney projesi",
+                "agent_curl": agent_curl,
+                "respect_night_window": True,
+                "night_start_hour": 4,
+                "night_end_hour": 5,
+            },
+        )
+        assert start_resp.status_code == 200
+        run_id = start_resp.json()["run_id"]
+
+        clear_resp = await client.post(
+            "/v1/autopilot/runs/clear",
+            headers=headers,
+            json={"include_active": True},
+        )
+        assert clear_resp.status_code == 200
+        assert run_id in clear_resp.json()["removed_run_ids"]
+
+
+def test_update_slot_same_account_guard_default_and_disabled() -> None:
+    """Max yuvasına Agent hesabı: varsayılan 400, anahtar açıkken 200."""
+    from tests.test_upstream_slots import _build_realistic_max_curl
+
+    def _slot_app(guard_disabled: bool):  # type: ignore[no-untyped-def]
+        max_curl_1 = _build_realistic_max_curl(sub="slot1-keeper")
+        settings = Settings(
+            _env_file=None,
+            api_keys=["sk-slot"],
+            target_domain="target.example",
+            recaptcha_provider="static",
+            recaptcha_static_token="t",
+            upstream_curl=max_curl_1,
+            allow_same_account_agent_max=guard_disabled,
+        )
+        app = create_app(settings)
+
+        async def _noop_shutdown() -> None:
+            return None
+
+        app.state.autopilot_manager = SimpleNamespace(
+            active_agent_identities=lambda: {"agent-run-sub": "auto_deney"},
+            shutdown=_noop_shutdown,
+        )
+        return app
+
+    headers = {"Authorization": "Bearer sk-slot"}
+    max_curl_2 = _build_realistic_max_curl(sub="agent-run-sub")
+
+    with TestClient(_slot_app(False)) as client:
+        blocked = client.post(
+            "/v1/autopilot/upstream-slots/2",
+            headers=headers,
+            json={"upstream_curl": max_curl_2},
+        )
+        assert blocked.status_code == 400
+        assert "Otopilot Agent projesinde" in blocked.text
+
+    with TestClient(_slot_app(True)) as client:
+        allowed = client.post(
+            "/v1/autopilot/upstream-slots/2",
+            headers=headers,
+            json={"upstream_curl": max_curl_2},
+        )
+        assert allowed.status_code == 200
+        assert allowed.json()["updated_slot"] == 2
